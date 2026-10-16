@@ -1,0 +1,36 @@
+# radovid configuration. Run: radovid serve --config radovid.toml
+
+listen = "0.0.0.0:4460"
+database = "radovid.db"
+tls_cert = "cert.pem"
+tls_key = "key.pem"
+# What clients are told to connect to for the game. `{port}` is the port bound.
+public_game_url = "wss://localhost:{port}/game"
+max_matches = 8
+
+[password]            # argon2id; the stored hashes carry their own parameters
+memory_kib = 65536
+iterations = 3
+
+# Development: game servers as child processes.
+[backend]
+kind = "local"
+bota_server = "../bota/target/release/bota_server"
+
+# Production: one container per match on a private docker network.
+# [backend]
+# kind = "docker"
+# image = "bota_server:local"
+# network = "radovid"
+# memory = "512m"
+# cpus = "1"
+# publish_loopback = false   # true: reach the container on a loopback port (rootless docker)
+
+[[ruleset]]
+id = "solo_mid"
+name = "1x1 Mid Only"
+seats = 2
+heroes = [1]
+queue = true
+bota_args = ["--map", "2", "--mode", "realtime", "--tick-rate", "30"]
+start_after_secs = 60

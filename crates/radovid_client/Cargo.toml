@@ -1,0 +1,17 @@
+[package]
+name = "radovid_client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Client library for radovid: login, queue, lobbies and the game link"
+
+[dependencies]
+bota_client_core = { workspace = true }
+bota_proto = { workspace = true }
+radovid_proto = { workspace = true }
+rustls = { workspace = true }
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+webpki-roots = "1.0.9"
+
+[lints]
+workspace = true

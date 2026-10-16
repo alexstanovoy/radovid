@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/radovid",
+    "crates/radovid_client",
+    "crates/radovid_proto",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bota_client_core = { path = "../bota-radovid/crates/bota_client_core" }
+bota_proto = { path = "../bota-radovid/crates/bota_proto" }
+radovid_client = { path = "crates/radovid_client" }
+radovid_proto = { path = "crates/radovid_proto" }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+
+# Tests run the password hash, the game server and the TLS stack: optimise every
+# dependency even in the dev profile.
+[profile.dev.package."*"]
+opt-level = 3

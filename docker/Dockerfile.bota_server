@@ -1,0 +1,12 @@
+# The game server image: one static binary on an empty root file system.
+#
+# Build the binary first, from the bota commit radovid is built against:
+#   rustup target add x86_64-unknown-linux-musl
+#   cargo build --release --target x86_64-unknown-linux-musl -p bota_server --bin bota_server
+# then, with the binary copied next to this file as `bota_server`:
+#   docker build -f docker/Dockerfile.bota_server -t bota_server:local docker/
+FROM scratch
+COPY bota_server /bota_server
+USER 65534:65534
+EXPOSE 4455
+ENTRYPOINT ["/bota_server"]

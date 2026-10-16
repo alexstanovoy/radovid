@@ -1,0 +1,314 @@
+# Every position on the radovid wire: append-only (README.md, Protocol).
+#
+# One line a position postcard encodes: an enum variant index, a struct or struct
+# variant field order. New variants and fields go last and their lines are appended
+# here; a line is never edited or removed. Every change bumps PROTO_VERSION.
+# Frozen: ClientMsg 0 Hello, ServerMsg 1 Refused, Error 0 ProtoMismatch.
+
+newtype AccountId u64
+field AccountInfo 0 id: AccountId
+field AccountInfo 1 login: String
+field AccountInfo 2 nickname: String
+field AccountInfo 3 kind: AccountKind
+field AccountInfo 4 admin: bool
+variant AccountKind 0 Human
+variant AccountKind 1 Bot
+variant Audience 0 Everyone
+variant Audience 1 HumansOnly
+variant Audience 2 BotsOnly
+field ClientFrame 0 seq: u32
+field ClientFrame 1 msg: ClientMsg
+field ClientInfo 0 bot_version: Option<String>
+variant ClientMsg 0 Hello {}
+field ClientMsg::Hello 0 proto: u16
+field ClientMsg::Hello 1 bota_wire: u64
+field ClientMsg::Hello 2 client: String
+variant ClientMsg 1 Register {}
+field ClientMsg::Register 0 login: String
+field ClientMsg::Register 1 password: String
+field ClientMsg::Register 2 kind: AccountKind
+field ClientMsg::Register 3 client: ClientInfo
+variant ClientMsg 2 Login {}
+field ClientMsg::Login 0 login: String
+field ClientMsg::Login 1 password: String
+field ClientMsg::Login 2 client: ClientInfo
+variant ClientMsg 3 Resume {}
+field ClientMsg::Resume 0 session: SessionToken
+field ClientMsg::Resume 1 client: ClientInfo
+variant ClientMsg 4 Logout
+variant ClientMsg 5 ChangeNickname {}
+field ClientMsg::ChangeNickname 0 nickname: String
+variant ClientMsg 6 ChangePassword {}
+field ClientMsg::ChangePassword 0 current: String
+field ClientMsg::ChangePassword 1 new: String
+variant ClientMsg 7 Account {}
+field ClientMsg::Account 0 account: AccountId
+variant ClientMsg 8 Rulesets
+variant ClientMsg 9 QueueJoin {}
+field ClientMsg::QueueJoin 0 ruleset: RulesetId
+variant ClientMsg 10 QueueLeave
+variant ClientMsg 11 LobbyCreate {}
+field ClientMsg::LobbyCreate 0 ruleset: RulesetId
+field ClientMsg::LobbyCreate 1 name: String
+field ClientMsg::LobbyCreate 2 audience: Audience
+variant ClientMsg 12 LobbyList
+variant ClientMsg 13 LobbyAsk {}
+field ClientMsg::LobbyAsk 0 lobby: LobbyId
+variant ClientMsg 14 LobbyAskCancel
+variant ClientMsg 15 LobbyDecide {}
+field ClientMsg::LobbyDecide 0 account: AccountId
+field ClientMsg::LobbyDecide 1 allow: bool
+variant ClientMsg 16 LobbyKick {}
+field ClientMsg::LobbyKick 0 account: AccountId
+variant ClientMsg 17 LobbyReady {}
+field ClientMsg::LobbyReady 0 ready: bool
+variant ClientMsg 18 LobbyLeave
+variant ClientMsg 19 MatchHandoff
+variant ClientMsg 20 RecentMatches {}
+field ClientMsg::RecentMatches 0 account: AccountId
+field ClientMsg::RecentMatches 1 limit: u8
+variant ClientMsg 21 Ladder {}
+field ClientMsg::Ladder 0 ruleset: RulesetId
+field ClientMsg::Ladder 1 offset: u32
+field ClientMsg::Ladder 2 limit: u8
+variant ClientMsg 22 AdminBan {}
+field ClientMsg::AdminBan 0 account: AccountId
+field ClientMsg::AdminBan 1 reason: String
+field ClientMsg::AdminBan 2 until: Option<UnixMs>
+variant ClientMsg 23 AdminUnban {}
+field ClientMsg::AdminUnban 0 account: AccountId
+variant ClientMsg 24 AdminSetKind {}
+field ClientMsg::AdminSetKind 0 account: AccountId
+field ClientMsg::AdminSetKind 1 kind: AccountKind
+variant ClientMsg 25 AdminStopMatch {}
+field ClientMsg::AdminStopMatch 0 match_id: MatchId
+variant EndReason 0 Decided
+variant EndReason 1 TimeCap
+variant EndReason 2 Crashed
+variant EndReason 3 Stopped
+variant Error 0 ProtoMismatch {}
+field Error::ProtoMismatch 0 server: u16
+variant Error 1 Malformed
+variant Error 2 NotLoggedIn
+variant Error 3 AlreadyLoggedIn
+variant Error 4 TooManySessions
+variant Error 5 RateLimited {}
+field Error::RateLimited 0 retry_after_ms: u32
+variant Error 6 Throttled {}
+field Error::Throttled 0 retry_after_ms: u32
+variant Error 7 BadCredentials
+variant Error 8 BadSession
+variant Error 9 Banned {}
+field Error::Banned 0 reason: String
+field Error::Banned 1 until: Option<UnixMs>
+variant Error 10 BadLogin
+variant Error 11 LoginTaken
+variant Error 12 BadNickname
+variant Error 13 WeakPassword
+variant Error 14 BadBotVersion
+variant Error 15 BadLobbyName
+variant Error 16 Forbidden
+variant Error 17 UnknownAccount
+variant Error 18 UnknownRuleset
+variant Error 19 NoQueue
+variant Error 20 BotaWireMismatch {}
+field Error::BotaWireMismatch 0 server: u64
+variant Error 21 Busy {}
+field Error::Busy 0 presence: Presence
+variant Error 22 NotInQueue
+variant Error 23 NotInLobby
+variant Error 24 NotInMatch
+variant Error 25 UnknownLobby
+variant Error 26 UnknownMatch
+variant Error 27 LobbyFull
+variant Error 28 LobbyNotFull
+variant Error 29 NotAllReady
+variant Error 30 AudienceMismatch
+variant Error 31 NotLobbyOwner
+variant Error 32 NoSuchMember
+variant Error 33 NoSuchRequest
+variant Error 34 NoPendingRequest
+variant Error 35 TooManyLobbies
+variant Error 36 Starting
+variant Error 37 Idle
+variant Error 38 ServerStopping
+variant Error 39 Internal
+variant Event 0 LobbyState {}
+field Event::LobbyState 0 state: LobbyState
+variant Event 1 LobbyStarting {}
+field Event::LobbyStarting 0 in_ms: u32
+variant Event 2 LobbyJoined {}
+field Event::LobbyJoined 0 state: LobbyState
+variant Event 3 LobbyDenied {}
+field Event::LobbyDenied 0 lobby: LobbyId
+variant Event 4 LobbyKicked {}
+field Event::LobbyKicked 0 lobby: LobbyId
+variant Event 5 LobbyClosed {}
+field Event::LobbyClosed 0 lobby: LobbyId
+variant Event 6 MatchFound {}
+field Event::MatchFound 0 handoff: Handoff
+variant Event 7 MatchResult {}
+field Event::MatchResult 0 result: MatchResult
+variant Event 8 Bye {}
+field Event::Bye 0 error: Error
+field Handoff 0 match_id: MatchId
+field Handoff 1 ruleset: RulesetId
+field Handoff 2 rated: bool
+field Handoff 3 game_url: String
+field Handoff 4 seat_key: SeatKey
+field Handoff 5 slot: SlotId
+field Handoff 6 team: Team
+field Handoff 7 seats: Vec<SeatInfo>
+field Handoff 8 bota_wire: u64
+newtype HeroId u16
+field LadderRow 0 rank: u32
+field LadderRow 1 account: AccountId
+field LadderRow 2 login: String
+field LadderRow 3 nickname: String
+field LadderRow 4 kind: AccountKind
+field LadderRow 5 bot_version: Option<String>
+field LadderRow 6 rating: Rating
+field LadderRow 7 games: u32
+field LadderRow 8 wins: u32
+field LadderRow 9 draws: u32
+field LadderRow 10 losses: u32
+field LadderRow 11 last_played: Option<UnixMs>
+newtype LobbyId u32
+field LobbyMember 0 account: AccountId
+field LobbyMember 1 login: String
+field LobbyMember 2 nickname: String
+field LobbyMember 3 kind: AccountKind
+field LobbyMember 4 bot_version: Option<String>
+field LobbyMember 5 rating: Option<Rating>
+field LobbyMember 6 slot: SlotId
+field LobbyMember 7 team: Team
+field LobbyMember 8 ready: bool
+field LobbyState 0 id: LobbyId
+field LobbyState 1 name: String
+field LobbyState 2 ruleset: RulesetId
+field LobbyState 3 owner: AccountId
+field LobbyState 4 audience: Audience
+field LobbyState 5 rated: bool
+field LobbyState 6 members: Vec<LobbyMember>
+field LobbyState 7 pending: Vec<LobbyMember>
+field LobbyState 8 starting_in_ms: Option<u32>
+field LobbySummary 0 id: LobbyId
+field LobbySummary 1 name: String
+field LobbySummary 2 ruleset: RulesetId
+field LobbySummary 3 owner: AccountId
+field LobbySummary 4 owner_login: String
+field LobbySummary 5 owner_nickname: String
+field LobbySummary 6 audience: Audience
+field LobbySummary 7 members: u8
+field LobbySummary 8 seats: u8
+newtype MatchId u64
+field MatchResult 0 match_id: MatchId
+field MatchResult 1 ruleset: RulesetId
+field MatchResult 2 rated: bool
+field MatchResult 3 outcome: Outcome
+field MatchResult 4 reason: EndReason
+field MatchResult 5 duration_ticks: u32
+field MatchResult 6 stats: Option<MatchStats>
+field MatchResult 7 seats: Vec<SeatResult>
+field MatchResult 8 finished_at: UnixMs
+field MatchStats 0 duration: u32
+field MatchStats 1 slots: Vec<SlotStats>
+variant Outcome 0 Radiant
+variant Outcome 1 Dire
+variant Outcome 2 Draw
+variant Outcome 3 Null
+variant Presence 0 Idle
+variant Presence 1 Queued {}
+field Presence::Queued 0 ruleset: RulesetId
+field Presence::Queued 1 for_ms: u32
+variant Presence 2 InLobby {}
+field Presence::InLobby 0 lobby: LobbyId
+variant Presence 3 InMatch {}
+field Presence::InMatch 0 match_id: MatchId
+field PublicAccount 0 id: AccountId
+field PublicAccount 1 login: String
+field PublicAccount 2 nickname: String
+field PublicAccount 3 kind: AccountKind
+field PublicAccount 4 online: bool
+field PublicAccount 5 bot_version: Option<String>
+field PublicAccount 6 ratings: Vec<(RulesetId, RatingSummary)>
+field Rating 0 rating: f64
+field Rating 1 deviation: f64
+field RatingSummary 0 rating: Rating
+field RatingSummary 1 games: u32
+field RatingSummary 2 wins: u32
+field RatingSummary 3 draws: u32
+field RatingSummary 4 losses: u32
+variant Reply 0 Welcome {}
+field Reply::Welcome 0 proto: u16
+field Reply::Welcome 1 bota_wire: u64
+field Reply::Welcome 2 server: String
+variant Reply 1 LoggedIn {}
+field Reply::LoggedIn 0 me: AccountInfo
+field Reply::LoggedIn 1 session: SessionToken
+field Reply::LoggedIn 2 presence: Presence
+variant Reply 2 Done
+variant Reply 3 Account {}
+field Reply::Account 0 account: PublicAccount
+variant Reply 4 Rulesets {}
+field Reply::Rulesets 0 list: Vec<RulesetInfo>
+variant Reply 5 Queued {}
+field Reply::Queued 0 waiting: u32
+variant Reply 6 Lobby {}
+field Reply::Lobby 0 state: LobbyState
+variant Reply 7 Lobbies {}
+field Reply::Lobbies 0 list: Vec<LobbySummary>
+variant Reply 8 Handoff {}
+field Reply::Handoff 0 handoff: Handoff
+variant Reply 9 Matches {}
+field Reply::Matches 0 list: Vec<MatchResult>
+variant Reply 10 LadderPage {}
+field Reply::LadderPage 0 total: u32
+field Reply::LadderPage 1 rows: Vec<LadderRow>
+newtype RulesetId String
+field RulesetInfo 0 id: RulesetId
+field RulesetInfo 1 name: String
+field RulesetInfo 2 seats: u8
+field RulesetInfo 3 heroes: Vec<HeroId>
+field RulesetInfo 4 queue: bool
+field SeatInfo 0 slot: SlotId
+field SeatInfo 1 team: Team
+field SeatInfo 2 account: AccountId
+field SeatInfo 3 login: String
+field SeatInfo 4 nickname: String
+field SeatInfo 5 kind: AccountKind
+field SeatInfo 6 bot_version: Option<String>
+field SeatInfo 7 rating: Option<Rating>
+newtype SeatKey [u8; 32]
+field SeatResult 0 slot: SlotId
+field SeatResult 1 team: Team
+field SeatResult 2 account: AccountId
+field SeatResult 3 login: String
+field SeatResult 4 nickname: String
+field SeatResult 5 kind: AccountKind
+field SeatResult 6 hero: Option<HeroId>
+field SeatResult 7 before: Option<Rating>
+field SeatResult 8 after: Option<Rating>
+variant ServerMsg 0 Reply {}
+field ServerMsg::Reply 0 seq: u32
+field ServerMsg::Reply 1 reply: Reply
+variant ServerMsg 1 Refused {}
+field ServerMsg::Refused 0 seq: u32
+field ServerMsg::Refused 1 error: Error
+variant ServerMsg 2 Event(Event)
+newtype SessionToken [u8; 32]
+newtype SlotId u8
+field SlotStats 0 slot: SlotId
+field SlotStats 1 kills: u16
+field SlotStats 2 deaths: u16
+field SlotStats 3 assists: u16
+field SlotStats 4 last_hits: u16
+field SlotStats 5 denies: u16
+field SlotStats 6 net_worth: i32
+field SlotStats 7 hero_damage: i32
+field SlotStats 8 structure_damage: i32
+variant Team 0 Radiant
+variant Team 1 Dire
+variant Team 2 Neutral
+newtype UnixMs u64
+

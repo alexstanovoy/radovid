@@ -1,0 +1,42 @@
+[package]
+name = "radovid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Accounts, matchmaking, ratings and game-server orchestration for bota"
+
+[lib]
+name = "radovid"
+path = "src/lib.rs"
+
+[[bin]]
+name = "radovid"
+path = "src/main.rs"
+
+[dependencies]
+postcard = { workspace = true }
+bota_proto = { workspace = true }
+radovid_proto = { workspace = true }
+serde = { workspace = true }
+rustls = { workspace = true }
+tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process", "io-util", "signal"] }
+tokio-tungstenite = "0.30.0"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+argon2 = "0.6.0"
+sha2 = "0.11.1"
+toml = "1.1.8"
+clap = { version = "4.6.7", features = ["derive"] }
+rcgen = "0.14.10"
+futures-util = "0.3.34"
+getrandom = "0.4.3"
+socket2 = "0.6.5"
+
+[dev-dependencies]
+bota_server = { path = "../../../bota-radovid/crates/bota_server" }
+radovid_client = { workspace = true }
+bota_client_core = { workspace = true }
+bota_proto = { workspace = true }
+
+[lints]
+workspace = true
