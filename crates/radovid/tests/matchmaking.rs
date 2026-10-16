@@ -224,6 +224,16 @@ fn a_returning_player_replaces_its_old_connection_and_its_account_may_watch() {
         }
     }
 
+    // And again: each newer connection closes the one before it, and only the newest is served.
+    let (mut newest, _) = take_seat(&ha, HeroId::SHADOW_FIEND, &env.tls).expect("second reconnect");
+    loop {
+        match back.recv() {
+            Ok(None) | Err(_) => break,
+            Ok(Some(_)) => {}
+        }
+    }
+    assert!(newest.recv().expect("readable").is_some());
+
     // The same account, on another session, learns where it is and watches through its seat.
     let mut second_session = env.connect();
     let logged = second_session

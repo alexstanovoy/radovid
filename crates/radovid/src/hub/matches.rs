@@ -37,17 +37,17 @@ pub(super) struct MatchState {
 
 pub(super) struct Route {
     pub addr: SocketAddr,
-    pub players: usize,
+    /// Closes the player connection that holds the seat, when another takes it.
+    pub player: Option<oneshot::Sender<()>>,
     pub spectators: usize,
 }
 
 /// Where a game connection is to be bridged.
 pub struct GameRoute {
     pub addr: SocketAddr,
+    /// Fires when a newer player connection takes the same seat.
+    pub replaced: Option<oneshot::Receiver<()>>,
 }
-
-/// Player connections per key: the holder and the one replacing it.
-const MAX_PLAYER_CONNECTIONS: usize = 2;
 
 impl Hub {
     /// Registers a match with its seats and starts a task to run it. The
@@ -196,7 +196,7 @@ impl Hub {
                 seat.key.0,
                 Route {
                     addr,
-                    players: 0,
+                    player: None,
                     spectators: 0,
                 },
             );
@@ -258,28 +258,34 @@ impl Hub {
         })
     }
 
+    /// A player connection replaces the one before it: that one is told to
+    /// close. Spectators are counted.
     pub(super) fn route(&mut self, key: &SeatKey, spectator: bool) -> Option<GameRoute> {
         let route = self.routes.get_mut(&key.0)?;
-        let (count, most) = if spectator {
-            (&mut route.spectators, MAX_SPECTATORS_PER_KEY)
-        } else {
-            (&mut route.players, MAX_PLAYER_CONNECTIONS)
-        };
-        if *count >= most {
-            return None;
+        if spectator {
+            if route.spectators >= MAX_SPECTATORS_PER_KEY {
+                return None;
+            }
+            route.spectators += 1;
+            return Some(GameRoute {
+                addr: route.addr,
+                replaced: None,
+            });
         }
-        *count += 1;
-        Some(GameRoute { addr: route.addr })
+        if let Some(old) = route.player.take() {
+            let _ = old.send(());
+        }
+        let (tx, rx) = oneshot::channel();
+        route.player = Some(tx);
+        Some(GameRoute {
+            addr: route.addr,
+            replaced: Some(rx),
+        })
     }
 
     pub(super) fn release_route(&mut self, key: &SeatKey, spectator: bool) {
-        if let Some(route) = self.routes.get_mut(&key.0) {
-            let count = if spectator {
-                &mut route.spectators
-            } else {
-                &mut route.players
-            };
-            *count = count.saturating_sub(1);
+        if spectator && let Some(route) = self.routes.get_mut(&key.0) {
+            route.spectators = route.spectators.saturating_sub(1);
         }
     }
 
