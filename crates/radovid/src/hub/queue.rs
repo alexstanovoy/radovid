@@ -8,7 +8,12 @@ use radovid_proto::*;
 use super::{Hub, Where, internal};
 
 impl Hub {
-    pub(super) async fn queue_join(&mut self, id: AccountId, wire: u64, ruleset: RulesetId) -> Result<Reply, Error> {
+    pub(super) async fn queue_join(
+        &mut self,
+        id: AccountId,
+        wire: u64,
+        ruleset: RulesetId,
+    ) -> Result<Reply, Error> {
         let config = self.config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?;
         if !config.queue {
             return Err(Error::NoQueue);
@@ -22,7 +27,10 @@ impl Hub {
             queue.len() as u32
         };
         if let Some(account) = self.accounts.get_mut(&id) {
-            account.at = Where::Queued { ruleset: ruleset.clone(), since: Instant::now() };
+            account.at = Where::Queued {
+                ruleset: ruleset.clone(),
+                since: Instant::now(),
+            };
         }
         self.pair(&ruleset, seats).await;
         Ok(Reply::Queued { waiting })
@@ -54,14 +62,20 @@ impl Hub {
             if queue.len() < seats {
                 return;
             }
-            let members: Vec<AccountId> = queue.drain(..seats).map(|(account, _)| account).collect();
+            let members: Vec<AccountId> =
+                queue.drain(..seats).map(|(account, _)| account).collect();
             if let Err(error) = self.create_match(ruleset.clone(), true, &members).await {
                 eprintln!("radovid: cannot form a match: {error}");
                 for account in members {
                     if let Some(a) = self.accounts.get_mut(&account) {
                         a.at = Where::Idle;
                     }
-                    self.notify(account, Event::Bye { error: internal("match creation") });
+                    self.notify(
+                        account,
+                        Event::Bye {
+                            error: internal("match creation"),
+                        },
+                    );
                 }
             }
         }

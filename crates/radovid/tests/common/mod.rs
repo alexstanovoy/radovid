@@ -40,9 +40,17 @@ impl Env {
     /// A registered, logged-in account.
     pub fn account(&self, login: &str, kind: AccountKind) -> Account {
         let mut client = self.connect();
-        let info = ClientInfo { bot_version: (kind == AccountKind::Bot).then(|| "test-1".to_owned()) };
-        let logged = client.register(login, PASSWORD, kind, info).expect("register");
-        Account { client, me: logged.me, token: logged.session }
+        let info = ClientInfo {
+            bot_version: (kind == AccountKind::Bot).then(|| "test-1".to_owned()),
+        };
+        let logged = client
+            .register(login, PASSWORD, kind, info)
+            .expect("register");
+        Account {
+            client,
+            me: logged.me,
+            token: logged.session,
+        }
     }
 
     pub fn bot(&self, login: &str) -> Account {
@@ -89,12 +97,20 @@ pub fn ruleset(id: &str, queue: bool, bota_args: &[&str]) -> RulesetConfig {
 /// The scripted game server built beside the tests.
 pub fn fake_game_server() -> PathBuf {
     let exe = std::env::current_exe().expect("test executable");
-    let target = exe.parent().and_then(|deps| deps.parent()).expect("target dir");
+    let target = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("target dir");
     target.join("examples").join("fake_bota_server")
 }
 
 pub fn start(rulesets: Vec<RulesetConfig>) -> Env {
-    start_with(BackendConfig::Local { bota_server: fake_game_server() }, rulesets)
+    start_with(
+        BackendConfig::Local {
+            bota_server: fake_game_server(),
+        },
+        rulesets,
+    )
 }
 
 pub fn start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Env {
@@ -103,9 +119,14 @@ pub fn start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Env {
     } else {
         std::env::temp_dir()
     };
-    let dir = base.join(format!("radovid-test-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let dir = base.join(format!(
+        "radovid-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&dir).expect("test dir");
-    let identity = tls::self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()]).expect("certificate");
+    let identity = tls::self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()])
+        .expect("certificate");
     let config = Config {
         listen: "127.0.0.1:0".parse().expect("address"),
         database: dir.join("radovid.db"),
@@ -114,7 +135,11 @@ pub fn start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Env {
         public_game_url: "wss://127.0.0.1:{port}/game".to_owned(),
         max_matches: 8,
         server_name: "radovid-test".to_owned(),
-        password: PasswordCost { memory_kib: 1024, iterations: 1 },
+        game_messages_per_sec: 1_000_000,
+        password: PasswordCost {
+            memory_kib: 1024,
+            iterations: 1,
+        },
         backend,
         rulesets,
     };
@@ -123,7 +148,9 @@ pub fn start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Env {
         .enable_all()
         .build()
         .expect("runtime");
-    let service = runtime.block_on(Service::start(config, &identity)).expect("service");
+    let service = runtime
+        .block_on(Service::start(config, &identity))
+        .expect("service");
     Env {
         url: format!("wss://127.0.0.1:{}", service.addr.port()),
         tls: TlsConfig::trust_pem(&identity.cert_pem).expect("trust"),
@@ -207,13 +234,24 @@ pub fn winner_of(link: &mut GameLink) -> Option<Team> {
 /// waiting one first.
 pub fn pair_up(first: &mut Account, second: &mut Account, ruleset: &str) -> (Handoff, Handoff) {
     let ruleset = RulesetId(ruleset.to_owned());
-    assert_eq!(first.ask(ClientMsg::QueueJoin { ruleset: ruleset.clone() }), Ok(Reply::Queued { waiting: 1 }));
-    assert_eq!(second.ask(ClientMsg::QueueJoin { ruleset }), Ok(Reply::Queued { waiting: 2 }));
+    assert_eq!(
+        first.ask(ClientMsg::QueueJoin {
+            ruleset: ruleset.clone()
+        }),
+        Ok(Reply::Queued { waiting: 1 })
+    );
+    assert_eq!(
+        second.ask(ClientMsg::QueueJoin { ruleset }),
+        Ok(Reply::Queued { waiting: 2 })
+    );
     (first.wait_match_found(), second.wait_match_found())
 }
 
 /// Where an account is, as a fresh login tells.
 pub fn presence_of(env: &Env, login: &str) -> Presence {
     let mut client = env.connect();
-    client.login(login, PASSWORD, ClientInfo::default()).expect("login").presence
+    client
+        .login(login, PASSWORD, ClientInfo::default())
+        .expect("login")
+        .presence
 }

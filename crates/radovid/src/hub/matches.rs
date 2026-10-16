@@ -59,7 +59,11 @@ impl Hub {
         rated: bool,
         members: &[AccountId],
     ) -> Result<MatchId, Error> {
-        let config = self.config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?.clone();
+        let config = self
+            .config
+            .ruleset(&ruleset)
+            .ok_or(Error::UnknownRuleset)?
+            .clone();
         let seats: Vec<NewSeat> = members
             .iter()
             .enumerate()
@@ -69,7 +73,11 @@ impl Hub {
                 team: Self::team_of_slot(slot as u8),
             })
             .collect();
-        let match_id = self.db.create_match(ruleset.clone(), rated, seats).await.map_err(internal)?;
+        let match_id = self
+            .db
+            .create_match(ruleset.clone(), rated, seats)
+            .await
+            .map_err(internal)?;
         let mut keyed = Vec::new();
         for (slot, account) in members.iter().enumerate() {
             keyed.push(SeatState {
@@ -82,7 +90,11 @@ impl Hub {
         let names = self.seat_names(members);
         let spec = MatchSpec {
             match_id,
-            seats: keyed.iter().zip(names).map(|(seat, name)| (seat.key, name)).collect(),
+            seats: keyed
+                .iter()
+                .zip(names)
+                .map(|(seat, name)| (seat.key, name))
+                .collect(),
             referee_key: random_key().map_err(internal)?,
             rules_args: config.bota_args.clone(),
             start_after_secs: config.start_after_secs,
@@ -132,9 +144,9 @@ impl Hub {
         let infos: Vec<(&str, &str)> = members
             .iter()
             .map(|m| {
-                self.accounts
-                    .get(m)
-                    .map_or(("", ""), |a| (a.info.nickname.as_str(), a.info.login.as_str()))
+                self.accounts.get(m).map_or(("", ""), |a| {
+                    (a.info.nickname.as_str(), a.info.login.as_str())
+                })
             })
             .collect();
         infos
@@ -173,12 +185,21 @@ impl Hub {
         let Some(state) = self.matches.get_mut(&match_id) else {
             return;
         };
-        let (Some(addr), true, true, false) = (state.addr, state.up, state.released, state.announced) else {
+        let (Some(addr), true, true, false) =
+            (state.addr, state.up, state.released, state.announced)
+        else {
             return;
         };
         state.announced = true;
         for seat in &state.seats {
-            self.routes.insert(seat.key.0, Route { addr, players: 0, spectators: 0 });
+            self.routes.insert(
+                seat.key.0,
+                Route {
+                    addr,
+                    players: 0,
+                    spectators: 0,
+                },
+            );
         }
         let accounts: Vec<AccountId> = state.seats.iter().map(|s| s.account).collect();
         for account in accounts {
@@ -207,7 +228,9 @@ impl Hub {
             login: account.map(|a| a.info.login.clone()).unwrap_or_default(),
             nickname: account.map(|a| a.info.nickname.clone()).unwrap_or_default(),
             kind,
-            bot_version: account.and_then(|a| a.bot_version.clone()).filter(|_| kind == AccountKind::Bot),
+            bot_version: account
+                .and_then(|a| a.bot_version.clone())
+                .filter(|_| kind == AccountKind::Bot),
             rating: state.ratings.get(&seat.account).copied(),
         }
     }
@@ -226,7 +249,11 @@ impl Hub {
             seat_key: mine.key,
             slot: SlotId(mine.slot),
             team: Self::team_of_slot(mine.slot),
-            seats: state.seats.iter().map(|s| self.seat_info(state, s)).collect(),
+            seats: state
+                .seats
+                .iter()
+                .map(|s| self.seat_info(state, s))
+                .collect(),
             bota_wire: bota_proto::WIRE_FINGERPRINT,
         })
     }
@@ -247,7 +274,11 @@ impl Hub {
 
     pub(super) fn release_route(&mut self, key: &SeatKey, spectator: bool) {
         if let Some(route) = self.routes.get_mut(&key.0) {
-            let count = if spectator { &mut route.spectators } else { &mut route.players };
+            let count = if spectator {
+                &mut route.spectators
+            } else {
+                &mut route.players
+            };
             *count = count.saturating_sub(1);
         }
     }
@@ -266,7 +297,11 @@ impl Hub {
                     Team::Dire => Outcome::Dire,
                     Team::Neutral => Outcome::Draw,
                 };
-                let reason = if outcome == Outcome::Draw { EndReason::TimeCap } else { EndReason::Decided };
+                let reason = if outcome == Outcome::Draw {
+                    EndReason::TimeCap
+                } else {
+                    EndReason::Decided
+                };
                 (outcome, reason, stats.duration, Some(stats))
             }
             End::Crashed(why) => {
@@ -288,7 +323,11 @@ impl Hub {
             reason,
             duration_ticks: duration,
             stats: stats.clone(),
-            heroes: state.seats.iter().map(|s| (SlotId(s.slot), s.hero)).collect(),
+            heroes: state
+                .seats
+                .iter()
+                .map(|s| (SlotId(s.slot), s.hero))
+                .collect(),
             changes: changes.clone(),
             finished_at,
         };
@@ -326,7 +365,12 @@ impl Hub {
         };
         for seat in &state.seats {
             self.release_seat(seat.account, match_id);
-            self.notify(seat.account, Event::MatchResult { result: result.clone() });
+            self.notify(
+                seat.account,
+                Event::MatchResult {
+                    result: result.clone(),
+                },
+            );
             self.forget_if_idle(seat.account);
         }
     }
@@ -341,7 +385,12 @@ impl Hub {
                     a.at = Where::Idle;
                 }
             }
-            Some(Where::InLobby(lobby)) if self.lobbies.get(&lobby).is_some_and(|l| l.match_id == Some(match_id)) => {
+            Some(Where::InLobby(lobby))
+                if self
+                    .lobbies
+                    .get(&lobby)
+                    .is_some_and(|l| l.match_id == Some(match_id)) =>
+            {
                 if let Some(l) = self.lobbies.remove(&lobby) {
                     for member in l.members {
                         if let Some(a) = self.accounts.get_mut(&member.account) {

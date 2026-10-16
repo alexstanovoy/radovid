@@ -66,7 +66,9 @@ impl Passwords {
             return false;
         };
         let matched = tokio::task::spawn_blocking(move || {
-            Argon2::default().verify_password(password.as_bytes(), stored.as_str()).is_ok()
+            Argon2::default()
+                .verify_password(password.as_bytes(), stored.as_str())
+                .is_ok()
         })
         .await
         .unwrap_or(false);
@@ -75,7 +77,8 @@ impl Passwords {
 }
 
 fn hasher(cost: PasswordCost) -> Result<Argon2<'static>, String> {
-    let params = Params::new(cost.memory_kib, cost.iterations, 1, None).map_err(|e| e.to_string())?;
+    let params =
+        Params::new(cost.memory_kib, cost.iterations, 1, None).map_err(|e| e.to_string())?;
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 

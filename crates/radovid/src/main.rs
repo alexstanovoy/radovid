@@ -70,7 +70,10 @@ fn run(args: Args) -> Result<(), String> {
             let config = Config::load(&config)?;
             runtime()?.block_on(async {
                 let db = Db::open(&config.database).map_err(|e| e.to_string())?;
-                let granted = db.grant_admin(login.to_ascii_lowercase()).await.map_err(|e| e.to_string())?;
+                let granted = db
+                    .grant_admin(login.to_ascii_lowercase())
+                    .await
+                    .map_err(|e| e.to_string())?;
                 if granted {
                     Ok(())
                 } else {

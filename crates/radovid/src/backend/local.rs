@@ -32,8 +32,14 @@ impl LocalBackend {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
-        let stdout = child.stdout.take().ok_or_else(|| std::io::Error::other("no stdout"))?;
-        let stderr = child.stderr.take().ok_or_else(|| std::io::Error::other("no stderr"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("no stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| std::io::Error::other("no stderr"))?;
         let id = spec.match_id.0;
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
@@ -44,11 +50,17 @@ impl LocalBackend {
         let mut lines = BufReader::new(stdout).lines();
         let port = tokio::time::timeout(STARTUP, async {
             while let Some(line) = lines.next_line().await? {
-                if let Some(port) = line.rsplit(':').next().filter(|_| line.contains("listening on")) {
+                if let Some(port) = line
+                    .rsplit(':')
+                    .next()
+                    .filter(|_| line.contains("listening on"))
+                {
                     return port.trim().parse::<u16>().map_err(std::io::Error::other);
                 }
             }
-            Err(std::io::Error::other("the game server exited before listening"))
+            Err(std::io::Error::other(
+                "the game server exited before listening",
+            ))
         })
         .await
         .map_err(|_| std::io::Error::other("the game server never reported its port"))??;

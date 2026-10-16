@@ -62,13 +62,20 @@ pub struct Unauthenticated {
 
 impl Unauthenticated {
     fn take(shared: &Arc<Shared>, ip: IpAddr) -> Option<Unauthenticated> {
-        let mut map = shared.unauthenticated.lock().unwrap_or_else(|p| p.into_inner());
+        let mut map = shared
+            .unauthenticated
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let count = map.entry(ip).or_insert(0);
         if *count >= MAX_UNAUTHENTICATED_PER_IP {
             return None;
         }
         *count += 1;
-        Some(Unauthenticated { shared: Arc::clone(shared), ip, held: true })
+        Some(Unauthenticated {
+            shared: Arc::clone(shared),
+            ip,
+            held: true,
+        })
     }
 
     /// The connection authenticated: its place is free for the next one.
@@ -88,7 +95,10 @@ impl Drop for Unauthenticated {
 
 impl Shared {
     fn release_unauthenticated(&self, ip: IpAddr) {
-        let mut map = self.unauthenticated.lock().unwrap_or_else(|p| p.into_inner());
+        let mut map = self
+            .unauthenticated
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         if let Some(count) = map.get_mut(&ip) {
             *count -= 1;
             if *count == 0 {
@@ -99,7 +109,12 @@ impl Shared {
 }
 
 /// Accepts connections until `stop` says so.
-pub async fn serve(listener: TcpListener, acceptor: TlsAcceptor, shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
+pub async fn serve(
+    listener: TcpListener,
+    acceptor: TlsAcceptor,
+    shared: Arc<Shared>,
+    mut stop: watch::Receiver<bool>,
+) {
     loop {
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
@@ -120,13 +135,20 @@ pub async fn serve(listener: TcpListener, acceptor: TlsAcceptor, shared: Arc<Sha
     }
 }
 
-async fn handle(stream: TcpStream, peer: SocketAddr, acceptor: TlsAcceptor, shared: Arc<Shared>, guard: Unauthenticated) {
+async fn handle(
+    stream: TcpStream,
+    peer: SocketAddr,
+    acceptor: TlsAcceptor,
+    shared: Arc<Shared>,
+    guard: Unauthenticated,
+) {
     let _ = stream.set_nodelay(true);
     let deadline = Duration::from_secs(HANDSHAKE_SECS);
     let Ok(Ok(tls)) = tokio::time::timeout(deadline, acceptor.accept(stream)).await else {
         return;
     };
     let mut path = String::new();
+    #[allow(clippy::result_large_err)] // the type tungstenite's callback fixes
     let callback = |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
         path = request.uri().path().to_owned();
         if path == "/control" || path == "/game" {

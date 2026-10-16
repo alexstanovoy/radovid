@@ -9,8 +9,8 @@ use std::thread;
 use std::time::Duration;
 
 use bota_proto::{
-    ClientMsg, FrameReader, HeroId, MapId, MatchInfo, MatchStats, PlayerId, Role, SeatKey, ServerMsg, SlotId,
-    SlotStats, Team, TickMode, Vec2, encode_frame_to_vec,
+    ClientMsg, FrameReader, HeroId, MapId, MatchInfo, MatchStats, PlayerId, Role, SeatKey,
+    ServerMsg, SlotId, SlotStats, Team, TickMode, Vec2, encode_frame_to_vec,
 };
 
 struct Seat {
@@ -33,7 +33,8 @@ struct State {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let (mut port, mut outcome, mut after_ms, mut match_id) = (0u16, "draw".to_owned(), 300u64, 0u64);
+    let (mut port, mut outcome, mut after_ms, mut match_id) =
+        (0u16, "draw".to_owned(), 300u64, 0u64);
     while let Some(arg) = args.next() {
         let mut value = || args.next().unwrap_or_default();
         match arg.as_str() {
@@ -66,7 +67,10 @@ fn main() {
         match_id,
     }));
     let listener = TcpListener::bind(("127.0.0.1", port)).expect("bind");
-    println!("bota_server listening on {}", listener.local_addr().expect("addr"));
+    println!(
+        "bota_server listening on {}",
+        listener.local_addr().expect("addr")
+    );
     for stream in listener.incoming().flatten() {
         let state = Arc::clone(&state);
         thread::spawn(move || connection(stream, state));
@@ -116,7 +120,10 @@ fn connection(stream: TcpStream, state: Arc<Mutex<State>>) {
         if let Some(i) = slot {
             st.seats[i].conn = None;
         }
-        let left = ServerMsg::ParticipantLeft { player_id: id, slot: slot.map(|i| SlotId(i as u8)) };
+        let left = ServerMsg::ParticipantLeft {
+            player_id: id,
+            slot: slot.map(|i| SlotId(i as u8)),
+        };
         for (_, s) in everyone(&st) {
             send(&s, &left);
         }
@@ -124,14 +131,30 @@ fn connection(stream: TcpStream, state: Arc<Mutex<State>>) {
 }
 
 fn everyone(st: &State) -> Vec<(PlayerId, Arc<TcpStream>)> {
-    st.seats.iter().filter_map(|s| s.conn.clone()).chain(st.others.iter().cloned()).collect()
+    st.seats
+        .iter()
+        .filter_map(|s| s.conn.clone())
+        .chain(st.others.iter().cloned())
+        .collect()
 }
 
 /// One message; false ends the connection.
-fn handle(stream: &Arc<TcpStream>, state: &Arc<Mutex<State>>, me: &mut Option<(PlayerId, Option<usize>)>, msg: ClientMsg) -> bool {
+fn handle(
+    stream: &Arc<TcpStream>,
+    state: &Arc<Mutex<State>>,
+    me: &mut Option<(PlayerId, Option<usize>)>,
+    msg: ClientMsg,
+) -> bool {
     let mut st = state.lock().expect("state");
     match (&*me, msg) {
-        (None, ClientMsg::Hello { role, key: Some(key), .. }) => {
+        (
+            None,
+            ClientMsg::Hello {
+                role,
+                key: Some(key),
+                ..
+            },
+        ) => {
             let id = PlayerId(st.next_player);
             st.next_player += 1;
             let seat = st.seats.iter().position(|s| s.key == key);
@@ -155,7 +178,15 @@ fn handle(stream: &Arc<TcpStream>, state: &Arc<Mutex<State>>, me: &mut Option<(P
                 _ => return false,
             };
             *me = Some((id, seat_index));
-            send(stream, &ServerMsg::Welcome { player_id: id, slot, tick_rate: 30, mode: TickMode::Realtime });
+            send(
+                stream,
+                &ServerMsg::Welcome {
+                    player_id: id,
+                    slot,
+                    tick_rate: 30,
+                    mode: TickMode::Realtime,
+                },
+            );
             if st.started {
                 send(stream, &ServerMsg::MatchStart { info: info(&st) });
             }
@@ -192,7 +223,11 @@ fn info(st: &State) -> MatchInfo {
             .enumerate()
             .map(|(i, s)| bota_proto::Pick {
                 slot: SlotId(i as u8),
-                team: if i % 2 == 0 { Team::Radiant } else { Team::Dire },
+                team: if i % 2 == 0 {
+                    Team::Radiant
+                } else {
+                    Team::Dire
+                },
                 hero: s.hero.unwrap_or(HeroId::SHADOW_FIEND),
             })
             .collect(),

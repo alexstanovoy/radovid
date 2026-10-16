@@ -40,18 +40,34 @@ pub enum Cmd {
         reply: oneshot::Sender<Result<Reply, Error>>,
     },
     /// A control connection closed.
-    Detach { session: SessionId },
+    Detach {
+        session: SessionId,
+    },
     /// A game connection wants the container behind its key.
     GameRoute {
         key: SeatKey,
         spectator: bool,
         reply: oneshot::Sender<Option<GameRoute>>,
     },
-    GameClosed { key: SeatKey, spectator: bool },
-    MatchUp { match_id: MatchId, addr: SocketAddr },
-    MatchStarted { match_id: MatchId, picks: Vec<(SlotId, HeroId)> },
-    MatchEnded { match_id: MatchId, end: End },
-    CountdownDone { lobby: LobbyId },
+    GameClosed {
+        key: SeatKey,
+        spectator: bool,
+    },
+    MatchUp {
+        match_id: MatchId,
+        addr: SocketAddr,
+    },
+    MatchStarted {
+        match_id: MatchId,
+        picks: Vec<(SlotId, HeroId)>,
+    },
+    MatchEnded {
+        match_id: MatchId,
+        end: End,
+    },
+    CountdownDone {
+        lobby: LobbyId,
+    },
     /// Stop the service: every running match is stopped.
     Shutdown,
 }
@@ -114,7 +130,11 @@ pub struct Hub {
 }
 
 /// Starts the hub task.
-pub fn spawn(config: Arc<Config>, db: Db, backend: Arc<dyn Backend>) -> (HubHandle, tokio::task::JoinHandle<()>) {
+pub fn spawn(
+    config: Arc<Config>,
+    db: Db,
+    backend: Arc<dyn Backend>,
+) -> (HubHandle, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel(1024);
     let mut hub = Hub {
         slots: Arc::new(Semaphore::new(config.max_matches)),
@@ -137,7 +157,8 @@ pub fn spawn(config: Arc<Config>, db: Db, backend: Arc<dyn Backend>) -> (HubHand
                 hub.shutdown();
                 // The matches report their ends; serve until they have.
                 while !hub.matches.is_empty() {
-                    match tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv()).await {
+                    match tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv()).await
+                    {
                         Ok(Some(cmd)) => hub.handle(cmd).await,
                         _ => break,
                     }
@@ -154,12 +175,20 @@ impl Hub {
     async fn handle(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Attach(attach) => self.attach(*attach),
-            Cmd::Request { session, msg, reply } => {
+            Cmd::Request {
+                session,
+                msg,
+                reply,
+            } => {
                 let result = self.request(session, msg).await;
                 let _ = reply.send(result);
             }
             Cmd::Detach { session } => self.detach(session),
-            Cmd::GameRoute { key, spectator, reply } => {
+            Cmd::GameRoute {
+                key,
+                spectator,
+                reply,
+            } => {
                 let _ = reply.send(self.route(&key, spectator));
             }
             Cmd::GameClosed { key, spectator } => self.release_route(&key, spectator),
@@ -172,7 +201,12 @@ impl Hub {
     }
 
     fn attach(&mut self, attach: Attach) {
-        let Attach { account, bota_wire, events, reply } = attach;
+        let Attach {
+            account,
+            bota_wire,
+            events,
+            reply,
+        } = attach;
         let id = account.id;
         let existing = self.accounts.get(&id).map_or(0, |a| a.sessions.len());
         if existing >= MAX_SESSIONS_PER_ACCOUNT {
@@ -181,7 +215,14 @@ impl Hub {
         }
         let session = self.next_session;
         self.next_session += 1;
-        self.sessions.insert(session, Session { account: id, events, bota_wire });
+        self.sessions.insert(
+            session,
+            Session {
+                account: id,
+                events,
+                bota_wire,
+            },
+        );
         let entry = self.accounts.entry(id).or_insert_with(|| Account {
             info: account.info(),
             bot_version: None,
@@ -216,7 +257,10 @@ impl Hub {
         match self.accounts.get(&id).map(|a| a.at.clone()) {
             Some(Where::Queued { ruleset, .. }) => self.leave_queue(id, &ruleset),
             Some(Where::InLobby(lobby)) => {
-                let counting = self.lobbies.get(&lobby).is_some_and(|l| l.starting.is_some());
+                let counting = self
+                    .lobbies
+                    .get(&lobby)
+                    .is_some_and(|l| l.starting.is_some());
                 if !counting {
                     self.leave_lobby(id, lobby);
                 }
@@ -244,7 +288,9 @@ impl Hub {
                 for_ms: since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
             },
             Some(Where::InLobby(lobby)) => Presence::InLobby { lobby: *lobby },
-            Some(Where::InMatch(match_id)) => Presence::InMatch { match_id: *match_id },
+            Some(Where::InMatch(match_id)) => Presence::InMatch {
+                match_id: *match_id,
+            },
         }
     }
 
@@ -277,10 +323,16 @@ impl Hub {
 
     /// Closes every session of an account after telling it why.
     fn bye(&mut self, id: AccountId, error: Error) {
-        let sessions = self.accounts.get(&id).map(|a| a.sessions.clone()).unwrap_or_default();
+        let sessions = self
+            .accounts
+            .get(&id)
+            .map(|a| a.sessions.clone())
+            .unwrap_or_default();
         for session in sessions {
             if let Some(s) = self.sessions.get(&session) {
-                let _ = s.events.try_send(ServerMsg::Event(Event::Bye { error: error.clone() }));
+                let _ = s.events.try_send(ServerMsg::Event(Event::Bye {
+                    error: error.clone(),
+                }));
             }
             self.detach(session);
         }
@@ -305,22 +357,38 @@ impl Hub {
             }),
             ClientMsg::QueueJoin { ruleset } => self.queue_join(id, wire, ruleset).await,
             ClientMsg::QueueLeave => self.queue_leave(id),
-            ClientMsg::LobbyCreate { ruleset, name, audience } => {
-                self.lobby_create(id, wire, ruleset, name, audience).await
-            }
+            ClientMsg::LobbyCreate {
+                ruleset,
+                name,
+                audience,
+            } => self.lobby_create(id, wire, ruleset, name, audience).await,
             ClientMsg::LobbyList => Ok(self.lobby_list()),
             ClientMsg::LobbyAsk { lobby } => self.lobby_ask(id, wire, lobby),
             ClientMsg::LobbyAskCancel => self.lobby_ask_cancel(id),
-            ClientMsg::LobbyDecide { account, allow } => self.lobby_decide(id, account, allow).await,
+            ClientMsg::LobbyDecide { account, allow } => {
+                self.lobby_decide(id, account, allow).await
+            }
             ClientMsg::LobbyKick { account } => self.lobby_kick(id, account),
             ClientMsg::LobbyReady { ready } => self.lobby_ready(id, ready).await,
             ClientMsg::LobbyLeave => self.lobby_leave(id),
             ClientMsg::MatchHandoff => self.match_handoff(id),
-            ClientMsg::RecentMatches { account, limit } => self.recent_matches(account, limit).await,
-            ClientMsg::Ladder { ruleset, offset, limit } => self.ladder(ruleset, offset, limit).await,
-            ClientMsg::AdminBan { account, reason, until } => self.admin_ban(id, account, reason, until).await,
+            ClientMsg::RecentMatches { account, limit } => {
+                self.recent_matches(account, limit).await
+            }
+            ClientMsg::Ladder {
+                ruleset,
+                offset,
+                limit,
+            } => self.ladder(ruleset, offset, limit).await,
+            ClientMsg::AdminBan {
+                account,
+                reason,
+                until,
+            } => self.admin_ban(id, account, reason, until).await,
             ClientMsg::AdminUnban { account } => self.admin_unban(id, account).await,
-            ClientMsg::AdminSetKind { account, kind } => self.admin_set_kind(id, account, kind).await,
+            ClientMsg::AdminSetKind { account, kind } => {
+                self.admin_set_kind(id, account, kind).await
+            }
             ClientMsg::AdminStopMatch { match_id } => self.admin_stop(id, match_id),
         }
     }
@@ -329,7 +397,10 @@ impl Hub {
         if !valid_nickname(&nickname) {
             return Err(Error::BadNickname);
         }
-        self.db.set_nickname(id, nickname.clone()).await.map_err(internal)?;
+        self.db
+            .set_nickname(id, nickname.clone())
+            .await
+            .map_err(internal)?;
         if let Some(account) = self.accounts.get_mut(&id) {
             account.info.nickname = nickname;
         }
@@ -349,7 +420,11 @@ impl Hub {
     }
 
     pub(crate) fn team_of_slot(slot: u8) -> Team {
-        if slot % 2 == 0 { Team::Radiant } else { Team::Dire }
+        if slot.is_multiple_of(2) {
+            Team::Radiant
+        } else {
+            Team::Dire
+        }
     }
 }
 

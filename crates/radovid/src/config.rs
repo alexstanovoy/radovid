@@ -26,11 +26,19 @@ pub struct Config {
     /// What the server calls itself in `Welcome`.
     #[serde(default = "default_server_name")]
     pub server_name: String,
+    /// Messages per second one game connection may send (a realtime client
+    /// sends tens; a lockstep one, used in tests, an acknowledgement per tick).
+    #[serde(default = "default_game_rate")]
+    pub game_messages_per_sec: u32,
     #[serde(default)]
     pub password: PasswordCost,
     pub backend: BackendConfig,
     #[serde(rename = "ruleset")]
     pub rulesets: Vec<RulesetConfig>,
+}
+
+fn default_game_rate() -> u32 {
+    2000
 }
 
 fn default_max_matches() -> usize {
@@ -120,7 +128,8 @@ impl Config {
     pub fn load(path: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let config: Config = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let config: Config =
+            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         config.validate()?;
         Ok(config)
     }
@@ -134,19 +143,31 @@ impl Config {
         }
         for (i, ruleset) in self.rulesets.iter().enumerate() {
             if !valid_ruleset_id(&ruleset.id) {
-                return Err(format!("ruleset id {:?} is not [a-z0-9_] of 1 to 32 bytes", ruleset.id));
+                return Err(format!(
+                    "ruleset id {:?} is not [a-z0-9_] of 1 to 32 bytes",
+                    ruleset.id
+                ));
             }
             if self.rulesets[..i].iter().any(|r| r.id == ruleset.id) {
                 return Err(format!("ruleset {} is configured twice", ruleset.id));
             }
             if ruleset.seats < 2 || ruleset.seats % 2 != 0 || ruleset.seats > 10 {
-                return Err(format!("ruleset {} needs an even number of seats from 2 to 10", ruleset.id));
+                return Err(format!(
+                    "ruleset {} needs an even number of seats from 2 to 10",
+                    ruleset.id
+                ));
             }
             if ruleset.queue && ruleset.seats != 2 {
-                return Err(format!("ruleset {}: a queue pairs two accounts", ruleset.id));
+                return Err(format!(
+                    "ruleset {}: a queue pairs two accounts",
+                    ruleset.id
+                ));
             }
             if ruleset.name.is_empty() || ruleset.name.len() > 64 {
-                return Err(format!("ruleset {} needs a name of 1 to 64 bytes", ruleset.id));
+                return Err(format!(
+                    "ruleset {} needs a name of 1 to 64 bytes",
+                    ruleset.id
+                ));
             }
         }
         Ok(())

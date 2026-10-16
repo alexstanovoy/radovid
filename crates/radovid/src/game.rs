@@ -21,9 +21,6 @@ use crate::throttle::TokenBucket;
 
 /// Seconds to reach the game server.
 const CONNECT_SECS: u64 = 5;
-/// Messages per second a game connection may send: orders are at most one per tick.
-const MESSAGES_PER_SEC_GAME: u32 = 300;
-const MESSAGE_BURST_GAME: u32 = 600;
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub async fn run(ws: Socket, _ip: IpAddr, shared: Arc<Shared>, mut guard: Unauthenticated) {
@@ -38,13 +35,21 @@ pub async fn run(ws: Socket, _ip: IpAddr, shared: Arc<Shared>, mut guard: Unauth
         }
     })
     .await;
-    let denied = CloseFrame { code: CloseCode::Policy, reason: "".into() };
+    let denied = CloseFrame {
+        code: CloseCode::Policy,
+        reason: "".into(),
+    };
     let Ok(Some(first)) = first else {
         let _ = sink.send(Message::Close(Some(denied))).await;
         return;
     };
     let hello = whole_frame(&first).and_then(|payload| decode_payload::<ClientMsg>(payload).ok());
-    let Some(ClientMsg::Hello { role, key: Some(key), .. }) = hello else {
+    let Some(ClientMsg::Hello {
+        role,
+        key: Some(key),
+        ..
+    }) = hello
+    else {
         let _ = sink.send(Message::Close(Some(denied))).await;
         return;
     };
@@ -57,17 +62,38 @@ pub async fn run(ws: Socket, _ip: IpAddr, shared: Arc<Shared>, mut guard: Unauth
         }
     };
     let (reply, answer) = oneshot::channel();
-    if shared.hub.tx.send(Cmd::GameRoute { key, spectator, reply }).await.is_err() {
+    if shared
+        .hub
+        .tx
+        .send(Cmd::GameRoute {
+            key,
+            spectator,
+            reply,
+        })
+        .await
+        .is_err()
+    {
         return;
     }
     let Ok(Some(route)) = answer.await else {
         let _ = sink.send(Message::Close(Some(denied))).await;
         return;
     };
-    let tcp = tokio::time::timeout(Duration::from_secs(CONNECT_SECS), TcpStream::connect(route.addr)).await;
+    let tcp = tokio::time::timeout(
+        Duration::from_secs(CONNECT_SECS),
+        TcpStream::connect(route.addr),
+    )
+    .await;
     if let Ok(Ok(tcp)) = tcp {
         guard.release();
-        let _ = bridge(&mut sink, &mut stream, tcp, &first).await;
+        let _ = bridge(
+            &mut sink,
+            &mut stream,
+            tcp,
+            &first,
+            shared.config.game_messages_per_sec,
+        )
+        .await;
     }
     let _ = sink.close().await;
     let _ = shared.hub.tx.send(Cmd::GameClosed { key, spectator }).await;
@@ -83,7 +109,13 @@ fn whole_frame(bytes: &[u8]) -> Option<&[u8]> {
 type Sink = futures_util::stream::SplitSink<Socket, Message>;
 type Stream = futures_util::stream::SplitStream<Socket>;
 
-async fn bridge(sink: &mut Sink, stream: &mut Stream, tcp: TcpStream, first: &[u8]) -> Result<(), ()> {
+async fn bridge(
+    sink: &mut Sink,
+    stream: &mut Stream,
+    tcp: TcpStream,
+    first: &[u8],
+    rate: u32,
+) -> Result<(), ()> {
     tcp.set_nodelay(true).map_err(|_| ())?;
     let socket = socket2::SockRef::from(&tcp);
     let keepalive = socket2::TcpKeepalive::new()
@@ -92,7 +124,7 @@ async fn bridge(sink: &mut Sink, stream: &mut Stream, tcp: TcpStream, first: &[u
     let _ = socket.set_tcp_keepalive(&keepalive);
     let (mut read, mut write) = tcp.into_split();
     write.write_all(first).await.map_err(|_| ())?;
-    let mut bucket = TokenBucket::new(MESSAGES_PER_SEC_GAME, MESSAGE_BURST_GAME, Instant::now());
+    let mut bucket = TokenBucket::new(rate, rate.saturating_mul(2), Instant::now());
     let mut frames = FrameReader::new();
     let mut buf = vec![0u8; 32 * 1024];
     let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));

@@ -41,6 +41,12 @@ pub struct Counters<K> {
     map: HashMap<K, Failures>,
 }
 
+impl<K: Eq + Hash + Clone> Default for Counters<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: Eq + Hash + Clone> Counters<K> {
     pub fn new() -> Self {
         Counters {
@@ -82,6 +88,12 @@ pub struct LoginThrottle {
     by_login: Counters<String>,
 }
 
+impl Default for LoginThrottle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LoginThrottle {
     pub fn new() -> Self {
         LoginThrottle {
@@ -114,6 +126,12 @@ pub struct Windowed<K> {
     map: HashMap<K, (u32, Instant)>,
 }
 
+impl<K: Eq + Hash + Clone> Default for Windowed<K> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K: Eq + Hash + Clone> Windowed<K> {
     pub fn new() -> Self {
         Windowed {
@@ -122,9 +140,16 @@ impl<K: Eq + Hash + Clone> Windowed<K> {
     }
 
     /// Counts one event, or says how long until the window of `key` renews.
-    pub fn take(&mut self, key: &K, now: Instant, limit: u32, window: Duration) -> Result<(), Duration> {
+    pub fn take(
+        &mut self,
+        key: &K,
+        now: Instant,
+        limit: u32,
+        window: Duration,
+    ) -> Result<(), Duration> {
         if self.map.len() >= MAX_ENTRIES && !self.map.contains_key(key) {
-            self.map.retain(|_, (_, start)| now.duration_since(*start) < window);
+            self.map
+                .retain(|_, (_, start)| now.duration_since(*start) < window);
         }
         let entry = self.map.entry(key.clone()).or_insert((0, now));
         if now.duration_since(entry.1) >= window {

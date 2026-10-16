@@ -16,13 +16,23 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_ADDRESSES: usize = 8;
 
 /// Opens `url` (which must be `wss://`), with a read and write timeout on the socket.
-pub(crate) fn connect(url: &str, tls: &TlsConfig, max_message: usize, io_timeout: Duration) -> Result<Ws, ClientError> {
-    let request = url.into_client_request().map_err(|_| ClientError::BadUrl(url.to_owned()))?;
+pub(crate) fn connect(
+    url: &str,
+    tls: &TlsConfig,
+    max_message: usize,
+    io_timeout: Duration,
+) -> Result<Ws, ClientError> {
+    let request = url
+        .into_client_request()
+        .map_err(|_| ClientError::BadUrl(url.to_owned()))?;
     let uri = request.uri();
     if uri.scheme_str() != Some("wss") {
         return Err(ClientError::BadUrl(url.to_owned()));
     }
-    let host = uri.host().ok_or_else(|| ClientError::BadUrl(url.to_owned()))?.to_owned();
+    let host = uri
+        .host()
+        .ok_or_else(|| ClientError::BadUrl(url.to_owned()))?
+        .to_owned();
     let port = uri.port_u16().unwrap_or(443);
     let addresses = (host.as_str(), port)
         .to_socket_addrs()
@@ -40,8 +50,12 @@ pub(crate) fn connect(url: &str, tls: &TlsConfig, max_message: usize, io_timeout
     }
     let stream = connected.ok_or(last)?;
     let _ = stream.set_nodelay(true);
-    stream.set_read_timeout(Some(io_timeout)).map_err(|e| ClientError::Io(e.to_string()))?;
-    stream.set_write_timeout(Some(io_timeout)).map_err(|e| ClientError::Io(e.to_string()))?;
+    stream
+        .set_read_timeout(Some(io_timeout))
+        .map_err(|e| ClientError::Io(e.to_string()))?;
+    stream
+        .set_write_timeout(Some(io_timeout))
+        .map_err(|e| ClientError::Io(e.to_string()))?;
     let config = WebSocketConfig::default()
         .max_message_size(Some(max_message))
         .max_frame_size(Some(max_message));

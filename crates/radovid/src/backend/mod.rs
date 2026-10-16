@@ -84,7 +84,13 @@ pub struct Container {
 
 impl Container {
     /// The handles a backend's watcher task holds.
-    pub fn new(addr: SocketAddr) -> (Container, watch::Sender<Option<Exit>>, mpsc::UnboundedReceiver<()>) {
+    pub fn new(
+        addr: SocketAddr,
+    ) -> (
+        Container,
+        watch::Sender<Option<Exit>>,
+        mpsc::UnboundedReceiver<()>,
+    ) {
         let (exit_tx, exited) = watch::channel(None);
         let (kill, kill_rx) = mpsc::unbounded_channel();
         (Container { addr, exited, kill }, exit_tx, kill_rx)

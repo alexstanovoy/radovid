@@ -5,8 +5,8 @@ use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 /// A PEM certificate and its private key.
 pub struct Identity {
@@ -52,7 +52,8 @@ pub fn server_config(identity: &Identity) -> Result<Arc<ServerConfig>, String> {
 
 fn pem_certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, String> {
     use rustls::pki_types::pem::PemObject;
-    let certs: Result<Vec<_>, _> = CertificateDer::pem_reader_iter(&mut BufReader::new(pem.as_bytes())).collect();
+    let certs: Result<Vec<_>, _> =
+        CertificateDer::pem_reader_iter(&mut BufReader::new(pem.as_bytes())).collect();
     let certs = certs.map_err(|e| e.to_string())?;
     if certs.is_empty() {
         return Err("no certificate in the file".to_owned());

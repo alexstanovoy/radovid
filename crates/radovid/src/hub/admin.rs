@@ -14,7 +14,10 @@ impl Hub {
             .map_err(internal)?
             .ok_or(Error::UnknownAccount)?;
         let ratings = self.db.ratings_of(id).await.map_err(internal)?;
-        let online = self.accounts.get(&id).is_some_and(|a| !a.sessions.is_empty());
+        let online = self
+            .accounts
+            .get(&id)
+            .is_some_and(|a| !a.sessions.is_empty());
         let kind = row.kind;
         Ok(Reply::Account {
             account: PublicAccount {
@@ -32,7 +35,11 @@ impl Hub {
         })
     }
 
-    pub(super) async fn recent_matches(&mut self, account: AccountId, limit: u8) -> Result<Reply, Error> {
+    pub(super) async fn recent_matches(
+        &mut self,
+        account: AccountId,
+        limit: u8,
+    ) -> Result<Reply, Error> {
         self.db
             .account_by_id(account)
             .await
@@ -46,7 +53,12 @@ impl Hub {
         Ok(Reply::Matches { list })
     }
 
-    pub(super) async fn ladder(&mut self, ruleset: RulesetId, offset: u32, limit: u8) -> Result<Reply, Error> {
+    pub(super) async fn ladder(
+        &mut self,
+        ruleset: RulesetId,
+        offset: u32,
+        limit: u8,
+    ) -> Result<Reply, Error> {
         let config = self.config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?;
         if !config.queue {
             return Err(Error::NoQueue);
@@ -88,7 +100,10 @@ impl Hub {
             return Err(Error::Malformed);
         }
         self.require_account(target).await?;
-        let ban = Ban { reason: reason.clone(), until };
+        let ban = Ban {
+            reason: reason.clone(),
+            until,
+        };
         self.db.set_ban(target, Some(ban)).await.map_err(internal)?;
         if until.is_none_or(|u| u > now_ms()) {
             // Sessions end, and with them the queue and lobby places; a running
@@ -98,7 +113,11 @@ impl Hub {
         Ok(Reply::Done)
     }
 
-    pub(super) async fn admin_unban(&mut self, admin: AccountId, target: AccountId) -> Result<Reply, Error> {
+    pub(super) async fn admin_unban(
+        &mut self,
+        admin: AccountId,
+        target: AccountId,
+    ) -> Result<Reply, Error> {
         self.require_admin(admin)?;
         self.require_account(target).await?;
         self.db.set_ban(target, None).await.map_err(internal)?;
@@ -121,7 +140,11 @@ impl Hub {
         Ok(Reply::Done)
     }
 
-    pub(super) fn admin_stop(&mut self, admin: AccountId, match_id: MatchId) -> Result<Reply, Error> {
+    pub(super) fn admin_stop(
+        &mut self,
+        admin: AccountId,
+        match_id: MatchId,
+    ) -> Result<Reply, Error> {
         self.require_admin(admin)?;
         let stop = self
             .matches

@@ -397,7 +397,9 @@ impl Db {
                 )
                 .optional()?;
             let found = match row {
-                Some((account, last_used)) if now.saturating_sub(last_used as u64) < SESSION_TTL_MS => {
+                Some((account, last_used))
+                    if now.saturating_sub(last_used as u64) < SESSION_TTL_MS =>
+                {
                     tx.execute(
                         "UPDATE sessions SET last_used = ?2 WHERE token_hash = ?1",
                         params![token_hash.as_slice(), now as i64],
@@ -405,7 +407,10 @@ impl Db {
                     Some(AccountId(account as u64))
                 }
                 Some(_) => {
-                    tx.execute("DELETE FROM sessions WHERE token_hash = ?1", [token_hash.as_slice()])?;
+                    tx.execute(
+                        "DELETE FROM sessions WHERE token_hash = ?1",
+                        [token_hash.as_slice()],
+                    )?;
                     None
                 }
                 None => None,
@@ -418,8 +423,11 @@ impl Db {
 
     pub async fn revoke_session(&self, token_hash: [u8; 32]) -> DbResult<()> {
         self.run(move |c| {
-            c.execute("DELETE FROM sessions WHERE token_hash = ?1", [token_hash.as_slice()])
-                .map(|_| ())
+            c.execute(
+                "DELETE FROM sessions WHERE token_hash = ?1",
+                [token_hash.as_slice()],
+            )
+            .map(|_| ())
         })
         .await
     }
@@ -436,7 +444,11 @@ impl Db {
         .await
     }
 
-    pub async fn rating(&self, account: AccountId, ruleset: RulesetId) -> DbResult<Option<RatingRow>> {
+    pub async fn rating(
+        &self,
+        account: AccountId,
+        ruleset: RulesetId,
+    ) -> DbResult<Option<RatingRow>> {
         self.run(move |c| {
             c.query_row(
                 &format!("{RATING_SELECT} WHERE account = ?1 AND ruleset = ?2"),
@@ -507,13 +519,21 @@ impl Db {
             c.execute(
                 "UPDATE matches SET finished = 1, outcome = ?1, reason = ?2, finished_at = ?3
                  WHERE finished = 0",
-                params![outcome_code(Outcome::Null), reason_code(EndReason::Crashed), now],
+                params![
+                    outcome_code(Outcome::Null),
+                    reason_code(EndReason::Crashed),
+                    now
+                ],
             )
         })
         .await
     }
 
-    pub async fn recent_matches(&self, account: AccountId, limit: u8) -> DbResult<Vec<MatchResult>> {
+    pub async fn recent_matches(
+        &self,
+        account: AccountId,
+        limit: u8,
+    ) -> DbResult<Vec<MatchResult>> {
         self.run(move |c| {
             let mut ids = c.prepare(
                 "SELECT m.id FROM matches m JOIN match_seats s ON s.match_id = m.id
@@ -595,13 +615,18 @@ fn account_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
         admin: row.get(5)?,
         ban: banned.then(|| Ban {
             reason: row.get(7).unwrap_or_default(),
-            until: row.get::<_, Option<i64>>(8).ok().flatten().map(|u| UnixMs(u as u64)),
+            until: row
+                .get::<_, Option<i64>>(8)
+                .ok()
+                .flatten()
+                .map(|u| UnixMs(u as u64)),
         }),
         bot_version: row.get(9)?,
     })
 }
 
-const RATING_COLUMNS: &str = "rating, deviation, volatility, games, wins, draws, losses, last_played";
+const RATING_COLUMNS: &str =
+    "rating, deviation, volatility, games, wins, draws, losses, last_played";
 const RATING_SELECT: &str = "SELECT rating, deviation, volatility, games, wins, draws, losses,
     last_played FROM ratings";
 
@@ -715,7 +740,9 @@ fn load_result(c: &Connection, id: i64) -> rusqlite::Result<MatchResult> {
             let rating = |at: usize| -> rusqlite::Result<Option<Rating>> {
                 let rating: Option<f64> = row.get(at)?;
                 let deviation: Option<f64> = row.get(at + 1)?;
-                Ok(rating.zip(deviation).map(|(rating, deviation)| Rating { rating, deviation }))
+                Ok(rating
+                    .zip(deviation)
+                    .map(|(rating, deviation)| Rating { rating, deviation }))
             };
             Ok(SeatResult {
                 slot: SlotId(row.get(0)?),

@@ -104,6 +104,8 @@ sockets and in replay files.
 
 ## Tests
 
-`cargo test` runs the end-to-end tests over real WebSockets: a scripted stand-in game server
-(`examples/fake_bota_server.rs`) for results, ratings, lobbies, reconnects and bans, and the real
-`bota_server` for the referee path and two bots playing a whole match.
+`cargo test` runs the end-to-end tests over real WebSockets with a scripted stand-in game server
+(`examples/fake_bota_server.rs`): results, ratings, lobbies, reconnects, spectators, bans, limits.
+`tests/real_game.rs` uses the real `bota_server`: build it first (`cargo build --release -p bota_server`
+in the bota checkout) and point `BOTA_SERVER_BIN` at it; without the binary those tests fail. Setting
+`RADOVID_DOCKER_IMAGE` and `RADOVID_DOCKER_NETWORK` also runs the docker backend test.

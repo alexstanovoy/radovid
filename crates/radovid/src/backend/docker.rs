@@ -24,7 +24,14 @@ pub struct DockerBackend {
 }
 
 impl DockerBackend {
-    pub fn new(docker: String, image: String, network: String, memory: String, cpus: String, publish_loopback: bool) -> Self {
+    pub fn new(
+        docker: String,
+        image: String,
+        network: String,
+        memory: String,
+        cpus: String,
+        publish_loopback: bool,
+    ) -> Self {
         DockerBackend {
             publish_loopback,
             docker,
@@ -56,12 +63,19 @@ impl DockerBackend {
     /// Where the container's game port can be reached from here.
     async fn address_of(&self, id: &str) -> std::io::Result<SocketAddr> {
         if self.publish_loopback {
-            let port = self.output(&["port", id, &format!("{CONTAINER_PORT}/tcp")]).await?;
+            let port = self
+                .output(&["port", id, &format!("{CONTAINER_PORT}/tcp")])
+                .await?;
             // "127.0.0.1:49153", one line per address family.
             let line = port.lines().next().unwrap_or("");
-            return line.parse().map_err(|_| std::io::Error::other(format!("docker port: {line:?}")));
+            return line
+                .parse()
+                .map_err(|_| std::io::Error::other(format!("docker port: {line:?}")));
         }
-        let format = format!("{{{{(index .NetworkSettings.Networks \"{}\").IPAddress}}}}", self.network);
+        let format = format!(
+            "{{{{(index .NetworkSettings.Networks \"{}\").IPAddress}}}}",
+            self.network
+        );
         let ip: IpAddr = self
             .output(&["inspect", "-f", &format, id])
             .await?
@@ -74,9 +88,28 @@ impl DockerBackend {
         let label = format!("{LABEL}={}", spec.match_id.0);
         let name = format!("radovid-match-{}", spec.match_id.0);
         let mut args: Vec<String> = [
-            "run", "--detach", "--name", &name, "--read-only", "--network", &self.network, "--memory",
-            &self.memory, "--cpus", &self.cpus, "--pids-limit", "256", "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges", "--label", &label, "-e", "BOTA_SEATS", "-e",
+            "run",
+            "--detach",
+            "--name",
+            &name,
+            "--read-only",
+            "--network",
+            &self.network,
+            "--memory",
+            &self.memory,
+            "--cpus",
+            &self.cpus,
+            "--pids-limit",
+            "256",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--label",
+            &label,
+            "-e",
+            "BOTA_SEATS",
+            "-e",
             "BOTA_REFEREE_KEY",
         ]
         .map(str::to_owned)
@@ -111,7 +144,10 @@ impl DockerBackend {
         let docker = self.docker.clone();
         let match_id = spec.match_id.0;
         tokio::spawn(async move {
-            let wait = Command::new(&docker).args(["wait", &id]).stdin(Stdio::null()).output();
+            let wait = Command::new(&docker)
+                .args(["wait", &id])
+                .stdin(Stdio::null())
+                .output();
             tokio::pin!(wait);
             let mut killed = false;
             let code = loop {
@@ -123,12 +159,20 @@ impl DockerBackend {
                     }
                 }
             };
-            if let Ok(logs) = Command::new(&docker).args(["logs", "--tail", "20", &id]).output().await {
+            if let Ok(logs) = Command::new(&docker)
+                .args(["logs", "--tail", "20", &id])
+                .output()
+                .await
+            {
                 for line in String::from_utf8_lossy(&logs.stderr).lines() {
                     eprintln!("radovid: match {match_id}: {line}");
                 }
             }
-            let _ = Command::new(&docker).args(["rm", "-f", &id]).stdin(Stdio::null()).output().await;
+            let _ = Command::new(&docker)
+                .args(["rm", "-f", &id])
+                .stdin(Stdio::null())
+                .output()
+                .await;
             let description = match code {
                 Ok(code) => format!("exit code {code}"),
                 Err(error) => error.to_string(),

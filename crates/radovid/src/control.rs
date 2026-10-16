@@ -57,7 +57,12 @@ pub async fn run(ws: Socket, ip: IpAddr, shared: Arc<Shared>, mut guard: Unauthe
     };
     let _ = conn.serve(&mut guard).await;
     if let Some(live) = conn.live.take() {
-        let _ = conn.shared.hub.tx.send(Cmd::Detach { session: live.id }).await;
+        let _ = conn
+            .shared
+            .hub
+            .tx
+            .send(Cmd::Detach { session: live.id })
+            .await;
     }
     let _ = conn.ws.close(None).await;
 }
@@ -69,7 +74,8 @@ impl Conn {
         ping.tick().await;
         let mut last_heard = Instant::now();
         loop {
-            let auth_left = Duration::from_secs(AUTH_DEADLINE_SECS).saturating_sub(accepted.elapsed());
+            let auth_left =
+                Duration::from_secs(AUTH_DEADLINE_SECS).saturating_sub(accepted.elapsed());
             tokio::select! {
                 message = self.ws.next() => {
                     let message = message.ok_or(Stop::Closed)?.map_err(|_| Stop::Closed)?;
@@ -139,12 +145,15 @@ impl Conn {
         };
         if let Err(retry_after_ms) = self.bucket.take(Instant::now()) {
             let now = Instant::now();
-            self.breaches.retain(|at| now.duration_since(*at) < BREACH_WINDOW);
+            self.breaches
+                .retain(|at| now.duration_since(*at) < BREACH_WINDOW);
             self.breaches.push(now);
             if self.breaches.len() >= RATE_BREACHES_BEFORE_CLOSE as usize {
                 return self.bye(Error::RateLimited { retry_after_ms }).await;
             }
-            return self.refuse(frame.seq, Error::RateLimited { retry_after_ms }).await;
+            return self
+                .refuse(frame.seq, Error::RateLimited { retry_after_ms })
+                .await;
         }
         let ClientFrame { seq, msg } = frame;
         if self.hello.is_none() {
@@ -152,11 +161,26 @@ impl Conn {
         }
         match (&self.live, msg) {
             (_, ClientMsg::Hello { .. }) => self.bye(Error::Malformed).await,
-            (None, ClientMsg::Register { login, password, kind, client }) => {
+            (
+                None,
+                ClientMsg::Register {
+                    login,
+                    password,
+                    kind,
+                    client,
+                },
+            ) => {
                 let result = self.register(login, password, kind, client, guard).await;
                 self.reply(seq, result).await
             }
-            (None, ClientMsg::Login { login, password, client }) => {
+            (
+                None,
+                ClientMsg::Login {
+                    login,
+                    password,
+                    client,
+                },
+            ) => {
                 let result = self.login(login, password, client, guard).await;
                 self.reply(seq, result).await
             }
@@ -165,13 +189,18 @@ impl Conn {
                 self.reply(seq, result).await
             }
             (None, _) => self.refuse(seq, Error::NotLoggedIn).await,
-            (Some(_), ClientMsg::Register { .. } | ClientMsg::Login { .. } | ClientMsg::Resume { .. }) => {
-                self.refuse(seq, Error::AlreadyLoggedIn).await
-            }
+            (
+                Some(_),
+                ClientMsg::Register { .. } | ClientMsg::Login { .. } | ClientMsg::Resume { .. },
+            ) => self.refuse(seq, Error::AlreadyLoggedIn).await,
             (Some(live), ClientMsg::Logout) => {
                 let hash = live.token_hash;
                 let _ = self.shared.db.revoke_session(hash).await;
-                self.send(&ServerMsg::Reply { seq, reply: Reply::Done }).await?;
+                self.send(&ServerMsg::Reply {
+                    seq,
+                    reply: Reply::Done,
+                })
+                .await?;
                 Err(Stop::Closed)
             }
             (Some(_), ClientMsg::ChangePassword { current, new }) => {
@@ -190,7 +219,11 @@ impl Conn {
         self.shared
             .hub
             .tx
-            .send(Cmd::Request { session, msg, reply })
+            .send(Cmd::Request {
+                session,
+                msg,
+                reply,
+            })
             .await
             .map_err(|_| Error::ServerStopping)?;
         match tokio::time::timeout(HUB_TIMEOUT, answer).await {
@@ -200,12 +233,22 @@ impl Conn {
     }
 
     async fn hello(&mut self, seq: u32, msg: ClientMsg) -> Result<(), Stop> {
-        let ClientMsg::Hello { proto, bota_wire, client } = msg else {
+        let ClientMsg::Hello {
+            proto,
+            bota_wire,
+            client,
+        } = msg
+        else {
             return self.bye(Error::Malformed).await;
         };
         if proto != PROTO_VERSION {
-            self.send(&ServerMsg::Refused { seq, error: Error::ProtoMismatch { server: PROTO_VERSION } })
-                .await?;
+            self.send(&ServerMsg::Refused {
+                seq,
+                error: Error::ProtoMismatch {
+                    server: PROTO_VERSION,
+                },
+            })
+            .await?;
             return Err(Stop::Closed);
         }
         if !valid_client_label(&client) {
@@ -231,7 +274,9 @@ impl Conn {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .wait(self.ip, login, Instant::now());
-        (!wait.is_zero()).then(|| Error::Throttled { retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32 })
+        (!wait.is_zero()).then(|| Error::Throttled {
+            retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32,
+        })
     }
 
     fn failed(&self, login: &str) {
@@ -258,16 +303,34 @@ impl Conn {
             return Err(Error::WeakPassword);
         }
         let bot_version = check_bot_version(kind, client)?;
-        if let Err(wait) = self.shared.registrations.lock().unwrap_or_else(|p| p.into_inner()).take(
-            &self.ip,
-            Instant::now(),
-            crate::server::REGISTRATIONS_PER_HOUR,
-            Duration::from_secs(3600),
-        ) {
-            return Err(Error::Throttled { retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32 });
+        if let Err(wait) = self
+            .shared
+            .registrations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take(
+                &self.ip,
+                Instant::now(),
+                crate::server::REGISTRATIONS_PER_HOUR,
+                Duration::from_secs(3600),
+            )
+        {
+            return Err(Error::Throttled {
+                retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32,
+            });
         }
-        let hash = self.shared.passwords.hash(password).await.map_err(crate::hub::internal)?;
-        let id = match self.shared.db.create_account(login.clone(), hash, kind, bot_version).await {
+        let hash = self
+            .shared
+            .passwords
+            .hash(password)
+            .await
+            .map_err(crate::hub::internal)?;
+        let id = match self
+            .shared
+            .db
+            .create_account(login.clone(), hash, kind, bot_version)
+            .await
+        {
             Ok(id) => id,
             Err(DbError::Taken) => return Err(Error::LoginTaken),
             Err(error) => return Err(crate::hub::internal(error)),
@@ -294,7 +357,11 @@ impl Conn {
             return Err(error);
         }
         let row = if valid_login(&login) && valid_password_shape(&password) {
-            self.shared.db.account_by_login(login.clone()).await.map_err(crate::hub::internal)?
+            self.shared
+                .db
+                .account_by_login(login.clone())
+                .await
+                .map_err(crate::hub::internal)?
         } else {
             None
         };
@@ -304,9 +371,16 @@ impl Conn {
             return Err(Error::BadCredentials);
         }
         let row = row.ok_or(Error::BadCredentials)?;
-        self.shared.throttle.lock().unwrap_or_else(|p| p.into_inner()).succeeded(&login);
+        self.shared
+            .throttle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .succeeded(&login);
         if let Some(ban) = row.active_ban(now_ms()) {
-            return Err(Error::Banned { reason: ban.reason.clone(), until: ban.until });
+            return Err(Error::Banned {
+                reason: ban.reason.clone(),
+                until: ban.until,
+            });
         }
         let bot_version = check_bot_version(row.kind, client)?;
         if bot_version.is_some() && bot_version != row.bot_version {
@@ -316,11 +390,19 @@ impl Conn {
                 .await
                 .map_err(crate::hub::internal)?;
         }
-        let row = AccountRow { bot_version: bot_version.or(row.bot_version.clone()), ..row };
+        let row = AccountRow {
+            bot_version: bot_version.or(row.bot_version.clone()),
+            ..row
+        };
         self.finish_login(row, None, guard).await
     }
 
-    async fn resume(&mut self, session: SessionToken, client: ClientInfo, guard: &mut Unauthenticated) -> Result<Reply, Error> {
+    async fn resume(
+        &mut self,
+        session: SessionToken,
+        client: ClientInfo,
+        guard: &mut Unauthenticated,
+    ) -> Result<Reply, Error> {
         let wait = self
             .shared
             .throttle
@@ -328,10 +410,18 @@ impl Conn {
             .unwrap_or_else(|p| p.into_inner())
             .wait(self.ip, "", Instant::now());
         if !wait.is_zero() {
-            return Err(Error::Throttled { retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32 });
+            return Err(Error::Throttled {
+                retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32,
+            });
         }
         let hash = token_hash(&session);
-        let Some(id) = self.shared.db.resume_session(hash).await.map_err(crate::hub::internal)? else {
+        let Some(id) = self
+            .shared
+            .db
+            .resume_session(hash)
+            .await
+            .map_err(crate::hub::internal)?
+        else {
             self.failed("");
             return Err(Error::BadSession);
         };
@@ -343,7 +433,10 @@ impl Conn {
             .map_err(crate::hub::internal)?
             .ok_or(Error::BadSession)?;
         if let Some(ban) = row.active_ban(now_ms()) {
-            return Err(Error::Banned { reason: ban.reason.clone(), until: ban.until });
+            return Err(Error::Banned {
+                reason: ban.reason.clone(),
+                until: ban.until,
+            });
         }
         let bot_version = check_bot_version(row.kind, client)?;
         if bot_version.is_some() && bot_version != row.bot_version {
@@ -353,7 +446,10 @@ impl Conn {
                 .await
                 .map_err(crate::hub::internal)?;
         }
-        let row = AccountRow { bot_version: bot_version.or(row.bot_version.clone()), ..row };
+        let row = AccountRow {
+            bot_version: bot_version.or(row.bot_version.clone()),
+            ..row
+        };
         self.finish_login(row, Some(session), guard).await
     }
 
@@ -394,8 +490,17 @@ impl Conn {
             .map_err(|_| Error::ServerStopping)?;
         let (id, presence) = answer.await.map_err(|_| Error::ServerStopping)??;
         guard.release();
-        self.live = Some(Live { id, account: me.clone(), token_hash: token_hash(&token), events });
-        Ok(Reply::LoggedIn { me, session: token, presence })
+        self.live = Some(Live {
+            id,
+            account: me.clone(),
+            token_hash: token_hash(&token),
+            events,
+        });
+        Ok(Reply::LoggedIn {
+            me,
+            session: token,
+            presence,
+        })
     }
 
     async fn change_password(&mut self, current: String, new: String) -> Result<Reply, Error> {
@@ -420,8 +525,17 @@ impl Conn {
             self.failed(&login);
             return Err(Error::BadCredentials);
         }
-        let hash = self.shared.passwords.hash(new).await.map_err(crate::hub::internal)?;
-        self.shared.db.set_password(id, hash).await.map_err(crate::hub::internal)?;
+        let hash = self
+            .shared
+            .passwords
+            .hash(new)
+            .await
+            .map_err(crate::hub::internal)?;
+        self.shared
+            .db
+            .set_password(id, hash)
+            .await
+            .map_err(crate::hub::internal)?;
         self.shared
             .db
             .revoke_other_sessions(id, keep)

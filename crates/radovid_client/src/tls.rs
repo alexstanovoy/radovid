@@ -29,7 +29,9 @@ impl TlsConfig {
         let mut roots = rustls::RootCertStore::empty();
         for cert in CertificateDer::pem_reader_iter(&mut BufReader::new(pem.as_bytes())) {
             let cert = cert.map_err(|e| ClientError::Io(e.to_string()))?;
-            roots.add(cert).map_err(|e| ClientError::Io(e.to_string()))?;
+            roots
+                .add(cert)
+                .map_err(|e| ClientError::Io(e.to_string()))?;
         }
         if roots.is_empty() {
             return Err(ClientError::Io("no certificate in the pem".to_owned()));
@@ -44,6 +46,8 @@ impl TlsConfig {
             .expect("TLS 1.3 is supported by the ring provider")
             .with_root_certificates(roots)
             .with_no_client_auth();
-        TlsConfig { config: Arc::new(config) }
+        TlsConfig {
+            config: Arc::new(config),
+        }
     }
 }

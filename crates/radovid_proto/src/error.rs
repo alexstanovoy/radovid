@@ -9,19 +9,28 @@ use crate::{Presence, UnixMs};
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Error {
     /// The `Hello` named another protocol version; closes the connection.
-    ProtoMismatch { server: u16 },
+    ProtoMismatch {
+        server: u16,
+    },
     /// The bytes were no message; closes the connection.
     Malformed,
     NotLoggedIn,
     AlreadyLoggedIn,
     TooManySessions,
     /// Too many messages; the frame was dropped.
-    RateLimited { retry_after_ms: u32 },
+    RateLimited {
+        retry_after_ms: u32,
+    },
     /// Too many failed logins; the attempt was not evaluated.
-    Throttled { retry_after_ms: u32 },
+    Throttled {
+        retry_after_ms: u32,
+    },
     BadCredentials,
     BadSession,
-    Banned { reason: String, until: Option<UnixMs> },
+    Banned {
+        reason: String,
+        until: Option<UnixMs>,
+    },
     BadLogin,
     LoginTaken,
     BadNickname,
@@ -33,8 +42,12 @@ pub enum Error {
     UnknownRuleset,
     NoQueue,
     /// The game servers run another wire than the client was built with.
-    BotaWireMismatch { server: u64 },
-    Busy { presence: Presence },
+    BotaWireMismatch {
+        server: u64,
+    },
+    Busy {
+        presence: Presence,
+    },
     NotInQueue,
     NotInLobby,
     NotInMatch,

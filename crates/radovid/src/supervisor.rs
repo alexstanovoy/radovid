@@ -21,7 +21,10 @@ const EXIT_GRACE: Duration = Duration::from_secs(10);
 /// How a match ended, as the hub learns it.
 #[derive(Debug)]
 pub enum End {
-    Over { winner: Team, stats: MatchStats },
+    Over {
+        winner: Team,
+        stats: MatchStats,
+    },
     /// The game server died or could not be attended.
     Crashed(String),
     /// An admin stopped it.
@@ -56,11 +59,13 @@ impl Supervisor {
             }
         }
         let _ = self.hub.send(Cmd::MatchEnded { match_id: id, end }).await;
-        if let Some(mut container) = container {
-            if tokio::time::timeout(EXIT_GRACE, container.exited()).await.is_err() {
-                container.kill();
-                container.exited().await;
-            }
+        if let Some(mut container) = container
+            && tokio::time::timeout(EXIT_GRACE, container.exited())
+                .await
+                .is_err()
+        {
+            container.kill();
+            container.exited().await;
         }
     }
 
@@ -99,18 +104,32 @@ impl Supervisor {
                 };
                 match read {
                     Ok(0) | Err(_) => {
-                        return End::Crashed("the referee stream ended without a result".to_owned());
+                        return End::Crashed(
+                            "the referee stream ended without a result".to_owned(),
+                        );
                     }
                     Ok(n) => reader.push(&buf[..n]),
                 }
             };
             match message {
                 ServerMsg::Welcome { .. } => {
-                    let _ = self.hub.send(Cmd::MatchUp { match_id: self.match_id, addr }).await;
+                    let _ = self
+                        .hub
+                        .send(Cmd::MatchUp {
+                            match_id: self.match_id,
+                            addr,
+                        })
+                        .await;
                 }
                 ServerMsg::MatchStart { info } => {
                     let picks = info.picks.iter().map(|p| (p.slot, p.hero)).collect();
-                    let _ = self.hub.send(Cmd::MatchStarted { match_id: self.match_id, picks }).await;
+                    let _ = self
+                        .hub
+                        .send(Cmd::MatchStarted {
+                            match_id: self.match_id,
+                            picks,
+                        })
+                        .await;
                 }
                 ServerMsg::MatchOver { winner, stats } => return End::Over { winner, stats },
                 _ => {}
@@ -119,7 +138,10 @@ impl Supervisor {
     }
 }
 
-async fn connect_referee(addr: std::net::SocketAddr, spec: &MatchSpec) -> std::io::Result<TcpStream> {
+async fn connect_referee(
+    addr: std::net::SocketAddr,
+    spec: &MatchSpec,
+) -> std::io::Result<TcpStream> {
     let deadline = tokio::time::Instant::now() + REFEREE_CONNECT;
     let mut stream = loop {
         match TcpStream::connect(addr).await {

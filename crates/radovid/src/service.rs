@@ -34,12 +34,17 @@ impl Service {
             .await
             .map_err(|e| format!("cannot listen on {}: {e}", config.listen))?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
-        config.public_game_url = config.public_game_url.replace("{port}", &addr.port().to_string());
+        config.public_game_url = config
+            .public_game_url
+            .replace("{port}", &addr.port().to_string());
         let acceptor = TlsAcceptor::from(tls::server_config(identity)?);
         let db = Db::open(&config.database).map_err(|e| e.to_string())?;
         let backend = backend::from_config(&config.backend);
         backend.clean_up_orphans().await;
-        let lost = db.fail_unfinished_matches().await.map_err(|e| e.to_string())?;
+        let lost = db
+            .fail_unfinished_matches()
+            .await
+            .map_err(|e| e.to_string())?;
         if lost > 0 {
             eprintln!("radovid: {lost} matches of an earlier run recorded as lost");
         }

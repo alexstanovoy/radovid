@@ -36,7 +36,9 @@ impl std::error::Error for ClientError {}
 impl From<tungstenite::Error> for ClientError {
     fn from(error: tungstenite::Error) -> Self {
         match error {
-            tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => ClientError::Closed,
+            tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
+                ClientError::Closed
+            }
             other => ClientError::Io(other.to_string()),
         }
     }

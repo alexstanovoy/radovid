@@ -47,14 +47,24 @@ impl Client {
 
     /// As [`Client::connect`], claiming other versions: for tools and tests of
     /// the refusals.
-    pub fn connect_as(url: &str, tls: &TlsConfig, proto: u16, bota_wire: u64) -> Result<Client, ClientError> {
+    pub fn connect_as(
+        url: &str,
+        tls: &TlsConfig,
+        proto: u16,
+        bota_wire: u64,
+    ) -> Result<Client, ClientError> {
         let url = if url.trim_end_matches('/').ends_with("/control") {
             url.to_owned()
         } else {
             format!("{}/control", url.trim_end_matches('/'))
         };
         let ws = connect(&url, tls, MAX_PAYLOAD_LEN + LEN_PREFIX, IO_TIMEOUT)?;
-        let mut client = Client { ws, seq: 0, inbox: VecDeque::new(), server_bota_wire: 0 };
+        let mut client = Client {
+            ws,
+            seq: 0,
+            inbox: VecDeque::new(),
+            server_bota_wire: 0,
+        };
         let reply = client.request(ClientMsg::Hello {
             proto,
             bota_wire,
@@ -62,7 +72,11 @@ impl Client {
         })?;
         match reply {
             Reply::Welcome { bota_wire, .. } => client.server_bota_wire = bota_wire,
-            other => return Err(ClientError::Protocol(format!("expected Welcome, got {other:?}"))),
+            other => {
+                return Err(ClientError::Protocol(format!(
+                    "expected Welcome, got {other:?}"
+                )));
+            }
         }
         Ok(client)
     }
@@ -86,7 +100,13 @@ impl Client {
         self.server_bota_wire
     }
 
-    pub fn register(&mut self, login: &str, password: &str, kind: AccountKind, info: ClientInfo) -> Result<LoggedIn, ClientError> {
+    pub fn register(
+        &mut self,
+        login: &str,
+        password: &str,
+        kind: AccountKind,
+        info: ClientInfo,
+    ) -> Result<LoggedIn, ClientError> {
         let reply = self.request(ClientMsg::Register {
             login: login.to_owned(),
             password: password.to_owned(),
@@ -96,7 +116,12 @@ impl Client {
         logged_in(reply)
     }
 
-    pub fn login(&mut self, login: &str, password: &str, info: ClientInfo) -> Result<LoggedIn, ClientError> {
+    pub fn login(
+        &mut self,
+        login: &str,
+        password: &str,
+        info: ClientInfo,
+    ) -> Result<LoggedIn, ClientError> {
         let reply = self.request(ClientMsg::Login {
             login: login.to_owned(),
             password: password.to_owned(),
@@ -105,8 +130,15 @@ impl Client {
         logged_in(reply)
     }
 
-    pub fn resume(&mut self, token: SessionToken, info: ClientInfo) -> Result<LoggedIn, ClientError> {
-        let reply = self.request(ClientMsg::Resume { session: token, client: info })?;
+    pub fn resume(
+        &mut self,
+        token: SessionToken,
+        info: ClientInfo,
+    ) -> Result<LoggedIn, ClientError> {
+        let reply = self.request(ClientMsg::Resume {
+            session: token,
+            client: info,
+        })?;
         logged_in(reply)
     }
 
@@ -115,7 +147,8 @@ impl Client {
     pub fn request(&mut self, msg: ClientMsg) -> Result<Reply, ClientError> {
         self.seq = self.seq.wrapping_add(1);
         let seq = self.seq;
-        let bytes = encode_frame_to_vec(&ClientFrame { seq, msg }).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        let bytes = encode_frame_to_vec(&ClientFrame { seq, msg })
+            .map_err(|e| ClientError::Protocol(e.to_string()))?;
         self.ws.send(Message::Binary(bytes.into()))?;
         let deadline = Instant::now() + IO_TIMEOUT;
         loop {
@@ -123,7 +156,9 @@ impl Client {
             match self.read(left)? {
                 None => return Err(ClientError::Timeout),
                 Some(ServerMsg::Reply { seq: got, reply }) if got == seq => return Ok(reply),
-                Some(ServerMsg::Refused { seq: got, error }) if got == seq => return Err(ClientError::Refused(error)),
+                Some(ServerMsg::Refused { seq: got, error }) if got == seq => {
+                    return Err(ClientError::Refused(error));
+                }
                 Some(ServerMsg::Event(event)) => self.keep(event),
                 Some(_) => {}
             }
@@ -155,7 +190,9 @@ impl Client {
 
     /// Joins the queue and waits for the match to be found.
     pub fn queue_and_wait(&mut self, ruleset: &RulesetId) -> Result<Handoff, ClientError> {
-        self.request(ClientMsg::QueueJoin { ruleset: ruleset.clone() })?;
+        self.request(ClientMsg::QueueJoin {
+            ruleset: ruleset.clone(),
+        })?;
         loop {
             match self.next_event(Duration::from_secs(3600))? {
                 Some(Event::MatchFound { handoff }) => return Ok(handoff),
@@ -170,7 +207,9 @@ impl Client {
     fn read(&mut self, wait: Duration) -> Result<Option<ServerMsg>, ClientError> {
         let wait = wait.max(Duration::from_millis(1));
         if let Some(socket) = socket(&self.ws) {
-            socket.set_read_timeout(Some(wait)).map_err(|e| ClientError::Io(e.to_string()))?;
+            socket
+                .set_read_timeout(Some(wait))
+                .map_err(|e| ClientError::Io(e.to_string()))?;
         }
         loop {
             match self.ws.read() {
@@ -178,7 +217,10 @@ impl Client {
                 Ok(Message::Close(_)) => return Err(ClientError::Closed),
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(e))
-                    if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) =>
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
                 {
                     return Ok(None);
                 }
@@ -191,7 +233,13 @@ impl Client {
 fn decode(bytes: &[u8]) -> Result<ServerMsg, ClientError> {
     let bad = || ClientError::Protocol("a message that is no frame".to_owned());
     let payload = bytes.get(LEN_PREFIX..).ok_or_else(bad)?;
-    let declared = u32::from_le_bytes(bytes.get(..LEN_PREFIX).ok_or_else(bad)?.try_into().map_err(|_| bad())?) as usize;
+    let declared = u32::from_le_bytes(
+        bytes
+            .get(..LEN_PREFIX)
+            .ok_or_else(bad)?
+            .try_into()
+            .map_err(|_| bad())?,
+    ) as usize;
     if declared != payload.len() {
         return Err(bad());
     }
@@ -200,7 +248,17 @@ fn decode(bytes: &[u8]) -> Result<ServerMsg, ClientError> {
 
 fn logged_in(reply: Reply) -> Result<LoggedIn, ClientError> {
     match reply {
-        Reply::LoggedIn { me, session, presence } => Ok(LoggedIn { me, session, presence }),
-        other => Err(ClientError::Protocol(format!("expected LoggedIn, got {other:?}"))),
+        Reply::LoggedIn {
+            me,
+            session,
+            presence,
+        } => Ok(LoggedIn {
+            me,
+            session,
+            presence,
+        }),
+        other => Err(ClientError::Protocol(format!(
+            "expected LoggedIn, got {other:?}"
+        ))),
     }
 }

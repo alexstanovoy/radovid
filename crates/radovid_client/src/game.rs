@@ -5,7 +5,9 @@ use std::time::Duration;
 use bota_client_core::{
     AckPolicy, ClientSession, Ingested, IssuedOrder, Perspective, Seated, SessionOptions, Transport,
 };
-use bota_proto::{ClientMsg, FrameReader, HeroId, Order, Role, ServerMsg, Team, TickMode, encode_frame_to_vec};
+use bota_proto::{
+    ClientMsg, FrameReader, HeroId, Order, Role, ServerMsg, Team, TickMode, encode_frame_to_vec,
+};
 use radovid_proto::{Handoff, MatchStats};
 use tungstenite::Message;
 
@@ -24,8 +26,16 @@ pub struct GameLink {
 impl GameLink {
     /// Opens the handoff's game URL. Nothing is said yet.
     pub fn connect(handoff: &Handoff, tls: &TlsConfig) -> Result<GameLink, ClientError> {
-        let ws = connect(&handoff.game_url, tls, bota_proto::MAX_PAYLOAD_LEN + bota_proto::LEN_PREFIX, IO_TIMEOUT)?;
-        Ok(GameLink { ws, reader: FrameReader::new() })
+        let ws = connect(
+            &handoff.game_url,
+            tls,
+            bota_proto::MAX_PAYLOAD_LEN + bota_proto::LEN_PREFIX,
+            IO_TIMEOUT,
+        )?;
+        Ok(GameLink {
+            ws,
+            reader: FrameReader::new(),
+        })
     }
 }
 
@@ -35,13 +45,19 @@ impl Transport for GameLink {
             match self.reader.next_message::<ServerMsg>() {
                 Ok(Some(message)) => return Ok(Some(message)),
                 Ok(None) => {}
-                Err(error) => return Err(std::io::Error::other(format!("undecodable server message: {error}"))),
+                Err(error) => {
+                    return Err(std::io::Error::other(format!(
+                        "undecodable server message: {error}"
+                    )));
+                }
             }
             match self.ws.read() {
                 Ok(Message::Binary(bytes)) => self.reader.push(&bytes),
                 Ok(Message::Close(_)) => return Ok(None),
                 Ok(_) => {}
-                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => return Ok(None),
+                Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+                    return Ok(None);
+                }
                 Err(error) => return Err(std::io::Error::other(error.to_string())),
             }
         }
@@ -58,7 +74,11 @@ impl Transport for GameLink {
 /// Opens the link and takes the seat of the handoff: picks `hero` and says
 /// ready. Calling it again with the same handoff is a reconnect: the service
 /// replaces the old connection.
-pub fn take_seat(handoff: &Handoff, hero: HeroId, tls: &TlsConfig) -> Result<(GameLink, Seated), ClientError> {
+pub fn take_seat(
+    handoff: &Handoff,
+    hero: HeroId,
+    tls: &TlsConfig,
+) -> Result<(GameLink, Seated), ClientError> {
     let mut link = GameLink::connect(handoff, tls)?;
     let name = handoff
         .seats
@@ -73,7 +93,11 @@ pub fn take_seat(handoff: &Handoff, hero: HeroId, tls: &TlsConfig) -> Result<(Ga
 /// own match) and waits for the welcome.
 pub fn spectate(handoff: &Handoff, tls: &TlsConfig) -> Result<GameLink, ClientError> {
     let mut link = GameLink::connect(handoff, tls)?;
-    link.send(&ClientMsg::Hello { role: Role::Spectator, name: "spectator".to_owned(), key: Some(handoff.seat_key) })?;
+    link.send(&ClientMsg::Hello {
+        role: Role::Spectator,
+        name: "spectator".to_owned(),
+        key: Some(handoff.seat_key),
+    })?;
     for _ in 0..MAX_MESSAGES_BEFORE_WELCOME {
         match link.recv()? {
             Some(ServerMsg::Welcome { .. }) => return Ok(link),
@@ -98,29 +122,38 @@ pub fn play(
     let options = SessionOptions {
         perspective: Perspective::Seat(seated.slot),
         hero: Some(hero),
-        ack: if seated.mode == TickMode::Lockstep { AckPolicy::AfterTurn } else { AckPolicy::Never },
+        ack: if seated.mode == TickMode::Lockstep {
+            AckPolicy::AfterTurn
+        } else {
+            AckPolicy::Never
+        },
         forget_after_ticks: 480,
     };
     let mut session: Option<ClientSession> = None;
     loop {
         let message = link.recv()?.ok_or(ClientError::Closed)?;
         if let ServerMsg::MatchStart { info } = &message {
-            let started = ClientSession::start(seated, info, options).map_err(|e| ClientError::Protocol(e.to_string()))?;
+            let started = ClientSession::start(seated, info, options)
+                .map_err(|e| ClientError::Protocol(e.to_string()))?;
             session = Some(started);
             continue;
         }
         let Some(session) = session.as_mut() else {
             continue; // the lobby is still being told
         };
-        match session.ingest(message, &mut ()).map_err(|e| ClientError::Protocol(e.to_string()))? {
+        match session
+            .ingest(message, &mut ())
+            .map_err(|e| ClientError::Protocol(e.to_string()))?
+        {
             Ingested::TickComplete { .. } => {
                 if let Some(order) = decide(session)
                     && let Ok(given) = session.issue(IssuedOrder { unit: None, order })
                 {
-                    link.send(&given.message())?;
+                    // A failed send means the link is gone; the next read says whether the match ended first.
+                    let _ = link.send(&given.message());
                 }
                 if let Some(tick) = session.end_turn() {
-                    link.send(&ClientMsg::Ack { tick })?;
+                    let _ = link.send(&ClientMsg::Ack { tick });
                 }
             }
             Ingested::Over { winner, stats } => return Ok((winner, stats)),

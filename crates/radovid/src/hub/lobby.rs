@@ -45,10 +45,23 @@ impl Lobby {
 }
 
 impl Hub {
-    fn member_view(&self, account: AccountId, slot: u8, ready: bool, rating: Option<Rating>) -> LobbyMember {
+    fn member_view(
+        &self,
+        account: AccountId,
+        slot: u8,
+        ready: bool,
+        rating: Option<Rating>,
+    ) -> LobbyMember {
         let (login, nickname, kind, bot_version) = self.accounts.get(&account).map_or_else(
             || (String::new(), String::new(), AccountKind::Human, None),
-            |a| (a.info.login.clone(), a.info.nickname.clone(), a.info.kind, a.bot_version.clone()),
+            |a| {
+                (
+                    a.info.login.clone(),
+                    a.info.nickname.clone(),
+                    a.info.kind,
+                    a.bot_version.clone(),
+                )
+            },
         );
         LobbyMember {
             account,
@@ -82,7 +95,9 @@ impl Hub {
                 .map(|(account, rating)| self.member_view(*account, 0, false, *rating))
                 .collect(),
             starting_in_ms: lobby.starting.map(|deadline| {
-                deadline.saturating_duration_since(Instant::now()).as_millis() as u32
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis() as u32
             }),
         }
     }
@@ -95,7 +110,12 @@ impl Hub {
         let state = self.lobby_state(l);
         let members: Vec<AccountId> = l.members.iter().map(|m| m.account).collect();
         for member in members {
-            self.notify(member, Event::LobbyState { state: state.clone() });
+            self.notify(
+                member,
+                Event::LobbyState {
+                    state: state.clone(),
+                },
+            );
         }
     }
 
@@ -107,13 +127,21 @@ impl Hub {
         name: String,
         audience: Audience,
     ) -> Result<Reply, Error> {
-        let seats = self.config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?.seats;
+        let seats = self
+            .config
+            .ruleset(&ruleset)
+            .ok_or(Error::UnknownRuleset)?
+            .seats;
         if !valid_lobby_name(&name) {
             return Err(Error::BadLobbyName);
         }
         self.check_wire(wire)?;
         self.require_idle(id)?;
-        let kind = self.accounts.get(&id).map(|a| a.info.kind).ok_or(Error::Internal)?;
+        let kind = self
+            .accounts
+            .get(&id)
+            .map(|a| a.info.kind)
+            .ok_or(Error::Internal)?;
         if !audience.admits(kind) {
             return Err(Error::AudienceMismatch);
         }
@@ -130,7 +158,12 @@ impl Hub {
             seats,
             owner: id,
             audience,
-            members: vec![Member { account: id, slot: 0, ready: false, rating }],
+            members: vec![Member {
+                account: id,
+                slot: 0,
+                ready: false,
+                rating,
+            }],
             pending: Vec::new(),
             starting: None,
             match_id: None,
@@ -179,7 +212,12 @@ impl Hub {
         Reply::Lobbies { list }
     }
 
-    pub(super) fn lobby_ask(&mut self, id: AccountId, wire: u64, lobby: LobbyId) -> Result<Reply, Error> {
+    pub(super) fn lobby_ask(
+        &mut self,
+        id: AccountId,
+        wire: u64,
+        lobby: LobbyId,
+    ) -> Result<Reply, Error> {
         self.require_idle(id)?;
         let l = self.lobbies.get(&lobby).ok_or(Error::UnknownLobby)?;
         if l.starting.is_some() {
@@ -188,7 +226,11 @@ impl Hub {
         if l.is_full() || l.pending.len() >= MAX_PENDING_PER_LOBBY {
             return Err(Error::LobbyFull);
         }
-        let kind = self.accounts.get(&id).map(|a| a.info.kind).ok_or(Error::Internal)?;
+        let kind = self
+            .accounts
+            .get(&id)
+            .map(|a| a.info.kind)
+            .ok_or(Error::Internal)?;
         if !l.audience.admits(kind) {
             return Err(Error::AudienceMismatch);
         }
@@ -226,7 +268,11 @@ impl Hub {
 
     fn lobby_of_owner(&self, id: AccountId) -> Result<LobbyId, Error> {
         match self.accounts.get(&id).map(|a| &a.at) {
-            Some(Where::InLobby(lobby)) if self.lobbies.get(lobby).is_some_and(|l| l.owner == id) => Ok(*lobby),
+            Some(Where::InLobby(lobby))
+                if self.lobbies.get(lobby).is_some_and(|l| l.owner == id) =>
+            {
+                Ok(*lobby)
+            }
             _ => Err(Error::NotLobbyOwner),
         }
     }
@@ -246,11 +292,20 @@ impl Hub {
         }
     }
 
-    pub(super) async fn lobby_decide(&mut self, id: AccountId, asker: AccountId, allow: bool) -> Result<Reply, Error> {
+    pub(super) async fn lobby_decide(
+        &mut self,
+        id: AccountId,
+        asker: AccountId,
+        allow: bool,
+    ) -> Result<Reply, Error> {
         let lobby = self.lobby_of_owner(id)?;
         self.not_starting(lobby)?;
         let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
-        let at = l.pending.iter().position(|(a, _)| *a == asker).ok_or(Error::NoSuchRequest)?;
+        let at = l
+            .pending
+            .iter()
+            .position(|(a, _)| *a == asker)
+            .ok_or(Error::NoSuchRequest)?;
         if !allow {
             l.pending.remove(at);
             self.clear_asking(asker);
@@ -271,7 +326,12 @@ impl Hub {
         let rating = self.rating_for(asker, &ruleset).await;
         let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
         let slot = l.lowest_free_slot().ok_or(Error::LobbyFull)?;
-        l.members.push(Member { account: asker, slot, ready: false, rating });
+        l.members.push(Member {
+            account: asker,
+            slot,
+            ready: false,
+            rating,
+        });
         l.members.sort_by_key(|m| m.slot);
         if let Some(account) = self.accounts.get_mut(&asker) {
             account.at = Where::InLobby(lobby);
@@ -293,9 +353,19 @@ impl Hub {
             return;
         };
         let state = self.lobby_state(l);
-        let members: Vec<AccountId> = l.members.iter().map(|m| m.account).filter(|m| *m != except).collect();
+        let members: Vec<AccountId> = l
+            .members
+            .iter()
+            .map(|m| m.account)
+            .filter(|m| *m != except)
+            .collect();
         for member in members {
-            self.notify(member, Event::LobbyState { state: state.clone() });
+            self.notify(
+                member,
+                Event::LobbyState {
+                    state: state.clone(),
+                },
+            );
         }
     }
 
@@ -367,7 +437,12 @@ impl Hub {
             state.released = false;
         }
         for member in members {
-            self.notify(member, Event::LobbyStarting { in_ms: LOBBY_COUNTDOWN_MS });
+            self.notify(
+                member,
+                Event::LobbyStarting {
+                    in_ms: LOBBY_COUNTDOWN_MS,
+                },
+            );
         }
         self.broadcast_lobby(lobby);
         let tx = self.me.clone();
