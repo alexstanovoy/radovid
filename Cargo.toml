@@ -12,8 +12,8 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-bota_client_core = { path = "../bota-radovid/crates/bota_client_core" }
-bota_proto = { path = "../bota-radovid/crates/bota_proto" }
+bota_client_core = { path = "../bota-radovid-pin/crates/bota_client_core" }
+bota_proto = { path = "../bota-radovid-pin/crates/bota_proto" }
 radovid_client = { path = "crates/radovid_client" }
 radovid_proto = { path = "crates/radovid_proto" }
 serde = { version = "1", features = ["derive"] }

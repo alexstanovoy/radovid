@@ -155,6 +155,7 @@ async fn connect_referee(
         role: Role::Referee,
         name: "referee".to_owned(),
         key: Some(spec.referee_key),
+        wire_fingerprint: bota_proto::WIRE_FINGERPRINT,
     })
     .map_err(std::io::Error::other)?;
     stream.write_all(&hello).await?;

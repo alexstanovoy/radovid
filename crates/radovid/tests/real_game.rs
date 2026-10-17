@@ -83,7 +83,7 @@ fn two_bots_play_a_whole_match_through_the_game_path() {
                 };
                 // In lockstep an acknowledgement can race the server's exit at the very end; the
                 // service's own record of the result is what counts.
-                play(&mut link, &seated, HeroId::SHADOW_FIEND, |_| Some(middle)).ok()
+                play(&mut link, &seated, |_| Some(middle)).ok()
             })
         })
         .collect();
@@ -92,11 +92,11 @@ fn two_bots_play_a_whole_match_through_the_game_path() {
         .filter_map(|g| g.join().expect("game"))
         .collect();
     if let [first, second] = ends.as_slice() {
-        assert_eq!(first.0, second.0, "both seats saw the same end");
+        assert_eq!(first.winner, second.winner, "both seats saw the same end");
     }
     let result = a.wait_result();
     assert_ne!(result.outcome, Outcome::Null);
-    assert!(ends.iter().all(|(winner, _)| match winner {
+    assert!(ends.iter().all(|o| match o.winner {
         Team::Radiant => result.outcome == Outcome::Radiant,
         Team::Dire => result.outcome == Outcome::Dire,
         Team::Neutral => result.outcome == Outcome::Draw,

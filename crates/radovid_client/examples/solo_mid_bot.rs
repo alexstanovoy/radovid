@@ -39,10 +39,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let middle = Order::Move {
             target: Target::Pos(Vec2::from_ints(9216, 9216)),
         };
-        let (winner, stats) = play(&mut link, &seated, HeroId::SHADOW_FIEND, |_| Some(middle))?;
+        let outcome = play(&mut link, &seated, |_| Some(middle))?;
         println!(
-            "match {} over: {winner:?} after {} ticks",
-            handoff.match_id.0, stats.duration
+            "match {} over: {:?} after {} ticks",
+            handoff.match_id.0, outcome.winner, outcome.ticks
         );
         // The rating change arrives on the control connection.
         while let Some(event) = client.next_event(std::time::Duration::from_secs(10))? {

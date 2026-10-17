@@ -33,7 +33,7 @@ getrandom = "0.4.3"
 socket2 = "0.6.5"
 
 [dev-dependencies]
-bota_server = { path = "../../../bota-radovid/crates/bota_server" }
+bota_server = { path = "../../../bota-radovid-pin/crates/bota_server" }
 radovid_client = { workspace = true }
 bota_client_core = { workspace = true }
 bota_proto = { workspace = true }
