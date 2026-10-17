@@ -1,6 +1,6 @@
 # radovid
 
-radovid is the service around [bota](../bota): accounts, a matchmaking queue, custom lobbies,
+radovid is the service around bota, the game server: accounts, a matchmaking queue, custom lobbies,
 Glicko-2 ratings, a ladder, admin bans, and the orchestration of one `bota_server` per match.
 It is one process (tokio) with one SQLite file. Clients are native bots (`radovid_client`)
 or a GUI; everything speaks WebSocket over TLS on one port.
@@ -69,7 +69,7 @@ route container addresses to the host; set `publish_loopback = true` there and t
 loopback-only published port instead. At start the service kills containers an earlier run left
 behind and records their matches as lost. Build the image from the bota commit the service is built
 against: at start the service runs the configured binary or image with `--wire-fingerprint` and refuses
-to start when it differs from its own, which `serve` prints. A game server that turns the referee away
+to start when it differs from its own; `serve` logs the check either way. A game server that turns the referee away
 for another wire later is logged with both fingerprints, and its match is lost.
 
 ## Protocol

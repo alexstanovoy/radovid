@@ -59,11 +59,7 @@ fn run(args: Args) -> Result<(), String> {
             let identity = tls::load(&config.tls_cert, &config.tls_key)?;
             runtime()?.block_on(async {
                 let service = Service::start(config, &identity).await?;
-                eprintln!(
-                    "radovid: listening on {}, bota wire {:016x}",
-                    service.addr,
-                    bota_proto::WIRE_FINGERPRINT
-                );
+                eprintln!("radovid: listening on {}", service.addr);
                 tokio::signal::ctrl_c().await.map_err(|e| e.to_string())?;
                 eprintln!("radovid: stopping");
                 service.shutdown().await;

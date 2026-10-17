@@ -88,5 +88,6 @@ async fn check_wire(backend: &dyn Backend) -> Result<(), String> {
              build both from one bota commit"
         ));
     }
+    eprintln!("radovid: the game server speaks bota wire {theirs:016x}, as radovid does");
     Ok(())
 }
