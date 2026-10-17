@@ -12,10 +12,12 @@ max_matches = 8
 memory_kib = 65536
 iterations = 3
 
-# Development: game servers as child processes.
+# Development: game servers as child processes. The binary must come from the bota commit radovid
+# is built against (the pin in Cargo.toml): `cargo build --release -p bota_server --bin bota_server`
+# there.
 [backend]
 kind = "local"
-bota_server = "../bota/target/release/bota_server"
+bota_server = "../bota-radovid-pin/target/release/bota_server"
 
 # Production: one container per match on a private docker network.
 # [backend]

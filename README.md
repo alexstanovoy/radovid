@@ -11,7 +11,9 @@ radovid         the service (library + binary), the local and docker backends
 radovid_client  a synchronous client: Client (control), GameLink (game), play()
 ```
 
-`bota_proto <- radovid_proto <- {radovid, radovid_client}`; bota knows nothing of radovid.
+`bota_proto <- radovid_proto <- {radovid, radovid_client}` and `bota_client_core <- radovid_client`;
+the tests also use `bota_server`. Every bota crate comes from one bota commit, the pinned worktree
+the root `Cargo.toml` points at; bota knows nothing of radovid.
 
 ## What it does
 
@@ -33,8 +35,8 @@ radovid_client  a synchronous client: Client (control), GameLink (game), play()
 ## Run it (development)
 
 ```sh
-# 1. the game server, from the bota checkout this tree builds against
-cargo build --release -p bota_server        # in the bota checkout the path dependencies point at
+# 1. the game server, from the bota commit this tree builds against
+cargo build --release -p bota_server --bin bota_server   # in ../bota-radovid-pin
 # 2. a self-signed certificate and the service
 cargo run --release -p radovid -- dev-cert dev/
 cp radovid.example.toml radovid.toml        # point tls_cert/tls_key at dev/, backend at the binary
