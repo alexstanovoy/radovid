@@ -70,7 +70,6 @@ pub async fn run(ws: Socket, shared: Arc<Shared>, mut guard: Unauthenticated) {
             tcp,
             &first,
             shared.config.game_messages_per_sec,
-            route.replaced,
         )
         .await;
     }
@@ -130,7 +129,6 @@ async fn bridge(
     tcp: TcpStream,
     first: &[u8],
     rate: u32,
-    mut replaced: Option<oneshot::Receiver<()>>,
 ) -> Result<(), ()> {
     tcp.set_nodelay(true).map_err(|_| ())?;
     let socket = socket2::SockRef::from(&tcp);
@@ -148,9 +146,6 @@ async fn bridge(
     let mut last_heard = Instant::now();
     loop {
         tokio::select! {
-            Ok(()) = async { match replaced.as_mut() { Some(r) => r.await, None => std::future::pending().await } } => {
-                return Err(()); // a newer connection took the seat
-            }
             message = stream.next() => {
                 let message = message.ok_or(())?.map_err(|_| ())?;
                 last_heard = Instant::now();

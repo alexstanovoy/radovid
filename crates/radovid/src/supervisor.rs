@@ -90,6 +90,7 @@ impl Supervisor {
         };
         let mut reader = FrameReader::new();
         let mut buf = vec![0u8; 16 * 1024];
+        let pong = encode_frame_to_vec(&ClientMsg::Pong).expect("a pong encodes");
         loop {
             let message = loop {
                 match reader.next_message::<ServerMsg>() {
@@ -111,6 +112,13 @@ impl Supervisor {
                     Ok(n) => reader.push(&buf[..n]),
                 }
             };
+            if matches!(message, ServerMsg::Ping) {
+                // The game server drops a connection that answers nothing.
+                if let Err(error) = stream.write_all(&pong).await {
+                    return End::Crashed(format!("referee: {error}"));
+                }
+                continue;
+            }
             if let Some(end) = self.relay(message, addr).await {
                 return end;
             }
@@ -129,6 +137,11 @@ impl Supervisor {
                 let _ = self.hub.send(Cmd::MatchStarted { match_id, picks }).await;
             }
             ServerMsg::MatchOver { winner, stats } => return Some(End::Over { winner, stats }),
+            ServerMsg::Refused { reason } => {
+                return Some(End::Crashed(format!(
+                    "the game server refused the referee: {reason:?}"
+                )));
+            }
             ServerMsg::WireMismatch { server_fingerprint } => {
                 return Some(End::Crashed(format!(
                     "the game server speaks bota wire {server_fingerprint:016x} and radovid \

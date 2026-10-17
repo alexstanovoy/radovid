@@ -68,8 +68,10 @@ impl Transport for GameLink {
 }
 
 /// Opens the link and takes the seat of the handoff: picks `hero` and says
-/// ready. Calling it again with the same handoff is a reconnect: the service
-/// replaces the old connection.
+/// ready. Calling it again with the same handoff is a reconnect, which the
+/// game server takes once the old connection has ended or been found dead (a
+/// few seconds after it fell silent); until then it refuses the new one with
+/// `SeatHeld`, and the caller tries again.
 pub fn take_seat(
     handoff: &Handoff,
     hero: HeroId,
@@ -86,7 +88,8 @@ pub fn take_seat(
 }
 
 /// Opens the link as a spectator locked to the seat's view (the same account's
-/// own match) and waits for the welcome.
+/// own match) and waits for the welcome. Whoever reads the link on answers
+/// each `Ping` with a `Pong`, or the game server drops it.
 pub fn spectate(handoff: &Handoff, tls: &TlsConfig) -> Result<GameLink, ClientError> {
     let mut link = GameLink::connect(handoff, tls)?;
     link.send(&ClientMsg::Hello {
@@ -98,6 +101,10 @@ pub fn spectate(handoff: &Handoff, tls: &TlsConfig) -> Result<GameLink, ClientEr
     for _ in 0..MAX_MESSAGES_BEFORE_WELCOME {
         match link.recv()? {
             Some(ServerMsg::Welcome { .. }) => return Ok(link),
+            Some(ServerMsg::Ping) => link.send(&ClientMsg::Pong)?,
+            Some(ServerMsg::Refused { reason }) => {
+                return Err(ClientError::Protocol(format!("refused: {reason:?}")));
+            }
             Some(_) => {}
             None => return Err(ClientError::Closed),
         }

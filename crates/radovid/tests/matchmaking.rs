@@ -199,16 +199,29 @@ fn a_drawn_match_is_half_a_win_and_a_lost_game_server_changes_no_rating() {
 }
 
 #[test]
-fn a_returning_player_replaces_its_old_connection_and_its_account_may_watch() {
+fn a_returning_player_takes_its_seat_back_once_the_old_connection_ends_and_its_account_may_watch() {
     let env = start(rulesets("hang"));
     let mut a = env.bot("alpha");
     let mut b = env.bot("beta");
     let (ha, hb) = pair_up(&mut a, &mut b, "solo_mid");
-    let (mut old, _) = take_seat(&ha, HeroId::SHADOW_FIEND, &env.tls).expect("first seat");
+    let (old, _) = take_seat(&ha, HeroId::SHADOW_FIEND, &env.tls).expect("first seat");
     let (_other, _) = take_seat(&hb, HeroId::SHADOW_FIEND, &env.tls).expect("second seat");
 
-    // The same handoff again is a reconnect: the old link ends, the new one is told the match.
-    let (mut back, seated) = take_seat(&ha, HeroId::SHADOW_FIEND, &env.tls).expect("reconnect");
+    // The same handoff while the first link lives is refused: a seat never changes hands
+    // under a live connection.
+    assert!(take_seat(&ha, HeroId::SHADOW_FIEND, &env.tls).is_err());
+
+    // Once that link has ended, the same handoff takes the seat back.
+    drop(old);
+    let (mut back, seated) = (0..50)
+        .find_map(|_| {
+            let taken = take_seat(&ha, HeroId::SHADOW_FIEND, &env.tls).ok();
+            if taken.is_none() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            taken
+        })
+        .expect("reconnect");
     assert_eq!(seated.slot.0, 0);
     loop {
         match back.recv().expect("readable") {
@@ -217,22 +230,6 @@ fn a_returning_player_replaces_its_old_connection_and_its_account_may_watch() {
             None => panic!("closed before the match start"),
         }
     }
-    loop {
-        match old.recv() {
-            Ok(None) | Err(_) => break,
-            Ok(Some(_)) => {}
-        }
-    }
-
-    // And again: each newer connection closes the one before it, and only the newest is served.
-    let (mut newest, _) = take_seat(&ha, HeroId::SHADOW_FIEND, &env.tls).expect("second reconnect");
-    loop {
-        match back.recv() {
-            Ok(None) | Err(_) => break,
-            Ok(Some(_)) => {}
-        }
-    }
-    assert!(newest.recv().expect("readable").is_some());
 
     // The same account, on another session, learns where it is and watches through its seat.
     let mut second_session = env.connect();

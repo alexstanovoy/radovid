@@ -168,8 +168,15 @@ fn handle(
                     (None, None)
                 }
                 (Role::Player | Role::Bot, Some(i)) => {
-                    if let Some((_, old)) = st.seats[i].conn.take() {
-                        let _ = old.shutdown(std::net::Shutdown::Both);
+                    // As bota: a seat never changes hands while its connection lives.
+                    if st.seats[i].conn.is_some() {
+                        send(
+                            stream,
+                            &ServerMsg::Refused {
+                                reason: bota_proto::RejectReason::SeatHeld,
+                            },
+                        );
+                        return false;
                     }
                     st.seats[i].conn = Some((id, Arc::clone(stream)));
                     st.seats[i].ready = false;

@@ -27,8 +27,10 @@ pinned worktree the root `Cargo.toml` points at; bota knows nothing of radovid.
 - **One activity.** An account is in at most one of queue, lobby and match.
 - **Matches.** One game server per match with reserved seats. The service attends it as a
   *referee* and records the result; the players connect through the service's `/game` path. A
-  player may reconnect at any time (the new connection replaces the old one); the same account
-  may add spectators that see only that seat's view.
+  player may reconnect at any time with the seat's key, once the old connection has ended or the
+  game server has found it dead (a few seconds of silence); while the old one lives the game
+  server refuses the new one (`Refused { reason: SeatHeld }`) and the client tries again. The
+  same account may add spectators that see only that seat's view.
 - **Admin.** Ban (with reason and expiry), unban, change an account's kind, stop a match (a
   `null`). An admin is made on the host: `radovid admin --config radovid.toml <login>`.
 

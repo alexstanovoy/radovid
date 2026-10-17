@@ -38,16 +38,12 @@ pub(super) struct MatchState {
 
 pub(super) struct Route {
     pub addr: SocketAddr,
-    /// Closes the player connection that holds the seat, when another takes it.
-    pub player: Option<oneshot::Sender<()>>,
     pub spectators: usize,
 }
 
 /// Where a game connection is to be bridged.
 pub struct GameRoute {
     pub addr: SocketAddr,
-    /// Fires when a newer player connection takes the same seat.
-    pub replaced: Option<oneshot::Receiver<()>>,
 }
 
 impl Hub {
@@ -210,7 +206,6 @@ impl Hub {
                 seat.key.0,
                 Route {
                     addr,
-                    player: None,
                     spectators: 0,
                 },
             );
@@ -272,8 +267,9 @@ impl Hub {
         })
     }
 
-    /// A player connection replaces the one before it: that one is told to
-    /// close. Spectators are counted.
+    /// Where a connection with the key goes. Spectators are counted; a
+    /// player connection is passed on as it is, and the game server refuses
+    /// it (`SeatHeld`) while a live connection holds the seat.
     pub(super) fn route(&mut self, key: &SeatKey, spectator: bool) -> Option<GameRoute> {
         let route = self.routes.get_mut(&key.0)?;
         if spectator {
@@ -281,20 +277,8 @@ impl Hub {
                 return None;
             }
             route.spectators += 1;
-            return Some(GameRoute {
-                addr: route.addr,
-                replaced: None,
-            });
         }
-        if let Some(old) = route.player.take() {
-            let _ = old.send(());
-        }
-        let (tx, rx) = oneshot::channel();
-        route.player = Some(tx);
-        Some(GameRoute {
-            addr: route.addr,
-            replaced: Some(rx),
-        })
+        Some(GameRoute { addr: route.addr })
     }
 
     pub(super) fn release_route(&mut self, key: &SeatKey, spectator: bool) {
