@@ -94,4 +94,22 @@ impl Backend for LocalBackend {
         // Children die with the service (`kill_on_drop`, and their sockets close).
         Box::pin(async {})
     }
+
+    fn wire_fingerprint(&self) -> BoxFuture<'_, std::io::Result<u64>> {
+        Box::pin(async {
+            let output = Command::new(&self.binary)
+                .arg("--wire-fingerprint")
+                .stdin(Stdio::null())
+                .output()
+                .await?;
+            if !output.status.success() {
+                return Err(std::io::Error::other(format!(
+                    "{} --wire-fingerprint: {}",
+                    self.binary.display(),
+                    output.status
+                )));
+            }
+            super::parse_fingerprint(&String::from_utf8_lossy(&output.stdout))
+        })
+    }
 }

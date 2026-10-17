@@ -68,8 +68,9 @@ The service reaches a container by its address on the network. A rootless docker
 route container addresses to the host; set `publish_loopback = true` there and the service uses a
 loopback-only published port instead. At start the service kills containers an earlier run left
 behind and records their matches as lost. Build the image from the bota commit the service is built
-against: `bota_server --wire-fingerprint` and the service's `Welcome` print the same number when they
-match.
+against: at start the service runs the configured binary or image with `--wire-fingerprint` and refuses
+to start when it differs from its own, which `serve` prints. A game server that turns the referee away
+for another wire later is logged with both fingerprints, and its match is lost.
 
 ## Protocol
 

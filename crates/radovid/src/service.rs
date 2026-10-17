@@ -7,7 +7,9 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 
-use crate::backend;
+use bota_proto::WIRE_FINGERPRINT;
+
+use crate::backend::{self, Backend};
 use crate::config::Config;
 use crate::db::Db;
 use crate::hub::{self, Cmd};
@@ -30,6 +32,8 @@ impl Service {
     /// on `config.listen`. `{port}` in the public game URL is the port bound.
     pub async fn start(mut config: Config, identity: &Identity) -> Result<Service, String> {
         config.validate()?;
+        let backend = backend::from_config(&config.backend);
+        check_wire(&*backend).await?;
         let listener = TcpListener::bind(config.listen)
             .await
             .map_err(|e| format!("cannot listen on {}: {e}", config.listen))?;
@@ -39,7 +43,6 @@ impl Service {
             .replace("{port}", &addr.port().to_string());
         let acceptor = TlsAcceptor::from(tls::server_config(identity)?);
         let db = Db::open(&config.database).map_err(|e| e.to_string())?;
-        let backend = backend::from_config(&config.backend);
         backend.clean_up_orphans().await;
         let lost = db
             .fail_unfinished_matches()
@@ -70,4 +73,20 @@ impl Service {
         let _ = self.hub_tx.send(Cmd::Shutdown).await;
         let _ = self.hub_task.await;
     }
+}
+
+/// Refuses game servers of another bota wire: each would turn the referee away
+/// at its Hello, and every match would be lost.
+async fn check_wire(backend: &dyn Backend) -> Result<(), String> {
+    let theirs = backend
+        .wire_fingerprint()
+        .await
+        .map_err(|e| format!("cannot learn the game server's wire fingerprint: {e}"))?;
+    if theirs != WIRE_FINGERPRINT {
+        return Err(format!(
+            "the game server speaks bota wire {theirs:016x} and radovid {WIRE_FINGERPRINT:016x}: \
+             build both from one bota commit"
+        ));
+    }
+    Ok(())
 }

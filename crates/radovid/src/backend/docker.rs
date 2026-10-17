@@ -204,4 +204,25 @@ impl Backend for DockerBackend {
             }
         })
     }
+
+    fn wire_fingerprint(&self) -> BoxFuture<'_, std::io::Result<u64>> {
+        Box::pin(async {
+            let printed = self
+                .output(&[
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges",
+                    &self.image,
+                    "--wire-fingerprint",
+                ])
+                .await?;
+            super::parse_fingerprint(&printed)
+        })
+    }
 }

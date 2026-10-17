@@ -14,7 +14,7 @@ iterations = 3
 
 # Development: game servers as child processes. The binary must come from the bota commit radovid
 # is built against (the pin in Cargo.toml): `cargo build --release -p bota_server --bin bota_server`
-# there.
+# there. The service refuses to start when its wire fingerprint differs.
 [backend]
 kind = "local"
 bota_server = "../bota-radovid-pin/target/release/bota_server"

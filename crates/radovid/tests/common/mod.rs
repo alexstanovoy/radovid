@@ -114,6 +114,11 @@ pub fn start(rulesets: Vec<RulesetConfig>) -> Env {
 }
 
 pub fn start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Env {
+    try_start_with(backend, rulesets).expect("service")
+}
+
+/// A fresh directory for one service.
+pub fn test_dir() -> PathBuf {
     let base = if std::path::Path::new("/dev/shm").is_dir() {
         PathBuf::from("/dev/shm")
     } else {
@@ -125,6 +130,11 @@ pub fn start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Env {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).expect("test dir");
+    dir
+}
+
+pub fn try_start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Result<Env, String> {
+    let dir = test_dir();
     let identity = tls::self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()])
         .expect("certificate");
     let config = Config {
@@ -148,16 +158,20 @@ pub fn start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Env {
         .enable_all()
         .build()
         .expect("runtime");
-    let service = runtime
-        .block_on(Service::start(config, &identity))
-        .expect("service");
-    Env {
+    let service = match runtime.block_on(Service::start(config, &identity)) {
+        Ok(service) => service,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+    };
+    Ok(Env {
         url: format!("wss://127.0.0.1:{}", service.addr.port()),
         tls: TlsConfig::trust_pem(&identity.cert_pem).expect("trust"),
         runtime,
         service: Some(service),
         dir,
-    }
+    })
 }
 
 /// A logged-in account and its control connection.

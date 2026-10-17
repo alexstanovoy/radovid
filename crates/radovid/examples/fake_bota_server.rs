@@ -42,6 +42,10 @@ fn main() {
             "--outcome" => outcome = value(),
             "--after-ms" => after_ms = value().parse().unwrap_or(300),
             "--match-id" => match_id = value().parse().unwrap_or(0),
+            "--wire-fingerprint" => {
+                println!("{:016x}", bota_proto::WIRE_FINGERPRINT);
+                return;
+            }
             _ => {}
         }
     }

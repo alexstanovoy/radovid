@@ -132,6 +132,13 @@ impl Supervisor {
                         .await;
                 }
                 ServerMsg::MatchOver { winner, stats } => return End::Over { winner, stats },
+                ServerMsg::WireMismatch { server_fingerprint } => {
+                    return End::Crashed(format!(
+                        "the game server speaks bota wire {server_fingerprint:016x} and radovid \
+                         {:016x}: build both from one bota commit",
+                        bota_proto::WIRE_FINGERPRINT
+                    ));
+                }
                 _ => {}
             }
         }
