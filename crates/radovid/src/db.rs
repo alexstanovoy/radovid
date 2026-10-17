@@ -603,7 +603,14 @@ const ACCOUNT_SELECT: &str = "SELECT id, login, nickname, hash, kind, admin, ban
     ban_until, bot_version FROM accounts";
 
 fn account_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
-    let banned: bool = row.get(6)?;
+    let ban = if row.get::<_, bool>(6)? {
+        Some(Ban {
+            reason: row.get(7)?,
+            until: row.get::<_, Option<i64>>(8)?.map(|u| UnixMs(u as u64)),
+        })
+    } else {
+        None
+    };
     Ok(AccountRow {
         id: AccountId(row.get::<_, i64>(0)? as u64),
         login: row.get(1)?,
@@ -611,14 +618,7 @@ fn account_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
         hash: row.get(3)?,
         kind: kind_of(row.get(4)?),
         admin: row.get(5)?,
-        ban: banned.then(|| Ban {
-            reason: row.get(7).unwrap_or_default(),
-            until: row
-                .get::<_, Option<i64>>(8)
-                .ok()
-                .flatten()
-                .map(|u| UnixMs(u as u64)),
-        }),
+        ban,
         bot_version: row.get(9)?,
     })
 }

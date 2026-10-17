@@ -1,6 +1,7 @@
 //! Matches: creating them, handing the seats to their players, and recording
 //! how they ended.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use bota_proto::{HeroId, SeatKey, SlotId, Team};
@@ -32,7 +33,7 @@ pub(super) struct MatchState {
     pub announced: bool,
     pub stop: Option<oneshot::Sender<()>>,
     /// Each seat's rating when the match was formed, for the lobby's and handoff's display.
-    pub ratings: std::collections::HashMap<AccountId, Rating>,
+    pub ratings: HashMap<AccountId, Rating>,
 }
 
 pub(super) struct Route {
@@ -78,15 +79,18 @@ impl Hub {
             .create_match(ruleset.clone(), rated, seats)
             .await
             .map_err(internal)?;
-        let mut keyed = Vec::new();
-        for (slot, account) in members.iter().enumerate() {
-            keyed.push(SeatState {
-                account: *account,
-                slot: slot as u8,
-                key: random_key().map_err(internal)?,
-                hero: None,
-            });
-        }
+        let keyed = members
+            .iter()
+            .enumerate()
+            .map(|(slot, account)| {
+                Ok(SeatState {
+                    account: *account,
+                    slot: slot as u8,
+                    key: random_key().map_err(internal)?,
+                    hero: None,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         let names = self.seat_names(members);
         let spec = MatchSpec {
             match_id,
@@ -99,12 +103,7 @@ impl Hub {
             rules_args: config.bota_args.clone(),
             start_after_secs: config.start_after_secs,
         };
-        let mut ratings = std::collections::HashMap::new();
-        for account in members {
-            if let Ok(Some(row)) = self.db.rating(*account, ruleset.clone()).await {
-                ratings.insert(*account, row.glicko.public());
-            }
-        }
+        let ratings = self.seat_ratings(members, &ruleset).await;
         let (stop_tx, stop_rx) = oneshot::channel();
         let supervisor = Supervisor {
             match_id,
@@ -137,6 +136,21 @@ impl Hub {
             }
         }
         Ok(match_id)
+    }
+
+    /// Each member's stored rating; a member without one or a failed lookup shows none.
+    async fn seat_ratings(
+        &self,
+        members: &[AccountId],
+        ruleset: &RulesetId,
+    ) -> HashMap<AccountId, Rating> {
+        let mut ratings = HashMap::new();
+        for account in members {
+            if let Ok(Some(row)) = self.db.rating(*account, ruleset.clone()).await {
+                ratings.insert(*account, row.glicko.public());
+            }
+        }
+        ratings
     }
 
     /// Nicknames, with the login appended where two coincide.

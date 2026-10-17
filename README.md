@@ -96,8 +96,9 @@ WebSocket message is exactly one frame (`u32 LE length | postcard`), as on bota'
   inside the delay is not evaluated, and a right password after it always works, so nobody can lock
   anybody out. Counters live in memory.
 - Session tokens are random, stored as SHA-256, expire after 30 days idle and are revoked by a
-  password change. Seat keys are random, live in memory and in the container's environment only, and
-  are compared in constant time.
+  password change; a token is matched by its hash, never compared as a secret. Seat keys are random
+  and live in memory and in the container's environment only; the game path finds a seat by its key
+  in a hash table with a per-process random hasher.
 - Everything is bounded: frame size, messages per second (token bucket), unauthenticated connections
   per address, sessions per account, list sizes, lobbies, registrations per hour per address, matches
   at once, connections per seat key. Hostile bytes close their own connection and nothing else.

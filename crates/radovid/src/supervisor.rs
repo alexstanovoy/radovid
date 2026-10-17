@@ -1,6 +1,7 @@
 //! One task per match: starts the game server, attends it as its referee and
 //! reports to the hub what became of it.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,12 +52,11 @@ impl Supervisor {
             None => End::Stopped,
             Some(_) => self.attend(&mut stop, &mut container).await,
         };
-        if let Some(container) = &container {
-            if matches!(end, End::Over { .. }) {
-                // Let it exit by itself first; it has nothing left to do.
-            } else {
-                container.kill();
-            }
+        // A finished match's server exits by itself; any other end kills it.
+        if let Some(container) = &container
+            && !matches!(end, End::Over { .. })
+        {
+            container.kill();
         }
         let _ = self.hub.send(Cmd::MatchEnded { match_id: id, end }).await;
         if let Some(mut container) = container
@@ -111,44 +111,38 @@ impl Supervisor {
                     Ok(n) => reader.push(&buf[..n]),
                 }
             };
-            match message {
-                ServerMsg::Welcome { .. } => {
-                    let _ = self
-                        .hub
-                        .send(Cmd::MatchUp {
-                            match_id: self.match_id,
-                            addr,
-                        })
-                        .await;
-                }
-                ServerMsg::MatchStart { info } => {
-                    let picks = info.picks.iter().map(|p| (p.slot, p.hero)).collect();
-                    let _ = self
-                        .hub
-                        .send(Cmd::MatchStarted {
-                            match_id: self.match_id,
-                            picks,
-                        })
-                        .await;
-                }
-                ServerMsg::MatchOver { winner, stats } => return End::Over { winner, stats },
-                ServerMsg::WireMismatch { server_fingerprint } => {
-                    return End::Crashed(format!(
-                        "the game server speaks bota wire {server_fingerprint:016x} and radovid \
-                         {:016x}: build both from one bota commit",
-                        bota_proto::WIRE_FINGERPRINT
-                    ));
-                }
-                _ => {}
+            if let Some(end) = self.relay(message, addr).await {
+                return end;
             }
         }
     }
+
+    /// Tells the hub what the referee stream says; `Some` when it says the match is over.
+    async fn relay(&self, message: ServerMsg, addr: SocketAddr) -> Option<End> {
+        let match_id = self.match_id;
+        match message {
+            ServerMsg::Welcome { .. } => {
+                let _ = self.hub.send(Cmd::MatchUp { match_id, addr }).await;
+            }
+            ServerMsg::MatchStart { info } => {
+                let picks = info.picks.iter().map(|p| (p.slot, p.hero)).collect();
+                let _ = self.hub.send(Cmd::MatchStarted { match_id, picks }).await;
+            }
+            ServerMsg::MatchOver { winner, stats } => return Some(End::Over { winner, stats }),
+            ServerMsg::WireMismatch { server_fingerprint } => {
+                return Some(End::Crashed(format!(
+                    "the game server speaks bota wire {server_fingerprint:016x} and radovid \
+                     {:016x}: build both from one bota commit",
+                    bota_proto::WIRE_FINGERPRINT
+                )));
+            }
+            _ => {}
+        }
+        None
+    }
 }
 
-async fn connect_referee(
-    addr: std::net::SocketAddr,
-    spec: &MatchSpec,
-) -> std::io::Result<TcpStream> {
+async fn connect_referee(addr: SocketAddr, spec: &MatchSpec) -> std::io::Result<TcpStream> {
     let deadline = tokio::time::Instant::now() + REFEREE_CONNECT;
     let mut stream = loop {
         match TcpStream::connect(addr).await {
