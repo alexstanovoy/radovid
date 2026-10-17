@@ -42,7 +42,7 @@ cargo run --release -p radovid -- dev-cert dev/
 cp radovid.example.toml radovid.toml        # point tls_cert/tls_key at dev/, backend at the binary
 cargo run --release -p radovid -- serve --config radovid.toml
 # 3. a bot, in another terminal
-cargo run --release -p radovid_client --example solo_mid_bot -- wss://127.0.0.1:4460 bot_a 'a long password' dev/cert.pem
+cargo run --release -p radovid_client --example solo_mid_bot -- wss://localhost:4460 bot_a 'a long password' dev/cert.pem
 ```
 
 Start the example twice with different logins and the two bots are matched and play.
@@ -75,8 +75,7 @@ for another wire later is logged with both fingerprints, and its match is lost.
 ## Protocol
 
 `/control` speaks `radovid_proto`; `/game` speaks bota's protocol, bridged to the container. One binary
-WebSocket message is exactly one frame (`u32 LE length | postcard`), the same bytes as on bota's
-sockets and in replay files.
+WebSocket message is exactly one frame (`u32 LE length | postcard`), as on bota's sockets.
 
 - The first message is `Hello { proto, bota_wire, client }`. The protocol version must match exactly
   (`Error::ProtoMismatch`); `bota_wire` is the fingerprint of bota's wire registry, and a client with
@@ -109,6 +108,8 @@ sockets and in replay files.
 
 `cargo test` runs the end-to-end tests over real WebSockets with a scripted stand-in game server
 (`examples/fake_bota_server.rs`): results, ratings, lobbies, reconnects, spectators, bans, limits.
-`tests/real_game.rs` uses the real `bota_server`: build it first (`cargo build --release -p bota_server`
-in the bota checkout) and point `BOTA_SERVER_BIN` at it; without the binary those tests fail. Setting
-`RADOVID_DOCKER_IMAGE` and `RADOVID_DOCKER_NETWORK` also runs the docker backend test.
+`tests/real_game.rs` uses the real `bota_server` of the pinned commit: point `BOTA_SERVER_BIN` at it
+(`cargo build --release -p bota_server --bin bota_server` in the pinned worktree), or build it here with
+the tests' profile (`cargo build -p bota_server --bin bota_server`) and the tests find it beside them;
+without the binary those tests fail. Setting `RADOVID_DOCKER_IMAGE` and `RADOVID_DOCKER_NETWORK` also
+runs the docker backend test.
