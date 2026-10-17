@@ -122,6 +122,17 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Kills whatever an earlier run of the service left behind.
     fn clean_up_orphans(&self) -> BoxFuture<'_, ()>;
+
+    /// The wire fingerprint of the game servers it starts, as
+    /// `bota_server --wire-fingerprint` prints it.
+    fn wire_fingerprint(&self) -> BoxFuture<'_, std::io::Result<u64>>;
+}
+
+/// Reads what `bota_server --wire-fingerprint` printed: 16 hex digits.
+fn parse_fingerprint(printed: &str) -> std::io::Result<u64> {
+    let printed = printed.trim();
+    u64::from_str_radix(printed, 16)
+        .map_err(|_| std::io::Error::other(format!("not a wire fingerprint: {printed:?}")))
 }
 
 pub fn from_config(config: &crate::config::BackendConfig) -> Arc<dyn Backend> {

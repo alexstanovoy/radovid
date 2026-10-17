@@ -1,6 +1,6 @@
 # radovid
 
-radovid is the service around [bota](../bota): accounts, a matchmaking queue, custom lobbies,
+radovid is the service around bota, the game server: accounts, a matchmaking queue, custom lobbies,
 Glicko-2 ratings, a ladder, admin bans, and the orchestration of one `bota_server` per match.
 It is one process (tokio) with one SQLite file. Clients are native bots (`radovid_client`)
 or a GUI; everything speaks WebSocket over TLS on one port.
@@ -11,7 +11,9 @@ radovid         the service (library + binary), the local and docker backends
 radovid_client  a synchronous client: Client (control), GameLink (game), play()
 ```
 
-`bota_proto <- radovid_proto <- {radovid, radovid_client}`; bota knows nothing of radovid.
+`bota_proto <- radovid_proto <- {radovid, radovid_client}` and `bota_client_core <- radovid_client`;
+the tests also use `bota_core` and `bota_server`. Every bota crate comes from one bota commit, the
+pinned worktree the root `Cargo.toml` points at; bota knows nothing of radovid.
 
 ## What it does
 
@@ -33,14 +35,14 @@ radovid_client  a synchronous client: Client (control), GameLink (game), play()
 ## Run it (development)
 
 ```sh
-# 1. the game server, from the bota checkout this tree builds against
-cargo build --release -p bota_server        # in the bota checkout the path dependencies point at
+# 1. the game server, from the bota commit this tree builds against
+cargo build --release -p bota_server --bin bota_server   # in ../bota-radovid-pin
 # 2. a self-signed certificate and the service
 cargo run --release -p radovid -- dev-cert dev/
 cp radovid.example.toml radovid.toml        # point tls_cert/tls_key at dev/, backend at the binary
 cargo run --release -p radovid -- serve --config radovid.toml
 # 3. a bot, in another terminal
-cargo run --release -p radovid_client --example solo_mid_bot -- wss://127.0.0.1:4460 bot_a 'a long password' dev/cert.pem
+cargo run --release -p radovid_client --example solo_mid_bot -- wss://localhost:4460 bot_a 'a long password' dev/cert.pem
 ```
 
 Start the example twice with different logins and the two bots are matched and play.
@@ -66,14 +68,14 @@ The service reaches a container by its address on the network. A rootless docker
 route container addresses to the host; set `publish_loopback = true` there and the service uses a
 loopback-only published port instead. At start the service kills containers an earlier run left
 behind and records their matches as lost. Build the image from the bota commit the service is built
-against: `bota_server --wire-fingerprint` and the service's `Welcome` print the same number when they
-match.
+against: at start the service runs the configured binary or image with `--wire-fingerprint` and refuses
+to start when it differs from its own; `serve` logs the check either way. A game server that turns the referee away
+for another wire later is logged with both fingerprints, and its match is lost.
 
 ## Protocol
 
 `/control` speaks `radovid_proto`; `/game` speaks bota's protocol, bridged to the container. One binary
-WebSocket message is exactly one frame (`u32 LE length | postcard`), the same bytes as on bota's
-sockets and in replay files.
+WebSocket message is exactly one frame (`u32 LE length | postcard`), as on bota's sockets.
 
 - The first message is `Hello { proto, bota_wire, client }`. The protocol version must match exactly
   (`Error::ProtoMismatch`); `bota_wire` is the fingerprint of bota's wire registry, and a client with
@@ -106,6 +108,8 @@ sockets and in replay files.
 
 `cargo test` runs the end-to-end tests over real WebSockets with a scripted stand-in game server
 (`examples/fake_bota_server.rs`): results, ratings, lobbies, reconnects, spectators, bans, limits.
-`tests/real_game.rs` uses the real `bota_server`: build it first (`cargo build --release -p bota_server`
-in the bota checkout) and point `BOTA_SERVER_BIN` at it; without the binary those tests fail. Setting
-`RADOVID_DOCKER_IMAGE` and `RADOVID_DOCKER_NETWORK` also runs the docker backend test.
+`tests/real_game.rs` uses the real `bota_server` of the pinned commit: point `BOTA_SERVER_BIN` at it
+(`cargo build --release -p bota_server --bin bota_server` in the pinned worktree), or build it here with
+the tests' profile (`cargo build -p bota_server --bin bota_server`) and the tests find it beside them;
+without the binary those tests fail. Setting `RADOVID_DOCKER_IMAGE` and `RADOVID_DOCKER_NETWORK` also
+runs the docker backend test.

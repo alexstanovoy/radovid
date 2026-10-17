@@ -2,7 +2,7 @@
 //! `solo_mid`, take the seat and play with a trivial policy, match after match.
 //!
 //! ```text
-//! solo_mid_bot wss://127.0.0.1:4460 my_bot 'a long password' [dev-cert.pem]
+//! solo_mid_bot wss://localhost:4460 my_bot 'a long password' [dev-cert.pem]
 //! ```
 
 use bota_proto::{HeroId, Order, Target, Vec2};

@@ -178,7 +178,9 @@ pub struct Handoff {
 /// Why a match ended.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndReason {
+    /// A side won.
     Decided,
+    /// Every draw: the clock ran out, or both sides lost on the same tick.
     TimeCap,
     /// With `Outcome::Null`: the game server died.
     Crashed,
