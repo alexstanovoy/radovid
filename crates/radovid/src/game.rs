@@ -1,7 +1,6 @@
 //! The `/game` path: a WebSocket on the outside, bota's frames on the inside,
 //! bridged to the game server's plain TCP port.
 
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,7 +22,7 @@ use crate::throttle::TokenBucket;
 const CONNECT_SECS: u64 = 5;
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub async fn run(ws: Socket, _ip: IpAddr, shared: Arc<Shared>, mut guard: Unauthenticated) {
+pub async fn run(ws: Socket, shared: Arc<Shared>, mut guard: Unauthenticated) {
     let (mut sink, mut stream) = ws.split();
     let first = tokio::time::timeout(Duration::from_secs(GAME_HELLO_DEADLINE_SECS), async {
         loop {

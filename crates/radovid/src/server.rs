@@ -174,7 +174,7 @@ async fn handle(
     };
     match path.as_str() {
         "/control" => crate::control::run(ws, peer.ip(), shared, guard).await,
-        "/game" => crate::game::run(ws, peer.ip(), shared, guard).await,
+        "/game" => crate::game::run(ws, shared, guard).await,
         _ => {}
     }
 }

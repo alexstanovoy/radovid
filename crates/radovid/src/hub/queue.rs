@@ -21,11 +21,9 @@ impl Hub {
         let seats = usize::from(config.seats);
         self.check_wire(wire)?;
         self.require_idle(id)?;
-        let waiting = {
-            let queue = self.queues.entry(ruleset.clone()).or_default();
-            queue.push((id, Instant::now()));
-            queue.len() as u32
-        };
+        let queue = self.queues.entry(ruleset.clone()).or_default();
+        queue.push(id);
+        let waiting = queue.len() as u32;
         if let Some(account) = self.accounts.get_mut(&id) {
             account.at = Where::Queued {
                 ruleset: ruleset.clone(),
@@ -48,7 +46,7 @@ impl Hub {
 
     pub(super) fn leave_queue(&mut self, id: AccountId, ruleset: &RulesetId) {
         if let Some(queue) = self.queues.get_mut(ruleset) {
-            queue.retain(|(account, _)| *account != id);
+            queue.retain(|account| *account != id);
         }
         if let Some(account) = self.accounts.get_mut(&id) {
             account.at = Where::Idle;
@@ -62,8 +60,7 @@ impl Hub {
             if queue.len() < seats {
                 return;
             }
-            let members: Vec<AccountId> =
-                queue.drain(..seats).map(|(account, _)| account).collect();
+            let members: Vec<AccountId> = queue.drain(..seats).collect();
             if let Err(error) = self.create_match(ruleset.clone(), true, &members).await {
                 eprintln!("radovid: cannot form a match: {error}");
                 for account in members {

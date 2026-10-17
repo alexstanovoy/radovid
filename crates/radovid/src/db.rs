@@ -212,10 +212,6 @@ impl Db {
         Self::init(conn)
     }
 
-    pub fn open_in_memory() -> DbResult<Db> {
-        Self::init(Connection::open_in_memory()?)
-    }
-
     fn init(conn: Connection) -> DbResult<Db> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;

@@ -35,9 +35,7 @@ pub const MAX_UNAUTHENTICATED_PER_IP: usize = 16;
 /// Control sessions per account.
 pub const MAX_SESSIONS_PER_ACCOUNT: usize = 4;
 
-/// Connections per seat key on the game path: one player and seven spectators.
-pub const MAX_PLAYERS_PER_KEY: usize = 1;
-/// Spectators per seat key on the game path.
+/// Spectators per seat key on the game path (one player holds the key besides).
 pub const MAX_SPECTATORS_PER_KEY: usize = 7;
 
 /// Rows of a ladder page, lobby list and recent matches at most.

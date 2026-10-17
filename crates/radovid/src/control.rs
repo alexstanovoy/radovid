@@ -356,7 +356,7 @@ impl Conn {
         if let Some(error) = self.throttled(&login) {
             return Err(error);
         }
-        let row = if valid_login(&login) && valid_password_shape(&password) {
+        let row = if valid_login(&login) && valid_password(&password) {
             self.shared
                 .db
                 .account_by_login(login.clone())
@@ -543,12 +543,6 @@ impl Conn {
             .map_err(crate::hub::internal)?;
         Ok(Reply::Done)
     }
-}
-
-/// A password's shape, checked before it costs a hash. A wrong shape cannot
-/// match any stored password.
-fn valid_password_shape(password: &str) -> bool {
-    valid_password(password)
 }
 
 fn check_bot_version(kind: AccountKind, client: ClientInfo) -> Result<Option<String>, Error> {

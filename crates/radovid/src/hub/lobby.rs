@@ -24,8 +24,8 @@ pub(super) struct Lobby {
     pub audience: Audience,
     /// Sorted by slot.
     pub members: Vec<Member>,
-    /// Join requests, oldest first, with the rating the asker would bring.
-    pub pending: Vec<(AccountId, Option<Rating>)>,
+    /// Join requests, oldest first.
+    pub pending: Vec<AccountId>,
     pub starting: Option<Instant>,
     pub match_id: Option<MatchId>,
 }
@@ -92,7 +92,7 @@ impl Hub {
             pending: lobby
                 .pending
                 .iter()
-                .map(|(account, rating)| self.member_view(*account, 0, false, *rating))
+                .map(|account| self.member_view(*account, 0, false, None))
                 .collect(),
             starting_in_ms: lobby.starting.map(|deadline| {
                 deadline
@@ -236,9 +236,8 @@ impl Hub {
         }
         self.check_wire(wire)?;
         self.cancel_ask(id);
-        // The rating shown is the stored one; a failed lookup shows none.
         if let Some(l) = self.lobbies.get_mut(&lobby) {
-            l.pending.push((id, None));
+            l.pending.push(id);
         }
         if let Some(account) = self.accounts.get_mut(&id) {
             account.asking = Some(lobby);
@@ -261,7 +260,7 @@ impl Hub {
             return;
         };
         if let Some(l) = self.lobbies.get_mut(&lobby) {
-            l.pending.retain(|(account, _)| *account != id);
+            l.pending.retain(|account| *account != id);
             self.broadcast_lobby(lobby);
         }
     }
@@ -304,7 +303,7 @@ impl Hub {
         let at = l
             .pending
             .iter()
-            .position(|(a, _)| *a == asker)
+            .position(|a| *a == asker)
             .ok_or(Error::NoSuchRequest)?;
         if !allow {
             l.pending.remove(at);
@@ -504,7 +503,7 @@ impl Hub {
         let Some(l) = self.lobbies.remove(&lobby) else {
             return;
         };
-        for (asker, _) in &l.pending {
+        for asker in &l.pending {
             self.clear_asking(*asker);
             self.notify(*asker, Event::LobbyDenied { lobby });
         }

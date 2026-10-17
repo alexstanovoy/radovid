@@ -168,15 +168,10 @@ fn a_container_runs_the_match_and_is_gone_after_it() {
     pair_up(&mut a, &mut b, "solo_mid");
     let result = a.wait_result();
     assert_end_is_consistent(&result);
+    std::thread::sleep(std::time::Duration::from_secs(3));
     let left = std::process::Command::new("docker")
         .args(["ps", "-aq", "--filter", "label=radovid.match"])
         .output()
         .expect("docker");
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    let left_later = std::process::Command::new("docker")
-        .args(["ps", "-aq", "--filter", "label=radovid.match"])
-        .output()
-        .expect("docker");
-    drop(left);
-    assert!(left_later.stdout.is_empty(), "the container was removed");
+    assert!(left.stdout.is_empty(), "the container was removed");
 }

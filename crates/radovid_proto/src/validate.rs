@@ -50,10 +50,3 @@ pub fn valid_client_label(label: &str) -> bool {
 pub fn valid_ban_reason(reason: &str) -> bool {
     reason.len() <= MAX_BAN_REASON_LEN
 }
-
-impl RulesetId {
-    /// A ruleset id from its spelling, if it is well formed.
-    pub fn parse(id: &str) -> Option<RulesetId> {
-        valid_ruleset_id(id).then(|| RulesetId(id.to_owned()))
-    }
-}

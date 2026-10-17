@@ -122,7 +122,7 @@ pub struct Hub {
     accounts: HashMap<AccountId, Account>,
     sessions: HashMap<SessionId, Session>,
     next_session: SessionId,
-    queues: HashMap<RulesetId, Vec<(AccountId, Instant)>>,
+    queues: HashMap<RulesetId, Vec<AccountId>>,
     lobbies: BTreeMap<LobbyId, lobby::Lobby>,
     next_lobby: u32,
     matches: HashMap<MatchId, matches::MatchState>,
