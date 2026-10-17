@@ -54,18 +54,14 @@ impl MatchSpec {
     pub fn seats_env(&self) -> String {
         self.seats
             .iter()
-            .map(|(key, name)| format!("{}:{}", hex(&key.0), name.replace([',', ':'], "_")))
+            .map(|(key, name)| format!("{}:{}", key.to_hex(), name.replace([',', ':'], "_")))
             .collect::<Vec<_>>()
             .join(",")
     }
 
     pub fn referee_env(&self) -> String {
-        hex(&self.referee_key.0)
+        self.referee_key.to_hex()
     }
-}
-
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// How a game server ended.
@@ -131,8 +127,8 @@ pub trait Backend: Send + Sync + 'static {
 /// Reads what `bota_server --wire-fingerprint` printed: 16 hex digits.
 fn parse_fingerprint(printed: &str) -> std::io::Result<u64> {
     let printed = printed.trim();
-    u64::from_str_radix(printed, 16)
-        .map_err(|_| std::io::Error::other(format!("not a wire fingerprint: {printed:?}")))
+    bota_proto::fingerprint_from_hex(printed)
+        .ok_or_else(|| std::io::Error::other(format!("not a wire fingerprint: {printed:?}")))
 }
 
 pub fn from_config(config: &crate::config::BackendConfig) -> Arc<dyn Backend> {

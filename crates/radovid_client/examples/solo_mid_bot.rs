@@ -7,7 +7,7 @@
 
 use bota_proto::{HeroId, Order, Target, Vec2};
 use radovid_client::proto::{AccountKind, ClientInfo, Event, RulesetId};
-use radovid_client::{Client, TlsConfig, play, take_seat};
+use radovid_client::{Client, IssuedOrder, TlsConfig, play, take_seat};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -39,7 +39,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let middle = Order::Move {
             target: Target::Pos(Vec2::from_ints(9216, 9216)),
         };
-        let outcome = play(&mut link, &seated, |_| Some(middle))?;
+        let outcome = play(&mut link, seated, &mut (), |_| {
+            Some(IssuedOrder::hero(middle))
+        })?;
         println!(
             "match {} over: {:?} after {} ticks",
             handoff.match_id.0, outcome.winner, outcome.ticks

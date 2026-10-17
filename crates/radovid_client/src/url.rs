@@ -1,6 +1,6 @@
 //! Connecting a WebSocket over TLS to a `wss://` URL.
 
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::time::Duration;
 
 use tungstenite::client::IntoClientRequest;
@@ -13,7 +13,6 @@ use crate::{ClientError, TlsConfig};
 pub(crate) type Ws = WebSocket<MaybeTlsStream<TcpStream>>;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_ADDRESSES: usize = 8;
 
 /// Opens `url` (which must be `wss://`), with a read and write timeout on the socket.
 pub(crate) fn connect(
@@ -34,27 +33,7 @@ pub(crate) fn connect(
         .ok_or_else(|| ClientError::BadUrl(url.to_owned()))?
         .to_owned();
     let port = uri.port_u16().unwrap_or(443);
-    let addresses = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|e| ClientError::Io(e.to_string()))?;
-    let mut last = ClientError::Io("the host resolves to nothing".to_owned());
-    let mut connected = None;
-    for address in addresses.take(MAX_ADDRESSES) {
-        match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
-            Ok(stream) => {
-                connected = Some(stream);
-                break;
-            }
-            Err(e) => last = ClientError::Io(e.to_string()),
-        }
-    }
-    let stream = connected.ok_or(last)?;
-    let _ = stream.set_nodelay(true);
-    stream
-        .set_read_timeout(Some(io_timeout))
-        .map_err(|e| ClientError::Io(e.to_string()))?;
-    stream
-        .set_write_timeout(Some(io_timeout))
+    let stream = bota_client_core::open_tcp(&format!("{host}:{port}"), CONNECT_TIMEOUT, io_timeout)
         .map_err(|e| ClientError::Io(e.to_string()))?;
     let config = WebSocketConfig::default()
         .max_message_size(Some(max_message))

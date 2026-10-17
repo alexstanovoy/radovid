@@ -10,7 +10,7 @@ use bota_proto::{HeroId, Order, Target, Team, Vec2};
 use common::*;
 use radovid::config::BackendConfig;
 use radovid_client::proto::*;
-use radovid_client::{play, take_seat};
+use radovid_client::{IssuedOrder, play, take_seat};
 
 /// The game server binary: `BOTA_SERVER_BIN`, built beforehand with
 /// `cargo build -p bota_server --bin bota_server`; else the one beside the tests.
@@ -116,7 +116,10 @@ fn two_bots_play_a_whole_match_through_the_game_path() {
                 };
                 // In lockstep an acknowledgement can race the server's exit at the very end; the
                 // service's own record of the result is what counts.
-                play(&mut link, &seated, |_| Some(middle)).ok()
+                play(&mut link, seated, &mut (), |_| {
+                    Some(IssuedOrder::hero(middle))
+                })
+                .ok()
             })
         })
         .collect();

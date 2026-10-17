@@ -165,12 +165,11 @@ async fn connect_referee(addr: SocketAddr, spec: &MatchSpec) -> std::io::Result<
         }
     };
     stream.set_nodelay(true)?;
-    let hello = encode_frame_to_vec(&ClientMsg::Hello {
-        role: Role::Referee,
-        name: "referee".to_owned(),
-        key: Some(spec.referee_key),
-        wire_fingerprint: bota_proto::WIRE_FINGERPRINT,
-    })
+    let hello = encode_frame_to_vec(&ClientMsg::hello(
+        Role::Referee,
+        "referee",
+        Some(spec.referee_key),
+    ))
     .map_err(std::io::Error::other)?;
     stream.write_all(&hello).await?;
     Ok(stream)

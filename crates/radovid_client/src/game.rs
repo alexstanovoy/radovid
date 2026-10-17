@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use bota_client_core::{ClientSession, IssuedOrder, Outcome, PlayError, Seated, Transport};
-use bota_proto::{ClientMsg, FrameReader, HeroId, Order, Role, ServerMsg, encode_frame_to_vec};
+use bota_client_core::{Seated, Transport};
+use bota_proto::{ClientMsg, FrameReader, HeroId, Role, ServerMsg, encode_frame_to_vec};
 use radovid_proto::Handoff;
 use tungstenite::Message;
 
@@ -11,7 +11,6 @@ use crate::url::{Ws, connect};
 use crate::{ClientError, TlsConfig};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(300);
-const MAX_MESSAGES_BEFORE_WELCOME: usize = 64;
 
 /// A connection to the game path; a [`Transport`] for `bota_client_core`.
 pub struct GameLink {
@@ -92,41 +91,11 @@ pub fn take_seat(
 /// each `Ping` with a `Pong`, or the game server drops it.
 pub fn spectate(handoff: &Handoff, tls: &TlsConfig) -> Result<GameLink, ClientError> {
     let mut link = GameLink::connect(handoff, tls)?;
-    link.send(&ClientMsg::Hello {
-        role: Role::Spectator,
-        name: "spectator".to_owned(),
-        key: Some(handoff.seat_key),
-        wire_fingerprint: bota_proto::WIRE_FINGERPRINT,
-    })?;
-    for _ in 0..MAX_MESSAGES_BEFORE_WELCOME {
-        match link.recv()? {
-            Some(ServerMsg::Welcome { .. }) => return Ok(link),
-            Some(ServerMsg::Ping) => link.send(&ClientMsg::Pong)?,
-            Some(ServerMsg::Refused { reason }) => {
-                return Err(ClientError::Protocol(format!("refused: {reason:?}")));
-            }
-            Some(_) => {}
-            None => return Err(ClientError::Closed),
-        }
-    }
-    Err(ClientError::Protocol("no welcome".to_owned()))
-}
-
-/// Plays a match on a taken seat to its end with `bota_client_core::play`:
-/// once per tick `decide` is shown the session and returns an order or none;
-/// ticks are acknowledged. The link's end before the match is over is an error,
-/// after which the caller may take the seat again (`take_seat` with the same
-/// handoff).
-pub fn play(
-    link: &mut GameLink,
-    seated: &Seated,
-    mut decide: impl FnMut(&ClientSession) -> Option<Order>,
-) -> Result<Outcome, ClientError> {
-    bota_client_core::play(link, *seated, &mut (), |session| {
-        decide(session).map(|order| IssuedOrder { unit: None, order })
-    })
-    .map_err(|error| match error {
-        PlayError::Closed => ClientError::Closed,
-        other => ClientError::Protocol(other.to_string()),
-    })
+    bota_client_core::greet(
+        &mut link,
+        Role::Spectator,
+        "spectator",
+        Some(handoff.seat_key),
+    )?;
+    Ok(link)
 }

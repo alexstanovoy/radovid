@@ -43,7 +43,10 @@ fn main() {
             "--after-ms" => after_ms = value().parse().unwrap_or(300),
             "--match-id" => match_id = value().parse().unwrap_or(0),
             "--wire-fingerprint" => {
-                println!("{:016x}", bota_proto::WIRE_FINGERPRINT);
+                println!(
+                    "{}",
+                    bota_proto::fingerprint_to_hex(bota_proto::WIRE_FINGERPRINT)
+                );
                 return;
             }
             _ => {}
@@ -54,7 +57,8 @@ fn main() {
         .split(',')
         .filter(|entry| !entry.is_empty())
         .map(|entry| Seat {
-            key: parse_key(entry.split(':').next().unwrap_or("")),
+            key: SeatKey::from_hex(entry.split(':').next().unwrap_or(""))
+                .expect("a 64-digit seat key"),
             conn: None,
             hero: None,
             ready: false,
@@ -62,7 +66,8 @@ fn main() {
         .collect();
     let state = Arc::new(Mutex::new(State {
         seats,
-        referee_key: parse_key(&std::env::var("BOTA_REFEREE_KEY").unwrap_or_default()),
+        referee_key: SeatKey::from_hex(&std::env::var("BOTA_REFEREE_KEY").unwrap_or_default())
+            .expect("a 64-digit referee key"),
         others: Vec::new(),
         started: false,
         next_player: 1,
@@ -79,14 +84,6 @@ fn main() {
         let state = Arc::clone(&state);
         thread::spawn(move || connection(stream, state));
     }
-}
-
-fn parse_key(hex: &str) -> SeatKey {
-    let mut key = [0u8; 32];
-    for (byte, pair) in key.iter_mut().zip(hex.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(pair).unwrap_or("00"), 16).unwrap_or(0);
-    }
-    SeatKey(key)
 }
 
 fn send(stream: &TcpStream, msg: &ServerMsg) {
