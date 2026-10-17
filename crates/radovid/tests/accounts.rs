@@ -234,7 +234,7 @@ fn hostile_input_closes_that_connection_and_nothing_else() {
 
     // A message far over the limit.
     let mut client = env.connect();
-    let _ = client.send_raw(vec![0; MAX_PAYLOAD_LEN * 4]);
+    let _ = client.send_raw(vec![0; MAX_CONTROL_PAYLOAD_LEN * 4]);
     let told = client.read_raw(Duration::from_secs(5));
     assert!(
         matches!(

@@ -447,9 +447,11 @@ impl Db {
     ) -> DbResult<Option<RatingRow>> {
         self.run(move |c| {
             c.query_row(
-                &format!("{RATING_SELECT} WHERE account = ?1 AND ruleset = ?2"),
+                &format!(
+                    "SELECT {RATING_COLUMNS} FROM ratings WHERE account = ?1 AND ruleset = ?2"
+                ),
                 params![account.0 as i64, ruleset.0],
-                rating_row,
+                |row| rating_row_at(row, 0),
             )
             .optional()
         })
@@ -623,12 +625,6 @@ fn account_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
 
 const RATING_COLUMNS: &str =
     "rating, deviation, volatility, games, wins, draws, losses, last_played";
-const RATING_SELECT: &str = "SELECT rating, deviation, volatility, games, wins, draws, losses,
-    last_played FROM ratings";
-
-fn rating_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RatingRow> {
-    rating_row_at(row, 0)
-}
 
 fn rating_row_at(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<RatingRow> {
     Ok(RatingRow {

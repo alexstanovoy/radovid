@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use radovid_proto::*;
 use tokio::net::{TcpListener, TcpStream};
@@ -23,7 +23,7 @@ use crate::throttle::{LoginThrottle, Windowed};
 /// Seconds a peer has for the TLS and WebSocket handshakes.
 const HANDSHAKE_SECS: u64 = 10;
 /// Registrations per source address per hour at most.
-pub const REGISTRATIONS_PER_HOUR: u32 = 20;
+const REGISTRATIONS_PER_HOUR: u32 = 20;
 
 pub type Socket = WebSocketStream<TlsStream<TcpStream>>;
 
@@ -33,10 +33,20 @@ pub struct Shared {
     pub db: Db,
     pub hub: HubHandle,
     pub passwords: Passwords,
-    pub throttle: Mutex<LoginThrottle>,
+    throttle: Mutex<LoginThrottle>,
     /// Registrations seen per address in the last hour.
-    pub registrations: Mutex<Windowed<IpAddr>>,
+    registrations: Mutex<Windowed<IpAddr>>,
     unauthenticated: Mutex<HashMap<IpAddr, usize>>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn throttled(wait: Duration) -> Error {
+    Error::Throttled {
+        retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32,
+    }
 }
 
 impl Shared {
@@ -53,6 +63,35 @@ impl Shared {
     }
 }
 
+impl Shared {
+    /// The refusal for a login attempt that falls inside the delay its address
+    /// or its login has earned.
+    pub fn login_delay(&self, ip: IpAddr, login: &str) -> Option<Error> {
+        let wait = lock(&self.throttle).wait(ip, login, Instant::now());
+        (!wait.is_zero()).then(|| throttled(wait))
+    }
+
+    pub fn login_failed(&self, ip: IpAddr, login: &str) {
+        lock(&self.throttle).failed(ip, login, Instant::now());
+    }
+
+    pub fn login_succeeded(&self, login: &str) {
+        lock(&self.throttle).succeeded(login);
+    }
+
+    /// Counts a registration from `ip`, or refuses it past the hourly limit.
+    pub fn register_allowed(&self, ip: IpAddr) -> Result<(), Error> {
+        lock(&self.registrations)
+            .take(
+                &ip,
+                Instant::now(),
+                REGISTRATIONS_PER_HOUR,
+                Duration::from_secs(3600),
+            )
+            .map_err(throttled)
+    }
+}
+
 /// Holds one of an address's places for unauthenticated connections.
 pub struct Unauthenticated {
     shared: Arc<Shared>,
@@ -62,10 +101,7 @@ pub struct Unauthenticated {
 
 impl Unauthenticated {
     fn take(shared: &Arc<Shared>, ip: IpAddr) -> Option<Unauthenticated> {
-        let mut map = shared
-            .unauthenticated
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut map = lock(&shared.unauthenticated);
         let count = map.entry(ip).or_insert(0);
         if *count >= MAX_UNAUTHENTICATED_PER_IP {
             return None;
@@ -82,7 +118,13 @@ impl Unauthenticated {
     pub fn release(&mut self) {
         if self.held {
             self.held = false;
-            self.shared.release_unauthenticated(self.ip);
+            let mut map = lock(&self.shared.unauthenticated);
+            if let Some(count) = map.get_mut(&self.ip) {
+                *count -= 1;
+                if *count == 0 {
+                    map.remove(&self.ip);
+                }
+            }
         }
     }
 }
@@ -90,21 +132,6 @@ impl Unauthenticated {
 impl Drop for Unauthenticated {
     fn drop(&mut self) {
         self.release();
-    }
-}
-
-impl Shared {
-    fn release_unauthenticated(&self, ip: IpAddr) {
-        let mut map = self
-            .unauthenticated
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if let Some(count) = map.get_mut(&ip) {
-            *count -= 1;
-            if *count == 0 {
-                map.remove(&ip);
-            }
-        }
     }
 }
 

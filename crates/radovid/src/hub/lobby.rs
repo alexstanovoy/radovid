@@ -102,13 +102,22 @@ impl Hub {
         }
     }
 
-    /// Sends the whole lobby state to everyone in it.
     fn broadcast_lobby(&mut self, lobby: LobbyId) {
+        self.broadcast_lobby_except(lobby, None);
+    }
+
+    /// Sends the whole lobby state to everyone in it but `except`.
+    fn broadcast_lobby_except(&mut self, lobby: LobbyId, except: Option<AccountId>) {
         let Some(l) = self.lobbies.get(&lobby) else {
             return;
         };
         let state = self.lobby_state(l);
-        let members: Vec<AccountId> = l.members.iter().map(|m| m.account).collect();
+        let members: Vec<AccountId> = l
+            .members
+            .iter()
+            .map(|m| m.account)
+            .filter(|m| Some(*m) != except)
+            .collect();
         for member in members {
             self.notify(
                 member,
@@ -337,34 +346,13 @@ impl Hub {
         }
         let state = self.lobby_state(&self.lobbies[&lobby]);
         self.notify(asker, Event::LobbyJoined { state });
-        self.broadcast_lobby_except(lobby, asker);
+        self.broadcast_lobby_except(lobby, Some(asker));
         Ok(Reply::Done)
     }
 
     fn clear_asking(&mut self, id: AccountId) {
         if let Some(account) = self.accounts.get_mut(&id) {
             account.asking = None;
-        }
-    }
-
-    fn broadcast_lobby_except(&mut self, lobby: LobbyId, except: AccountId) {
-        let Some(l) = self.lobbies.get(&lobby) else {
-            return;
-        };
-        let state = self.lobby_state(l);
-        let members: Vec<AccountId> = l
-            .members
-            .iter()
-            .map(|m| m.account)
-            .filter(|m| *m != except)
-            .collect();
-        for member in members {
-            self.notify(
-                member,
-                Event::LobbyState {
-                    state: state.clone(),
-                },
-            );
         }
     }
 

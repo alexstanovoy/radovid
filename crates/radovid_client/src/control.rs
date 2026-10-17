@@ -58,7 +58,7 @@ impl Client {
         } else {
             format!("{}/control", url.trim_end_matches('/'))
         };
-        let ws = connect(&url, tls, MAX_PAYLOAD_LEN + LEN_PREFIX, IO_TIMEOUT)?;
+        let ws = connect(&url, tls, MAX_CONTROL_PAYLOAD_LEN + LEN_PREFIX, IO_TIMEOUT)?;
         let mut client = Client {
             ws,
             seq: 0,
@@ -231,18 +231,8 @@ impl Client {
 }
 
 fn decode(bytes: &[u8]) -> Result<ServerMsg, ClientError> {
-    let bad = || ClientError::Protocol("a message that is no frame".to_owned());
-    let payload = bytes.get(LEN_PREFIX..).ok_or_else(bad)?;
-    let declared = u32::from_le_bytes(
-        bytes
-            .get(..LEN_PREFIX)
-            .ok_or_else(bad)?
-            .try_into()
-            .map_err(|_| bad())?,
-    ) as usize;
-    if declared != payload.len() {
-        return Err(bad());
-    }
+    let payload = whole_frame(bytes, MAX_CONTROL_PAYLOAD_LEN)
+        .ok_or_else(|| ClientError::Protocol("a message that is no frame".to_owned()))?;
     decode_payload(payload).map_err(|e| ClientError::Protocol(e.to_string()))
 }
 

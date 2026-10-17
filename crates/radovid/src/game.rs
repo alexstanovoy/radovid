@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bota_proto::{ClientMsg, FrameReader, LEN_PREFIX, MAX_PAYLOAD_LEN, Role, decode_payload};
+use bota_proto::{ClientMsg, FrameReader, MAX_PAYLOAD_LEN, Role, decode_payload};
 use futures_util::{SinkExt, StreamExt};
 use radovid_proto::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -42,7 +42,8 @@ pub async fn run(ws: Socket, shared: Arc<Shared>, mut guard: Unauthenticated) {
         let _ = sink.send(Message::Close(Some(denied))).await;
         return;
     };
-    let hello = whole_frame(&first).and_then(|payload| decode_payload::<ClientMsg>(payload).ok());
+    let hello = whole_frame(&first, MAX_PAYLOAD_LEN)
+        .and_then(|payload| decode_payload::<ClientMsg>(payload).ok());
     let Some(ClientMsg::Hello {
         role,
         key: Some(key),
@@ -99,13 +100,6 @@ pub async fn run(ws: Socket, shared: Arc<Shared>, mut guard: Unauthenticated) {
     let _ = shared.hub.tx.send(Cmd::GameClosed { key, spectator }).await;
 }
 
-/// The payload of a message that holds exactly one frame.
-fn whole_frame(bytes: &[u8]) -> Option<&[u8]> {
-    let payload = bytes.get(LEN_PREFIX..)?;
-    let declared = u32::from_le_bytes(bytes.get(..LEN_PREFIX)?.try_into().ok()?) as usize;
-    (declared == payload.len() && payload.len() <= MAX_PAYLOAD_LEN).then_some(payload)
-}
-
 type Sink = futures_util::stream::SplitSink<Socket, Message>;
 type Stream = futures_util::stream::SplitStream<Socket>;
 
@@ -141,7 +135,7 @@ async fn bridge(
                 last_heard = Instant::now();
                 match message {
                     Message::Binary(bytes) => {
-                        if whole_frame(&bytes).is_none() || bucket.take(Instant::now()).is_err() {
+                        if whole_frame(&bytes, MAX_PAYLOAD_LEN).is_none() || bucket.take(Instant::now()).is_err() {
                             return Err(());
                         }
                         write.write_all(&bytes).await.map_err(|_| ())?;

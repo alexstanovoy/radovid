@@ -4,8 +4,8 @@
 /// a server accepts exactly its own.
 pub const PROTO_VERSION: u16 = 1;
 
-/// Largest control frame payload, in bytes.
-pub const MAX_PAYLOAD_LEN: usize = 64 * 1024;
+/// Largest control frame payload, in bytes (the game path holds bota's larger one).
+pub const MAX_CONTROL_PAYLOAD_LEN: usize = 64 * 1024;
 
 /// Seconds a connection has from accept to its first valid `Login`, `Register`
 /// or `Resume`.

@@ -40,10 +40,8 @@ struct Conn {
     live: Option<Live>,
 }
 
-/// Why the loop ends.
-enum Stop {
-    Closed,
-}
+/// The connection is over.
+struct Closed;
 
 pub async fn run(ws: Socket, ip: IpAddr, shared: Arc<Shared>, mut guard: Unauthenticated) {
     let mut conn = Conn {
@@ -68,7 +66,7 @@ pub async fn run(ws: Socket, ip: IpAddr, shared: Arc<Shared>, mut guard: Unauthe
 }
 
 impl Conn {
-    async fn serve(&mut self, guard: &mut Unauthenticated) -> Result<(), Stop> {
+    async fn serve(&mut self, guard: &mut Unauthenticated) -> Result<(), Closed> {
         let accepted = tokio::time::Instant::now();
         let mut ping = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
         ping.tick().await;
@@ -78,12 +76,12 @@ impl Conn {
                 Duration::from_secs(AUTH_DEADLINE_SECS).saturating_sub(accepted.elapsed());
             tokio::select! {
                 message = self.ws.next() => {
-                    let message = message.ok_or(Stop::Closed)?.map_err(|_| Stop::Closed)?;
+                    let message = message.ok_or(Closed)?.map_err(|_| Closed)?;
                     last_heard = Instant::now();
                     match message {
                         Message::Binary(bytes) => self.frame(&bytes, guard).await?,
                         Message::Ping(_) | Message::Pong(_) => {}
-                        _ => return Err(Stop::Closed),
+                        _ => return Err(Closed),
                     }
                 }
                 event = next_event(&mut self.live) => match event {
@@ -91,41 +89,41 @@ impl Conn {
                         let over = matches!(message, ServerMsg::Event(Event::Bye { .. }));
                         self.send(&message).await?;
                         if over {
-                            return Err(Stop::Closed);
+                            return Err(Closed);
                         }
                     }
-                    None => return Err(Stop::Closed),
+                    None => return Err(Closed),
                 },
                 _ = ping.tick() => {
                     if last_heard.elapsed() > Duration::from_secs(PONG_DEADLINE_SECS) {
-                        return Err(Stop::Closed);
+                        return Err(Closed);
                     }
                     self.send_raw(Message::Ping(Vec::new().into())).await?;
                 }
                 _ = tokio::time::sleep(auth_left), if self.live.is_none() => {
-                    return Err(Stop::Closed);
+                    return Err(Closed);
                 }
             }
         }
     }
 
-    async fn send_raw(&mut self, message: Message) -> Result<(), Stop> {
+    async fn send_raw(&mut self, message: Message) -> Result<(), Closed> {
         match tokio::time::timeout(SEND_TIMEOUT, self.ws.send(message)).await {
             Ok(Ok(())) => Ok(()),
-            _ => Err(Stop::Closed),
+            _ => Err(Closed),
         }
     }
 
-    async fn send(&mut self, message: &ServerMsg) -> Result<(), Stop> {
-        let bytes = encode_frame_to_vec(message).map_err(|_| Stop::Closed)?;
+    async fn send(&mut self, message: &ServerMsg) -> Result<(), Closed> {
+        let bytes = encode_frame_to_vec(message).map_err(|_| Closed)?;
         self.send_raw(Message::Binary(bytes.into())).await
     }
 
-    async fn refuse(&mut self, seq: u32, error: Error) -> Result<(), Stop> {
+    async fn refuse(&mut self, seq: u32, error: Error) -> Result<(), Closed> {
         self.send(&ServerMsg::Refused { seq, error }).await
     }
 
-    async fn reply(&mut self, seq: u32, result: Result<Reply, Error>) -> Result<(), Stop> {
+    async fn reply(&mut self, seq: u32, result: Result<Reply, Error>) -> Result<(), Closed> {
         match result {
             Ok(reply) => self.send(&ServerMsg::Reply { seq, reply }).await,
             Err(error) => self.refuse(seq, error).await,
@@ -133,12 +131,12 @@ impl Conn {
     }
 
     /// Says goodbye and ends the connection.
-    async fn bye(&mut self, error: Error) -> Result<(), Stop> {
+    async fn bye(&mut self, error: Error) -> Result<(), Closed> {
         let _ = self.send(&ServerMsg::Event(Event::Bye { error })).await;
-        Err(Stop::Closed)
+        Err(Closed)
     }
 
-    async fn frame(&mut self, bytes: &[u8], guard: &mut Unauthenticated) -> Result<(), Stop> {
+    async fn frame(&mut self, bytes: &[u8], guard: &mut Unauthenticated) -> Result<(), Closed> {
         let frame = match decode_control_frame(bytes) {
             Some(frame) => frame,
             None => return self.bye(Error::Malformed).await,
@@ -201,7 +199,7 @@ impl Conn {
                     reply: Reply::Done,
                 })
                 .await?;
-                Err(Stop::Closed)
+                Err(Closed)
             }
             (Some(_), ClientMsg::ChangePassword { current, new }) => {
                 let result = self.change_password(current, new).await;
@@ -232,7 +230,7 @@ impl Conn {
         }
     }
 
-    async fn hello(&mut self, seq: u32, msg: ClientMsg) -> Result<(), Stop> {
+    async fn hello(&mut self, seq: u32, msg: ClientMsg) -> Result<(), Closed> {
         let ClientMsg::Hello {
             proto,
             bota_wire,
@@ -249,7 +247,7 @@ impl Conn {
                 },
             })
             .await?;
-            return Err(Stop::Closed);
+            return Err(Closed);
         }
         if !valid_client_label(&client) {
             return self.bye(Error::Malformed).await;
@@ -266,25 +264,12 @@ impl Conn {
         .await
     }
 
-    /// How long a throttled attempt must wait, as the refusal.
     fn throttled(&self, login: &str) -> Option<Error> {
-        let wait = self
-            .shared
-            .throttle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .wait(self.ip, login, Instant::now());
-        (!wait.is_zero()).then(|| Error::Throttled {
-            retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32,
-        })
+        self.shared.login_delay(self.ip, login)
     }
 
     fn failed(&self, login: &str) {
-        self.shared
-            .throttle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .failed(self.ip, login, Instant::now());
+        self.shared.login_failed(self.ip, login);
     }
 
     async fn register(
@@ -303,22 +288,7 @@ impl Conn {
             return Err(Error::WeakPassword);
         }
         let bot_version = check_bot_version(kind, client)?;
-        if let Err(wait) = self
-            .shared
-            .registrations
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take(
-                &self.ip,
-                Instant::now(),
-                crate::server::REGISTRATIONS_PER_HOUR,
-                Duration::from_secs(3600),
-            )
-        {
-            return Err(Error::Throttled {
-                retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32,
-            });
-        }
+        self.shared.register_allowed(self.ip)?;
         let hash = self
             .shared
             .passwords
@@ -371,29 +341,8 @@ impl Conn {
             return Err(Error::BadCredentials);
         }
         let row = row.ok_or(Error::BadCredentials)?;
-        self.shared
-            .throttle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .succeeded(&login);
-        if let Some(ban) = row.active_ban(now_ms()) {
-            return Err(Error::Banned {
-                reason: ban.reason.clone(),
-                until: ban.until,
-            });
-        }
-        let bot_version = check_bot_version(row.kind, client)?;
-        if bot_version.is_some() && bot_version != row.bot_version {
-            self.shared
-                .db
-                .set_bot_version(row.id, bot_version.clone())
-                .await
-                .map_err(crate::hub::internal)?;
-        }
-        let row = AccountRow {
-            bot_version: bot_version.or(row.bot_version.clone()),
-            ..row
-        };
+        self.shared.login_succeeded(&login);
+        let row = self.admit(row, client).await?;
         self.finish_login(row, None, guard).await
     }
 
@@ -403,16 +352,8 @@ impl Conn {
         client: ClientInfo,
         guard: &mut Unauthenticated,
     ) -> Result<Reply, Error> {
-        let wait = self
-            .shared
-            .throttle
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .wait(self.ip, "", Instant::now());
-        if !wait.is_zero() {
-            return Err(Error::Throttled {
-                retry_after_ms: wait.as_millis().min(u128::from(u32::MAX)) as u32,
-            });
+        if let Some(error) = self.throttled("") {
+            return Err(error);
         }
         let hash = token_hash(&session);
         let Some(id) = self
@@ -432,6 +373,13 @@ impl Conn {
             .await
             .map_err(crate::hub::internal)?
             .ok_or(Error::BadSession)?;
+        let row = self.admit(row, client).await?;
+        self.finish_login(row, Some(session), guard).await
+    }
+
+    /// The checks every way in shares: no ban in force, a bot version fit for
+    /// the account's kind (recorded when it changed).
+    async fn admit(&self, row: AccountRow, client: ClientInfo) -> Result<AccountRow, Error> {
         if let Some(ban) = row.active_ban(now_ms()) {
             return Err(Error::Banned {
                 reason: ban.reason.clone(),
@@ -446,11 +394,10 @@ impl Conn {
                 .await
                 .map_err(crate::hub::internal)?;
         }
-        let row = AccountRow {
+        Ok(AccountRow {
             bot_version: bot_version.or(row.bot_version.clone()),
             ..row
-        };
-        self.finish_login(row, Some(session), guard).await
+        })
     }
 
     /// Opens the session at the hub and answers the login.
@@ -559,14 +506,8 @@ fn token_hash(token: &SessionToken) -> [u8; 32] {
     Sha256::digest(token.0).into()
 }
 
-/// The frame inside one binary message: its prefix must agree with its size.
 fn decode_control_frame(bytes: &[u8]) -> Option<ClientFrame> {
-    let payload = bytes.get(LEN_PREFIX..)?;
-    let declared = u32::from_le_bytes(bytes.get(..LEN_PREFIX)?.try_into().ok()?) as usize;
-    if declared != payload.len() || payload.len() > MAX_PAYLOAD_LEN {
-        return None;
-    }
-    decode_payload(payload).ok()
+    decode_payload(whole_frame(bytes, MAX_CONTROL_PAYLOAD_LEN)?).ok()
 }
 
 /// The next event for the live session, or never while there is none.

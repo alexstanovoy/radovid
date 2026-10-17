@@ -7,6 +7,7 @@
 //! I/O and builds for `wasm32` as it is.
 
 mod error;
+mod frame;
 mod ids;
 mod limits;
 mod message;
@@ -21,6 +22,7 @@ pub use bota_proto::{
     encode_frame, encode_frame_to_vec,
 };
 pub use error::*;
+pub use frame::whole_frame;
 pub use ids::*;
 pub use limits::*;
 pub use message::*;
