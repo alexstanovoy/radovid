@@ -806,6 +806,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "bota_client_core",
+ "bota_core",
  "bota_proto",
  "bota_server",
  "clap",

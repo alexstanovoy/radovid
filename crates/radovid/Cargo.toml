@@ -33,6 +33,7 @@ getrandom = "0.4.3"
 socket2 = "0.6.5"
 
 [dev-dependencies]
+bota_core = { workspace = true }
 bota_server = { workspace = true }
 radovid_client = { workspace = true }
 bota_client_core = { workspace = true }

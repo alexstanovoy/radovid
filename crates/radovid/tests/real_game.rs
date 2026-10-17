@@ -45,24 +45,57 @@ fn real(rulesets: Vec<radovid::config::RulesetConfig>) -> Env {
     )
 }
 
+/// A draw comes at the time cap; a side wins before it, when a tower falls.
+fn assert_end_is_consistent(result: &MatchResult) {
+    let cap = bota_core::MAP2_TICK_CAP;
+    let duration = result.stats.as_ref().expect("stats").duration;
+    assert_eq!(duration, result.duration_ticks);
+    match result.outcome {
+        Outcome::Draw => assert_eq!(
+            (result.reason, duration),
+            (EndReason::TimeCap, cap),
+            "a draw comes at the time cap"
+        ),
+        Outcome::Radiant | Outcome::Dire => {
+            assert_eq!(result.reason, EndReason::Decided);
+            assert!(duration < cap, "a side wins before the cap");
+        }
+        Outcome::Null => panic!("the match was lost: {result:?}"),
+    }
+}
+
+/// Nobody plays, so the waves fight on alone: on most seeds the clock runs out,
+/// on some a wave takes a tower first. The service draws the seed from the OS,
+/// so the test takes either end.
 #[test]
-fn a_match_nobody_joins_starts_with_drawn_heroes_and_ends_in_a_drawn_clock() {
+fn a_match_nobody_joins_starts_with_drawn_heroes_and_plays_to_its_own_end() {
     let env = real(mid_only(1));
     let mut a = env.bot("alpha");
     let mut b = env.bot("beta");
     pair_up(&mut a, &mut b, "solo_mid");
     let result = a.wait_result();
-    assert_eq!(
-        (result.outcome, result.reason),
-        (Outcome::Draw, EndReason::TimeCap)
-    );
-    assert!(result.stats.as_ref().is_some_and(|s| s.duration > 0));
+    assert_end_is_consistent(&result);
     assert!(
         result.seats.iter().all(|s| s.hero.is_some()),
         "the server drew a hero for each seat"
     );
-    let after = result.seats[0].after.expect("rated");
-    assert!((after.rating - 1500.0).abs() < 1e-6 && after.deviation < 350.0);
+    for seat in &result.seats {
+        let after = seat.after.expect("rated");
+        assert!(after.deviation < 350.0);
+        let won = match result.outcome {
+            Outcome::Radiant => seat.team == Team::Radiant,
+            Outcome::Dire => seat.team == Team::Dire,
+            _ => {
+                assert!((after.rating - 1500.0).abs() < 1e-6, "a draw of equals");
+                continue;
+            }
+        };
+        assert_eq!(
+            after.rating > 1500.0,
+            won,
+            "the winner gains, the loser loses"
+        );
+    }
 }
 
 #[test]
@@ -134,10 +167,7 @@ fn a_container_runs_the_match_and_is_gone_after_it() {
     let mut b = env.bot("beta");
     pair_up(&mut a, &mut b, "solo_mid");
     let result = a.wait_result();
-    assert_eq!(
-        (result.outcome, result.reason),
-        (Outcome::Draw, EndReason::TimeCap)
-    );
+    assert_end_is_consistent(&result);
     let left = std::process::Command::new("docker")
         .args(["ps", "-aq", "--filter", "label=radovid.match"])
         .output()

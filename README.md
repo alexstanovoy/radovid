@@ -12,8 +12,8 @@ radovid_client  a synchronous client: Client (control), GameLink (game), play()
 ```
 
 `bota_proto <- radovid_proto <- {radovid, radovid_client}` and `bota_client_core <- radovid_client`;
-the tests also use `bota_server`. Every bota crate comes from one bota commit, the pinned worktree
-the root `Cargo.toml` points at; bota knows nothing of radovid.
+the tests also use `bota_core` and `bota_server`. Every bota crate comes from one bota commit, the
+pinned worktree the root `Cargo.toml` points at; bota knows nothing of radovid.
 
 ## What it does
 
