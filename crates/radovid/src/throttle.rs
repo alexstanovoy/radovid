@@ -6,6 +6,8 @@ use std::hash::Hash;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+use radovid_proto::valid_login;
+
 /// Failures forgotten after this long without one.
 const DECAY: Duration = Duration::from_secs(3600);
 /// Failures before the delay starts.
@@ -104,14 +106,21 @@ impl LoginThrottle {
 
     /// How long this attempt must wait, whichever counter says longer.
     pub fn wait(&self, ip: IpAddr, login: &str, now: Instant) -> Duration {
-        self.by_ip
-            .wait(&ip, now)
-            .max(self.by_login.wait(&login.to_owned(), now))
+        let by_login = match valid_login(login) {
+            true => self.by_login.wait(&login.to_owned(), now),
+            false => Duration::ZERO,
+        };
+        self.by_ip.wait(&ip, now).max(by_login)
     }
 
+    /// Counts a failure against the address, and against the login when it
+    /// is one an account can have: any other is up to 64 KiB of the
+    /// attacker's choosing, and a counter for each would fill the memory.
     pub fn failed(&mut self, ip: IpAddr, login: &str, now: Instant) {
         self.by_ip.fail(&ip, now);
-        self.by_login.fail(&login.to_owned(), now);
+        if valid_login(login) {
+            self.by_login.fail(&login.to_owned(), now);
+        }
     }
 
     /// A correct password clears the login's counter, not the address's: one
@@ -218,5 +227,18 @@ mod tests {
             Duration::ZERO
         );
         assert_eq!(counters.wait(&"b", start), Duration::ZERO);
+    }
+
+    #[test]
+    fn only_logins_an_account_can_have_get_a_counter() {
+        let now = Instant::now();
+        let mut throttle = LoginThrottle::new();
+        let ip = IpAddr::from([192, 0, 2, 1]);
+        for i in 0..100 {
+            throttle.failed(ip, &format!("{i}{}", "x".repeat(60_000)), now);
+        }
+        throttle.failed(ip, "carol", now);
+        assert_eq!(throttle.by_login.map.len(), 1);
+        assert!(throttle.wait(ip, "anyone", now) > Duration::ZERO);
     }
 }
