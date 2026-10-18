@@ -12,7 +12,7 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-# bota at the commit radovid is built against (76f118f), as a detached worktree beside this one:
+# bota at the commit radovid is built against (dbd51a1), as a detached worktree beside this one:
 # `git -C <bota> worktree add --detach ../bota-radovid-pin <commit>`. The game servers the service
 # starts must come from the same commit: a bota wire change means moving this pin.
 bota_client_core = { path = "../bota-radovid-pin/crates/bota_client_core" }
