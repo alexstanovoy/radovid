@@ -43,6 +43,12 @@ pub enum Cmd {
     Detach {
         session: SessionId,
     },
+    /// The password changed: every session of the account on another token
+    /// ends.
+    EndOtherSessions {
+        account: AccountId,
+        keep: [u8; 32],
+    },
     /// A game connection wants the container behind its key.
     GameRoute {
         key: SeatKey,
@@ -74,6 +80,8 @@ pub enum Cmd {
 
 pub struct Attach {
     pub account: AccountRow,
+    /// The SHA-256 of the session token it logged in with.
+    pub token_hash: [u8; 32],
     pub bota_wire: u64,
     pub events: mpsc::Sender<ServerMsg>,
     pub reply: oneshot::Sender<Result<(SessionId, Presence), Error>>,
@@ -109,6 +117,7 @@ struct Account {
 
 struct Session {
     account: AccountId,
+    token_hash: [u8; 32],
     events: mpsc::Sender<ServerMsg>,
     bota_wire: u64,
 }
@@ -184,6 +193,7 @@ impl Hub {
                 let _ = reply.send(result);
             }
             Cmd::Detach { session } => self.detach(session),
+            Cmd::EndOtherSessions { account, keep } => self.end_other_sessions(account, keep),
             Cmd::GameRoute {
                 key,
                 spectator,
@@ -203,6 +213,7 @@ impl Hub {
     fn attach(&mut self, attach: Attach) {
         let Attach {
             account,
+            token_hash,
             bota_wire,
             events,
             reply,
@@ -219,6 +230,7 @@ impl Hub {
             session,
             Session {
                 account: id,
+                token_hash,
                 events,
                 bota_wire,
             },
@@ -328,6 +340,24 @@ impl Hub {
             .get(&id)
             .map(|a| a.sessions.clone())
             .unwrap_or_default();
+        self.bye_sessions(sessions, error);
+    }
+
+    /// Closes every session of the account on a token other than `keep`:
+    /// whoever logged in with the old password is out, not only unable to
+    /// resume.
+    fn end_other_sessions(&mut self, id: AccountId, keep: [u8; 32]) {
+        let others = self.accounts.get(&id).map_or_else(Vec::new, |a| {
+            a.sessions
+                .iter()
+                .copied()
+                .filter(|s| self.sessions.get(s).is_some_and(|s| s.token_hash != keep))
+                .collect()
+        });
+        self.bye_sessions(others, Error::BadSession);
+    }
+
+    fn bye_sessions(&mut self, sessions: Vec<SessionId>, error: Error) {
         for session in sessions {
             if let Some(s) = self.sessions.get(&session) {
                 let _ = s.events.try_send(ServerMsg::Event(Event::Bye {

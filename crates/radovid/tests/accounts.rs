@@ -112,6 +112,19 @@ fn accounts_register_log_in_resume_and_change_their_data() {
         refused(env.connect().resume(second.session, info.clone())),
         Error::BadSession
     );
+    // The connection logged in with the old password is put out too; the
+    // one on the token that changed it stays.
+    let told = again.next_event(Duration::from_secs(5));
+    assert!(
+        matches!(
+            told,
+            Ok(Some(Event::Bye {
+                error: Error::BadSession
+            }))
+        ),
+        "{told:?}"
+    );
+    assert!(resumed.request(ClientMsg::Rulesets).is_ok());
     env.connect()
         .resume(alice.token, info.clone())
         .expect("the session that changed it stays");

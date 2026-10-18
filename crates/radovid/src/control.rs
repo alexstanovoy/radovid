@@ -428,6 +428,7 @@ impl Conn {
             .tx
             .send(Cmd::Attach(Box::new(Attach {
                 account: row,
+                token_hash: token_hash(&token),
                 bota_wire: self.hello.unwrap_or(0),
                 events: events_tx,
                 reply,
@@ -487,6 +488,12 @@ impl Conn {
             .revoke_other_sessions(id, keep)
             .await
             .map_err(crate::hub::internal)?;
+        self.shared
+            .hub
+            .tx
+            .send(Cmd::EndOtherSessions { account: id, keep })
+            .await
+            .map_err(|_| Error::ServerStopping)?;
         Ok(Reply::Done)
     }
 }
