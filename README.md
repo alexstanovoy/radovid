@@ -95,14 +95,16 @@ WebSocket message is exactly one frame (`u32 LE length | postcard`), as on bota'
 - TLS 1.3 only (rustls); the game path is TLS too, because a sniffed seat key would take the seat.
 - argon2id (64 MiB, t=3 by default), at most four hashes at once; an unknown login costs a hash too.
 - Failed logins grow a delay per address and per login (after 3: 1, 2, 4 ... 300 s); an attempt
-  inside the delay is not evaluated, and a right password after it always works, so nobody can lock
-  anybody out. Counters live in memory.
+  inside the delay is not evaluated, and a right password after it always works. Counters live in
+  memory, only for logins an account can have. A resume is never delayed: its token cannot be guessed.
+  Every per-address limit counts an IPv6 /64 as one address.
 - Session tokens are random, stored as SHA-256, expire after 30 days idle and are revoked by a
-  password change; a token is matched by its hash, never compared as a secret. Seat keys are random
+  password change, which also ends the live sessions of the other tokens; a token is matched by its
+  hash, never compared as a secret. Seat keys are random
   and live in memory and in the container's environment only; the game path finds a seat by its key
   in a hash table with a per-process random hasher.
-- Everything is bounded: frame size, messages per second (token bucket), unauthenticated connections
-  per address, sessions per account, list sizes, lobbies, registrations per hour per address, matches
+- Everything is bounded: connections at once (`max_connections`), a client's message size (64 KiB on
+  both paths), messages per second (token bucket), unauthenticated connections per address, sessions per account, list sizes, lobbies, registrations per hour per address, matches
   at once, connections per seat key. Hostile bytes close their own connection and nothing else.
 - Game servers never learn the seed from the service: it is drawn from the OS inside the container, and
   the public match id is a separate label.
