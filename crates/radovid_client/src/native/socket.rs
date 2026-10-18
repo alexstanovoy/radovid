@@ -86,19 +86,30 @@ pub(crate) fn read_binary(ws: &mut Ws) -> Result<Option<Vec<u8>>, ClientError> {
             {
                 return Ok(None);
             }
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
-                return Err(ClientError::Closed);
-            }
-            Err(e) => return Err(ClientError::Io(e.to_string())),
+            Err(e) => return Err(ended(e)),
         }
     }
 }
 
-pub(crate) fn send_binary(ws: &mut Ws, bytes: Vec<u8>) -> Result<(), ClientError> {
-    ws.send(Message::Binary(bytes.into())).map_err(|e| match e {
+/// A connection the peer ended, whichever way the socket learnt it, is `Closed`.
+fn ended(error: tungstenite::Error) -> ClientError {
+    use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, UnexpectedEof};
+    match error {
         tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
             ClientError::Closed
         }
+        tungstenite::Error::Io(e)
+            if matches!(
+                e.kind(),
+                BrokenPipe | ConnectionAborted | ConnectionReset | UnexpectedEof
+            ) =>
+        {
+            ClientError::Closed
+        }
         other => ClientError::Io(other.to_string()),
-    })
+    }
+}
+
+pub(crate) fn send_binary(ws: &mut Ws, bytes: Vec<u8>) -> Result<(), ClientError> {
+    ws.send(Message::Binary(bytes.into())).map_err(ended)
 }
