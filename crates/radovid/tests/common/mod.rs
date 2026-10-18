@@ -134,16 +134,26 @@ pub fn test_dir() -> PathBuf {
 }
 
 pub fn try_start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Result<Env, String> {
+    try_start_configured(backend, rulesets, |_| {})
+}
+
+/// A service whose configuration `adjust` changes first.
+pub fn try_start_configured(
+    backend: BackendConfig,
+    rulesets: Vec<RulesetConfig>,
+    adjust: impl FnOnce(&mut Config),
+) -> Result<Env, String> {
     let dir = test_dir();
     let identity = tls::self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()])
         .expect("certificate");
-    let config = Config {
+    let mut config = Config {
         listen: "127.0.0.1:0".parse().expect("address"),
         database: dir.join("radovid.db"),
         tls_cert: PathBuf::new(),
         tls_key: PathBuf::new(),
         public_game_url: "wss://127.0.0.1:{port}/game".to_owned(),
         max_matches: 8,
+        max_connections: 1024,
         server_name: "radovid-test".to_owned(),
         game_messages_per_sec: 1_000_000,
         password: PasswordCost {
@@ -153,6 +163,7 @@ pub fn try_start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> R
         backend,
         rulesets,
     };
+    adjust(&mut config);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()

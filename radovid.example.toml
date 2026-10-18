@@ -7,6 +7,8 @@ tls_key = "key.pem"
 # What clients are told to connect to for the game. `{port}` is the port bound.
 public_game_url = "wss://localhost:{port}/game"
 max_matches = 8
+# Connections held at once at most (each is a TLS session and a WebSocket).
+max_connections = 2048
 
 [password]            # argon2id; the stored hashes carry their own parameters
 memory_kib = 65536

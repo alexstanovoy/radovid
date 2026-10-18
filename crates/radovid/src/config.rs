@@ -23,6 +23,10 @@ pub struct Config {
     /// Matches running at once at most; a formed match waits for a slot.
     #[serde(default = "default_max_matches")]
     pub max_matches: usize,
+    /// Connections held at once at most, on both paths and whether logged in
+    /// or not; one past it is closed as soon as it is accepted.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
     /// What the server calls itself in `Welcome`.
     #[serde(default = "default_server_name")]
     pub server_name: String,
@@ -43,6 +47,10 @@ fn default_game_rate() -> u32 {
 
 fn default_max_matches() -> usize {
     8
+}
+
+fn default_max_connections() -> usize {
+    2048
 }
 
 fn default_server_name() -> String {
@@ -140,6 +148,9 @@ impl Config {
         }
         if self.max_matches == 0 {
             return Err("max_matches must be at least 1".to_owned());
+        }
+        if self.max_connections == 0 {
+            return Err("max_connections must be at least 1".to_owned());
         }
         for (i, ruleset) in self.rulesets.iter().enumerate() {
             if !valid_ruleset_id(&ruleset.id) {

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use radovid_proto::*;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 use tokio_tungstenite::WebSocketStream;
@@ -142,6 +142,7 @@ pub async fn serve(
     shared: Arc<Shared>,
     mut stop: watch::Receiver<bool>,
 ) {
+    let held = Arc::new(Semaphore::new(shared.config.max_connections));
     loop {
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted,
@@ -149,6 +150,9 @@ pub async fn serve(
         };
         let Ok((stream, peer)) = accepted else {
             tokio::time::sleep(Duration::from_millis(50)).await;
+            continue;
+        };
+        let Ok(place) = Arc::clone(&held).try_acquire_owned() else {
             continue;
         };
         let source = source(peer.ip());
@@ -159,6 +163,7 @@ pub async fn serve(
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
             handle(stream, source, acceptor, shared, guard).await;
+            drop(place);
         });
     }
 }

@@ -187,6 +187,30 @@ fn failed_resumes_hold_up_nobody() {
 }
 
 #[test]
+fn connections_past_the_limit_are_closed_and_their_places_come_back() {
+    let env = try_start_configured(
+        radovid::config::BackendConfig::Local {
+            bota_server: fake_game_server(),
+        },
+        solo(),
+        |config| config.max_connections = 2,
+    )
+    .expect("service");
+    let first = env.connect();
+    let _second = env.connect();
+    assert!(
+        Client::connect(&env.url, &env.tls).is_err(),
+        "a third connection was served"
+    );
+    drop(first);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Client::connect(&env.url, &env.tls).is_err() {
+        assert!(Instant::now() < deadline, "the place never came back");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn another_protocol_version_is_refused_and_a_stale_game_wire_cannot_queue() {
     let env = start(solo());
     let error = refused(Client::connect_as(
