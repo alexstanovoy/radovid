@@ -40,6 +40,7 @@ impl Service {
             .map_err(|e| format!("cannot listen on {}: {e}", config.listen))?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
         let certificates = Arc::new(RwLock::new(tls::server_config(identity)?));
+        crate::private::database(&config.database)?;
         let db = Db::open(&config.database).map_err(|e| e.to_string())?;
         launcher::clean_up_orphans(&config.rulesets).await;
         let lost = db

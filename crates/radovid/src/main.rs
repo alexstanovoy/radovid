@@ -89,6 +89,7 @@ fn run(args: Args) -> Result<(), String> {
         }
         Command::Admin { config, login } => {
             let config = Config::load(&config)?;
+            radovid::private::check(&config.database, "the database")?;
             runtime()?.block_on(async {
                 let db = Db::open(&config.database).map_err(|e| e.to_string())?;
                 let granted = db
@@ -106,7 +107,7 @@ fn run(args: Args) -> Result<(), String> {
             let identity = tls::self_signed(name)?;
             std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
             std::fs::write(out.join("cert.pem"), identity.cert_pem).map_err(|e| e.to_string())?;
-            std::fs::write(out.join("key.pem"), identity.key_pem).map_err(|e| e.to_string())?;
+            radovid::private::write(&out.join("key.pem"), &identity.key_pem)?;
             Ok(())
         }
     }

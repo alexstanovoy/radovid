@@ -134,6 +134,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
             publish_address: None,
             mounts: Vec::new(),
             public_url: "wss://game.example.org:{port}/m{match_id}".to_owned(),
+            insecure_plaintext: false,
             version_probe: vec!["--probe".to_owned(), format!("{FINGERPRINT:016x}")],
             args: [behaviour, seconds, "{match_id}", "{port}"]
                 .map(str::to_owned)

@@ -1,41 +1,22 @@
-# radovid configuration. Run: radovid serve --config radovid.toml
-# SIGHUP rereads tls_cert and tls_key (a renewal); SIGINT or SIGTERM stops.
+# radovid: the least a service needs; every other key and its default is in the README.
+# Run: radovid serve --config radovid.toml
 
 listen = "0.0.0.0:4460"
-database = "radovid.db"
+database = "radovid.db"                    # created 0600
 tls_cert = "/etc/radovid/play-cert/fullchain.pem"
-tls_key = "/etc/radovid/play-cert/privkey.pem"
-# Host ports handed to game servers, one per launched match; at least game_capacity of them.
-game_ports = "20000-20100"
-# Connections held at once at most (each is a TLS session and a WebSocket).
-max_connections = 2048
+tls_key = "/etc/radovid/play-cert/privkey.pem"   # refused if every user may read it
+game_ports = "20000-20100"                 # one host port per running match
 
-[password]            # argon2id; the stored hashes carry their own parameters
-memory_kib = 65536
-iterations = 3
-
-[limits]
-games_per_account = { human = 2, bot = 8 }  # in flight: queue entries, lobbies, join requests, unfinished matches
-games_per_source = 8                        # the same, for all accounts of an IPv4 address or IPv6 /64
-accept_timeout_secs = 30                    # to accept a proposal; silence is a decline
-decline_cooldown_secs = 120                 # out of the queues after a decline or a silence
-game_capacity = 8                           # games launched at once; formed matches wait for a slot
-lobby_games_max = 6                         # of those, the most lobby games may hold
-queue_capacity = 256                        # queue entries across rulesets; past it QueueFull
-
-# One rated ruleset of one game, its servers in docker. The example is bota's solo mid:
-# its server speaks WebSocket over TLS on 4456 inside the container and enforces its own
-# spectator cap and message rate.
+# bota's solo mid, one docker container per match. Its server speaks wss:// on 4456 inside the
+# container; plain TCP stays on the container's loopback.
 [[ruleset]]
-id = "solo_mid"                       # [a-z0-9_], never reused for other rules
+id = "solo_mid"
 name = "1x1 Mid Only"
-game = "bota"                         # a label for clients
-game_fingerprint = "0123456789abcdef" # what `bota_server --wire-fingerprint` prints
-teams = [1, 1]                        # a rated ruleset is two teams of one
+game = "bota"
+game_fingerprint = "0123456789abcdef"      # what `bota_server --wire-fingerprint` prints
+teams = [1, 1]
 rated = true
-info = "0100"                         # hex bytes for clients; bota: the allowed heroes
-max_duration_secs = 1800
-# games_per_account = { human = 1, bot = 4 }   # this ruleset's own limit
+info = "0100"                              # bota: the allowed heroes
 
 [ruleset.launcher]
 kind = "docker"
@@ -44,25 +25,7 @@ container_port = 4456
 public_url = "wss://game.example.org:{port}"
 mounts = ["/etc/radovid/game-cert:/certs:ro"]
 version_probe = ["--wire-fingerprint"]
-start_timeout_secs = 60
-args = ["--map", "2", "--mode", "realtime", "--tick-rate", "30", "--match-id", "{match_id}",
-        "--start-after-secs", "60", "--port", "4455", "--ws-port", "4456",
+args = ["--map", "2", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
         "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
-        "--max-connections", "24", "--max-spectators-per-seat", "7", "--messages-per-sec", "1000",
-        "--heroes", "1", "--spectators", "off", "--abandon-unjoined", "--empty-after-secs", "300"]
-env = { BOTA_SEATS = "{seats}" }      # tickets go into the environment only
-# memory = "512m"
-# cpus = "1"
-# pids_limit = 256
-# network = "games"                   # default: docker's bridge
-# publish_address = "0.0.0.0"
-
-# Development: the same game as a local process, plain WebSocket on the handed-out port.
-# [ruleset.launcher]
-# kind = "local"
-# binary = "/path/to/bota_server"
-# public_url = "ws://127.0.0.1:{port}"
-# version_probe = ["--wire-fingerprint"]
-# args = ["--map", "2", "--mode", "realtime", "--match-id", "{match_id}", "--bind", "127.0.0.1",
-#         "--port", "0", "--ws-port", "{port}", "--abandon-unjoined"]
-# env = { BOTA_SEATS = "{seats}" }
+        "--heroes", "1", "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300"]
+env = { BOTA_SEATS = "{seats}" }           # tickets go into the environment only

@@ -207,7 +207,12 @@ pub struct LauncherConfig {
     #[serde(default)]
     pub mounts: Vec<String>,
     /// What players are told to connect to, e.g. `wss://game.example.org:{port}`.
+    /// Anything but `wss://` must name a loopback host, unless `insecure_plaintext`.
     pub public_url: String,
+    /// Allow a `public_url` that is not `wss://` to name another host: the tickets
+    /// then cross the network in clear.
+    #[serde(default)]
+    pub insecure_plaintext: bool,
     /// Arguments that make the game print its wire fingerprint (16 hex
     /// digits) and exit; checked against `game_fingerprint` at start.
     #[serde(default)]
@@ -452,6 +457,13 @@ fn validate_launcher(launcher: &LauncherConfig, seats: usize) -> Result<(), Stri
         return Err("start_timeout_secs must be at least 1".to_owned());
     }
     template::check(&launcher.public_url, seats, false).map_err(|e| format!("public_url: {e}"))?;
+    if !launcher.insecure_plaintext && !stays_private(&launcher.public_url) {
+        return Err(format!(
+            "public_url {:?} would send tickets across the network in clear: use wss://, a \
+loopback host, or set insecure_plaintext = true for a network you trust",
+            launcher.public_url
+        ));
+    }
     for arg in &launcher.args {
         template::check(arg, seats, false).map_err(|e| format!("args: {e}"))?;
     }
@@ -462,6 +474,24 @@ fn validate_launcher(launcher: &LauncherConfig, seats: usize) -> Result<(), Stri
         template::check(value, seats, true).map_err(|e| format!("env {name}: {e}"))?;
     }
     Ok(())
+}
+
+/// Whether a game URL keeps its traffic out of other hands: TLS (`wss://`),
+/// or a loopback host.
+fn stays_private(url: &str) -> bool {
+    if url.starts_with("wss://") {
+        return true;
+    }
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _port)| host),
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 #[cfg(test)]

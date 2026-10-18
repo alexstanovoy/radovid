@@ -7,6 +7,7 @@ pub mod db;
 mod hub;
 pub mod launcher;
 pub mod password;
+pub mod private;
 pub mod rating;
 mod server;
 pub mod service;

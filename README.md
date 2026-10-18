@@ -84,16 +84,9 @@ braces. Tickets may only go into `env`: an argument shows in every process listi
 numbered team by team. A ticket is 32 random bytes; the game checks it (in constant time) and
 decides what it allows: a seat, reconnecting to it, watching it.
 
-Launcher kinds:
-
-- `local`: a child process of the service (development, tests). Bind the game to 127.0.0.1
-  unless players come from elsewhere.
-- `docker`: `docker run --rm` attached, one container per match: read-only root, all capabilities
-  dropped, no new privileges, memory/CPU/pid limits, `--publish <publish_address>:{port}:<container_port>`,
-  read-only `mounts` (a certificate), labelled `radovid.match` (removed at the next start if the
-  service died). Environment values pass by name (`--env NAME`), never on a command line. On the
-  host: `userland-proxy: false` in the daemon configuration, and container egress blocked in
-  the `DOCKER-USER` chain (not `--internal`, which drops published ports).
+A `docker` launcher runs `docker run --rm` attached, one container per match, publishing
+`<publish_address>:{port}` to `container_port`; a `local` one runs the binary as a child
+process (development: bind the game to loopback).
 
 `version_probe`: arguments that make the game print its wire fingerprint (16 hex digits) and
 exit. radovid runs it at start and refuses to serve a ruleset whose game servers speak another
@@ -103,16 +96,77 @@ fingerprint refuses its queue and lobby requests (`GameVersionMismatch`).
 ## Run it
 
 ```sh
-cargo run --release -p radovid -- dev-cert dev/          # a self-signed certificate for development
-cp radovid.example.toml radovid.toml                      # point tls_cert/tls_key and the launcher at yours
-cargo run --release -p radovid -- serve --config radovid.toml
+cargo build --release -p radovid
+target/release/radovid dev-cert dev/          # self-signed cert.pem and key.pem (mode 0600), development only
+cp radovid.example.toml radovid.toml          # tls_cert/tls_key: yours; image and public_url: your game's
+target/release/radovid serve --config radovid.toml
+target/release/radovid admin --config radovid.toml <login>   # make an existing account an admin
 ```
 
-Production: one host with docker; certificates from Let's Encrypt for the service's name and for
-the game servers' name, renewed by certbot with a deploy hook that sends the service SIGHUP (it
-rereads its certificate; connections already up keep theirs) and refreshes the game servers'
-read-only mount (a match outlives no renewal). Native clients trust the web PKI
-(`TlsConfig::webpki()`) or a development certificate (`TlsConfig::trust_pem`).
+SIGHUP rereads `tls_cert` and `tls_key` (connections already up keep theirs; a bad pair keeps
+the old one); SIGINT or SIGTERM stops every match (a null) and exits. After a crash the next
+start records unfinished matches as lost (null) and removes the containers left behind.
+Backups, if wanted: `sqlite3 radovid.db ".backup copy.db"` takes a consistent copy while the
+service runs.
+
+### Safe by default
+
+- One listener, TLS 1.3 only; no plain-text mode exists.
+- The service refuses to start when a secret file is open to every user of the host (the
+  database, the TLS key: `chmod o-rwx`); it creates the database `0600`, and `dev-cert` writes
+  its key `0600`.
+- A `public_url` that is not `wss://` must name a loopback host, or tickets would cross the
+  network in clear; `insecure_plaintext = true` allows it on a network you trust.
+- Every limit has a default (table below); unknown keys and out-of-range values fail at start
+  with the offending key named.
+- Tickets go to game servers by environment only (a `{ticket_*}` or `{seats}` placeholder in
+  `args` is refused); logs carry match ids and errors, never logins, passwords, tokens or tickets.
+
+### Configuration
+
+Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at least one
+`[[ruleset]]` with its `[ruleset.launcher]`. Everything else has a default.
+
+| Key | Default | What it controls | Change it when |
+|---|---|---|---|
+| `listen` | | address and port of the TLS listener | |
+| `database` | | the SQLite file (WAL; created `0600`) | |
+| `tls_cert`, `tls_key` | | PEM chain and key, reread on SIGHUP | a renewal |
+| `game_ports` | | `"first-last"` host ports, one per running match; at least `game_capacity` | |
+| `max_connections` | `2048` | connections at once, logged in or not | the host has fewer file descriptors or more memory |
+| `server_name` | `radovid` | the name in `Welcome` | |
+| `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes (stored hashes keep theirs) | lower only for tests |
+| `limits.games_per_account` | `{ human = 2, bot = 8 }` | games in flight per account: queue entries, lobbies, join requests, unfinished matches | |
+| `limits.games_per_source` | `8` | the same for all accounts of an IPv4 address or IPv6 /64 | players behind one NAT |
+| `limits.accept_timeout_secs` | `30` | to accept a proposal (1 to 600); silence declines | |
+| `limits.decline_cooldown_secs` | `120` | out of the queues after a decline or silence (at most a day) | |
+| `limits.game_capacity` | `8` | games running at once; formed matches wait in order | the host takes more games |
+| `limits.lobby_games_max` | `6` | of those, the most lobby games may hold | |
+| `limits.queue_capacity` | `256` | queue entries across rulesets; past it `QueueFull` | |
+| `ruleset.id` | | `[a-z0-9_]`, 1 to 32 bytes, never reused for other rules | |
+| `ruleset.name`, `ruleset.game` | | display name (1 to 64 bytes); the game's label for clients (1 to 32) | |
+| `ruleset.game_fingerprint` | | 16 hex digits: the game wire clients and servers must speak | each game release |
+| `ruleset.teams` | | team sizes; slots are numbered team by team | |
+| `ruleset.rated` | | queue and ladder; a rated ruleset is `teams = [1, 1]` | |
+| `ruleset.info` | `""` | hex bytes shown to clients (the game's own meaning) | |
+| `ruleset.max_duration_secs` | `1800` | a match running longer is killed (a null) | longer games |
+| `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit, one number or per kind | |
+| `launcher.kind` | | `docker` (one container per match) or `local` (a child process, development) | |
+| `launcher.image`, `launcher.container_port` | | docker: the image, and the game's port inside it | |
+| `launcher.binary` | | local: the executable | |
+| `launcher.public_url` | | what players connect to; placeholders below | |
+| `launcher.insecure_plaintext` | `false` | allow a non-`wss://` `public_url` to another host | a trusted network without TLS |
+| `launcher.args`, `launcher.env` | `[]`, `{}` | the game's command line and environment; tickets only in `env` | |
+| `launcher.version_probe` | `[]` | arguments that make the game print its wire fingerprint and exit; checked at start | always, when the game has one |
+| `launcher.start_timeout_secs` | `60` | from launch to the game's `READY` | slow-starting games |
+| `launcher.memory`, `cpus`, `pids_limit` | `512m`, `1`, `256` | docker limits per container | heavier games |
+| `launcher.network` | docker's bridge | the container's network | a network without egress |
+| `launcher.publish_address` | `0.0.0.0` | host address the game port is published on | a host with several addresses |
+| `launcher.mounts` | `[]` | read-only `-v` mounts, e.g. the game's certificate | |
+| `launcher.docker` | `docker` | the docker client binary | |
+
+Docker containers always run `--read-only`, `--cap-drop ALL`, `no-new-privileges`, labelled
+`radovid.match`, environment passed by name only (`--env NAME`).
 
 ## Protocol
 
@@ -134,24 +188,17 @@ read-only mount (a match outlives no renewal). Native clients trust the web PKI
 
 ## Security notes
 
-- TLS 1.3 only (rustls). Tickets travel only inside TLS and in a game server's environment.
-- argon2id (64 MiB, t=3 by default), at most four hashes at once; an unknown login costs a hash too.
-- Failed logins grow a delay per source and per login (after 3: 1, 2, 4 ... 300 s); an attempt
-  inside the delay is not evaluated, and a right password after it always works. Wrong lobby
-  passwords count against the source the same way. Counters live in memory, only for logins an
-  account can have. A resume is never delayed: its token cannot be guessed.
+- argon2id, at most four hashes at once; an unknown login costs a hash too. Failed logins
+  grow a delay per source and per login (after 3: 1, 2, 4 ... 300 s); a right password after
+  the delay always works; a resume is never delayed (its token cannot be guessed).
 - Session tokens are random, stored as SHA-256, expire after 30 days idle and are revoked by a
-  password change, which also ends the live sessions of the other tokens. Passwords travel as
-  `Secret`, whose `Debug` shows nothing.
-- Everything is bounded: connections at once (`max_connections`), a client's message size,
-  messages per second (token bucket), unauthenticated connections per source, sessions per
-  account, games in flight per account and per source, queue entries, launched games, lobbies,
-  list sizes, registrations per hour per source, the game servers' stdout lines. Hostile bytes
-  close their own connection and nothing else.
-- Stored per account: login, nickname, password hash, kind, admin and ban flags, bot version,
-  creation time; per session a token hash and its last use; per match the seats, outcome, reason,
-  duration, the game's report and the ratings before and after. No e-mail, no IP address. Logs
-  carry match ids and errors, never logins, tokens or tickets.
+  password change, which also ends the other tokens' live sessions.
+- Also bounded: a client's message size (64 KiB) and rate, unauthenticated connections per
+  source, TLS and WebSocket handshakes (10 s), sessions per account, lobbies, list sizes,
+  registrations per hour per source, the game servers' output lines.
+- Stored: per account login, nickname, password hash, kind, admin and ban flags, bot version,
+  creation time; per session a token hash; per match seats, outcome, duration, the game's
+  report, ratings before and after. No e-mail, no IP address.
 
 ## Tests
 

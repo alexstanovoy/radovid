@@ -25,7 +25,10 @@ pub fn self_signed(names: Vec<String>) -> Result<Identity, String> {
     })
 }
 
+/// Reads a certificate and its key; a key every user of the host may read is
+/// refused.
 pub fn load(cert: &Path, key: &Path) -> Result<Identity, String> {
+    crate::private::check(key, "the TLS key")?;
     let read = |path: &Path| {
         std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
     };
