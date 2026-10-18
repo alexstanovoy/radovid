@@ -64,12 +64,11 @@ fn trace_wire() -> Registry {
     trace::<Reply>(&mut tracer, &mut enums);
     trace::<Event>(&mut tracer, &mut enums);
     trace::<Error>(&mut tracer, &mut enums);
-    trace::<Presence>(&mut tracer, &mut enums);
     trace::<AccountKind>(&mut tracer, &mut enums);
     trace::<Audience>(&mut tracer, &mut enums);
     trace::<Outcome>(&mut tracer, &mut enums);
     trace::<EndReason>(&mut tracer, &mut enums);
-    trace::<Team>(&mut tracer, &mut enums);
+    trace::<QueueLeftReason>(&mut tracer, &mut enums);
     let registry = tracer.registry().expect("every wire type traces whole");
     for (name, container) in &registry {
         if matches!(container, ContainerFormat::Enum(_)) {

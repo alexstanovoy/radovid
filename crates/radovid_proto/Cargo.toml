@@ -3,9 +3,9 @@ name = "radovid_proto"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The wire protocol of radovid: accounts, queues, lobbies, ratings and match handoffs"
 
 [dependencies]
-bota_proto = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 

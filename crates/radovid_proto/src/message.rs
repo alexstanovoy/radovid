@@ -4,6 +4,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::*;
 
+/// A password or another secret a client types. Shown as `Secret(..)` by
+/// `Debug`, so that no log line carries one.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct Secret(pub String);
+
+impl core::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
+
+impl Secret {
+    pub fn new(secret: &str) -> Secret {
+        Secret(secret.to_owned())
+    }
+}
+
 /// Every message the client sends: its own sequence number and the request.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ClientFrame {
@@ -14,21 +31,22 @@ pub struct ClientFrame {
 /// What a client asks. Variant 0 is frozen.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum ClientMsg {
-    /// First message of a connection.
+    /// First message of a connection. `game_fingerprint` is the game wire the
+    /// client speaks; rulesets of another one refuse it.
     Hello {
         proto: u16,
-        bota_wire: u64,
+        game_fingerprint: u64,
         client: String,
     },
     Register {
         login: String,
-        password: String,
+        password: Secret,
         kind: AccountKind,
         client: ClientInfo,
     },
     Login {
         login: String,
-        password: String,
+        password: Secret,
         client: ClientInfo,
     },
     Resume {
@@ -40,39 +58,79 @@ pub enum ClientMsg {
         nickname: String,
     },
     ChangePassword {
-        current: String,
-        new: String,
+        current: Secret,
+        new: Secret,
+    },
+    /// Deletes the credentials and sessions and anonymises the history.
+    DeleteAccount {
+        password: Secret,
     },
     Account {
         account: AccountId,
     },
+    /// Answered before login too.
     Rulesets,
+    /// The limits as they apply to the caller (a human's before login), for
+    /// one ruleset or in general. Answered before login too.
+    Limits {
+        ruleset: Option<RulesetId>,
+    },
+    /// Adds a queue entry; an account may hold several, up to its limit.
     QueueJoin {
         ruleset: RulesetId,
     },
-    QueueLeave,
+    QueueLeave {
+        entry: QueueEntryId,
+    },
+    MatchAccept {
+        proposal: ProposalId,
+    },
+    MatchDecline {
+        proposal: ProposalId,
+    },
     LobbyCreate {
         ruleset: RulesetId,
         name: String,
         audience: Audience,
+        password: Option<Secret>,
     },
     LobbyList,
+    /// Without a password, a request the owner decides; with the right one,
+    /// the caller is in at once.
     LobbyAsk {
         lobby: LobbyId,
+        password: Option<Secret>,
     },
-    LobbyAskCancel,
+    /// As `LobbyAsk`, finding the open lobby by its name.
+    LobbyJoinByName {
+        name: String,
+        password: Option<Secret>,
+    },
+    LobbyAskCancel {
+        lobby: LobbyId,
+    },
     LobbyDecide {
+        lobby: LobbyId,
         account: AccountId,
         allow: bool,
     },
     LobbyKick {
+        lobby: LobbyId,
         account: AccountId,
     },
     LobbyReady {
+        lobby: LobbyId,
         ready: bool,
     },
-    LobbyLeave,
-    MatchHandoff,
+    LobbyLeave {
+        lobby: LobbyId,
+    },
+    /// The caller's handoff for one of its running matches.
+    MatchHandoff {
+        match_id: MatchId,
+    },
+    /// The caller's handoffs for all of its running matches.
+    MyMatches,
     RecentMatches {
         account: AccountId,
         limit: u8,
@@ -104,13 +162,13 @@ pub enum ClientMsg {
 pub enum Reply {
     Welcome {
         proto: u16,
-        bota_wire: u64,
         server: String,
+        rulesets: Vec<RulesetInfo>,
     },
     LoggedIn {
         me: AccountInfo,
         session: SessionToken,
-        presence: Presence,
+        activities: Activities,
     },
     Done,
     Account {
@@ -119,8 +177,11 @@ pub enum Reply {
     Rulesets {
         list: Vec<RulesetInfo>,
     },
+    Limits {
+        limits: Limits,
+    },
     Queued {
-        waiting: u32,
+        entry: QueueEntry,
     },
     Lobby {
         state: LobbyState,
@@ -130,6 +191,9 @@ pub enum Reply {
     },
     Handoff {
         handoff: Handoff,
+    },
+    Handoffs {
+        list: Vec<Handoff>,
     },
     Matches {
         list: Vec<MatchResult>,
@@ -143,10 +207,43 @@ pub enum Reply {
 /// Unsolicited news.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum Event {
+    /// A queue entry's position or the overload changed; at most one per
+    /// entry every `QUEUE_STATUS_INTERVAL_MS`.
+    QueueStatus {
+        entry: QueueEntry,
+    },
+    /// Accept or decline before `accept_by_ms` runs out.
+    MatchProposed {
+        proposal: Proposal,
+    },
+    ProposalUpdate {
+        proposal: ProposalId,
+        accepted: u8,
+        of: u8,
+    },
+    /// Somebody declined or stayed silent. An accepter's entry is back in its
+    /// queue at its old position.
+    ProposalFailed {
+        proposal: ProposalId,
+        back_in_queue: bool,
+    },
+    QueueLeft {
+        entry: QueueEntryId,
+        reason: QueueLeftReason,
+        cooldown_ms: u32,
+    },
+    /// Everyone accepted; the match waits for a game slot with `ahead`
+    /// matches before it.
+    MatchQueued {
+        match_id: MatchId,
+        ahead: u32,
+        overloaded: bool,
+    },
     LobbyState {
         state: LobbyState,
     },
     LobbyStarting {
+        lobby: LobbyId,
         in_ms: u32,
     },
     LobbyJoined {
@@ -161,6 +258,7 @@ pub enum Event {
     LobbyClosed {
         lobby: LobbyId,
     },
+    /// The game server is ready: connect.
     MatchFound {
         handoff: Handoff,
     },

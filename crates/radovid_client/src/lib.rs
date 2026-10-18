@@ -1,18 +1,25 @@
-//! A client library for radovid: log in, queue or join a lobby, and play the
-//! match through the service's game path.
+//! A client library for radovid: log in, queue (several entries at once),
+//! answer proposals, sit in lobbies and receive the handoffs of matches. What
+//! a client does with a handoff (connect to the game server with its ticket)
+//! is the game's business.
 //!
-//! Everything is synchronous (plain threads, `tungstenite` over rustls), like
-//! `bota_client_core`, whose `Transport` the [`GameLink`] implements.
+//! [`Control`] is the protocol without I/O: it numbers requests, encodes
+//! them and decodes what the service sends. Two backends carry it:
+//! - `native` (default): [`Client`], blocking, for bots and tools, and
+//!   [`Background`], a thread with channels, for a GUI's frame loop;
+//! - `web` (wasm32): [`WebClient`] over the browser's WebSocket.
 
 mod control;
 mod error;
-mod game;
-mod tls;
-mod url;
+#[cfg(feature = "native")]
+mod native;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+mod web;
 
-pub use bota_client_core::{ClientSession, IssuedOrder, Outcome, PlayError, Seated, play};
-pub use control::{Client, LoggedIn};
+pub use control::{Control, Incoming, Outgoing, control_url};
 pub use error::ClientError;
-pub use game::{GameLink, spectate, take_seat};
+#[cfg(feature = "native")]
+pub use native::{Background, Client, LoggedIn, TlsConfig};
 pub use radovid_proto as proto;
-pub use tls::TlsConfig;
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub use web::WebClient;

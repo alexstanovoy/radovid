@@ -28,6 +28,12 @@ pub fn valid_lobby_name(name: &str) -> bool {
     (1..=MAX_LOBBY_NAME_LEN).contains(&name.chars().count()) && !name.chars().any(char::is_control)
 }
 
+/// A lobby password: 1 to 32 bytes, no control character.
+pub fn valid_lobby_password(password: &str) -> bool {
+    (1..=MAX_LOBBY_PASSWORD_LEN).contains(&password.len())
+        && !password.chars().any(char::is_control)
+}
+
 /// A ruleset id: 1 to 32 bytes of `[a-z0-9_]`.
 pub fn valid_ruleset_id(id: &str) -> bool {
     (1..=MAX_RULESET_ID_LEN).contains(&id.len())

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Presence, UnixMs};
+use crate::{LobbyId, UnixMs};
 
 /// Everything the service refuses with. Variant 0 is frozen: it must decode in
 /// every version, so that a client of any age can read why it was turned away.
@@ -21,7 +21,8 @@ pub enum Error {
     RateLimited {
         retry_after_ms: u32,
     },
-    /// Too many failed logins; the attempt was not evaluated.
+    /// Too many failed attempts (logins, lobby passwords), or too many
+    /// abandoned matches; the request was not evaluated.
     Throttled {
         retry_after_ms: u32,
     },
@@ -40,16 +41,17 @@ pub enum Error {
     Forbidden,
     UnknownAccount,
     UnknownRuleset,
+    /// The ruleset is not rated: it has no queue and no ladder.
     NoQueue,
-    /// The game servers run another wire than the client was built with.
-    BotaWireMismatch {
+    /// The client's `Hello` named another game wire than the ruleset's game
+    /// servers speak.
+    GameVersionMismatch {
         server: u64,
     },
-    Busy {
-        presence: Presence,
-    },
     NotInQueue,
-    NotInLobby,
+    NotInLobby {
+        lobby: LobbyId,
+    },
     NotInMatch,
     UnknownLobby,
     UnknownMatch,
@@ -64,11 +66,32 @@ pub enum Error {
     TooManyLobbies,
     /// The lobby is counting down; nothing changes now.
     Starting,
-    /// Only in `Event::Bye`: the connection was idle too long.
-    Idle,
     /// Only in `Event::Bye`: the service is shutting down.
     ServerStopping,
     Internal,
+    /// The account has this many games in flight (queue entries, lobbies, join
+    /// requests and unfinished matches) already.
+    TooManyGames {
+        limit: u8,
+    },
+    /// The accounts of this network have this many games in flight already.
+    TooManyGamesFromSource {
+        limit: u8,
+    },
+    /// The queues hold as many entries as the service takes.
+    QueueFull {
+        retry_after_ms: u32,
+    },
+    /// A declined or unanswered proposal keeps the account out of the queues
+    /// this long.
+    QueueCooldown {
+        retry_after_ms: u32,
+    },
+    UnknownProposal,
+    /// The proposal's time to answer ran out.
+    ProposalExpired,
+    BadLobbyPassword,
+    LobbyNameTaken,
 }
 
 impl core::fmt::Display for Error {

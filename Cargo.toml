@@ -12,13 +12,6 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-# bota at the commit radovid is built against (6a20540), as a detached worktree beside this one:
-# `git -C <bota> worktree add --detach ../bota-radovid-pin <commit>`. The game servers the service
-# starts must come from the same commit: a bota wire change means moving this pin.
-bota_client_core = { path = "../bota-radovid-pin/crates/bota_client_core" }
-bota_core = { path = "../bota-radovid-pin/crates/bota_core" }
-bota_proto = { path = "../bota-radovid-pin/crates/bota_proto" }
-bota_server = { path = "../bota-radovid-pin/crates/bota_server" }
 radovid_client = { path = "crates/radovid_client" }
 radovid_proto = { path = "crates/radovid_proto" }
 serde = { version = "1", features = ["derive"] }
@@ -28,7 +21,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 
-# Tests run the password hash, the game server and the TLS stack: optimise every
+# Tests run the password hash and the TLS stack: optimise every
 # dependency even in the dev profile.
 [profile.dev.package."*"]
 opt-level = 3

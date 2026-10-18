@@ -3,15 +3,23 @@ name = "radovid_client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Client library for radovid: login, queue, lobbies and the game link"
+description = "Client library for radovid: login, queues, proposals, lobbies and match handoffs"
+
+[features]
+default = ["native"]
+# Blocking and background-thread clients over tungstenite and rustls.
+native = ["dep:rustls", "dep:tungstenite", "dep:webpki-roots"]
+# A client over the browser's WebSocket, for wasm32.
+web = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
 
 [dependencies]
-bota_client_core = { workspace = true }
-bota_proto = { workspace = true }
 radovid_proto = { workspace = true }
-rustls = { workspace = true }
-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
-webpki-roots = "1.0.9"
+rustls = { workspace = true, optional = true }
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"], optional = true }
+webpki-roots = { version = "1.0.9", optional = true }
+js-sys = { version = "0.3.106", optional = true }
+wasm-bindgen = { version = "0.2.129", optional = true }
+web-sys = { version = "0.3.106", optional = true, features = ["BinaryType", "CloseEvent", "Event", "MessageEvent", "WebSocket"] }
 
 [lints]
 workspace = true

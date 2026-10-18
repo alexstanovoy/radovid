@@ -2,9 +2,9 @@
 
 use radovid_proto::Error;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ClientError {
-    /// The URL is not a `wss://host[:port]/…` one.
+    /// The URL is not a `wss://host[:port][/control]` one.
     BadUrl(String),
     /// The socket, TLS or WebSocket failed.
     Io(String),
@@ -32,17 +32,6 @@ impl std::fmt::Display for ClientError {
 }
 
 impl std::error::Error for ClientError {}
-
-impl From<tungstenite::Error> for ClientError {
-    fn from(error: tungstenite::Error) -> Self {
-        match error {
-            tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
-                ClientError::Closed
-            }
-            other => ClientError::Io(other.to_string()),
-        }
-    }
-}
 
 impl From<ClientError> for std::io::Error {
     fn from(error: ClientError) -> Self {
