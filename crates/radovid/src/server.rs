@@ -192,11 +192,11 @@ async fn handle(
             Err(refusal)
         }
     };
-    // Frames up to bota's largest are legal on the game path; the control path
-    // holds its own, smaller limit.
+    // What a client sends on either path (requests, a Hello, orders) is small:
+    // a larger message is refused as its header comes in, not buffered first.
     let config = WebSocketConfig::default()
-        .max_message_size(Some(bota_proto::MAX_PAYLOAD_LEN + bota_proto::LEN_PREFIX))
-        .max_frame_size(Some(bota_proto::MAX_PAYLOAD_LEN + bota_proto::LEN_PREFIX));
+        .max_message_size(Some(MAX_CONTROL_PAYLOAD_LEN + LEN_PREFIX))
+        .max_frame_size(Some(MAX_CONTROL_PAYLOAD_LEN + LEN_PREFIX));
     let upgraded = tokio::time::timeout(
         deadline,
         tokio_tungstenite::accept_hdr_async_with_config(tls, callback, Some(config)),

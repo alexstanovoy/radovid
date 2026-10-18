@@ -276,19 +276,12 @@ fn hostile_input_closes_that_connection_and_nothing_else() {
         "{told:?}"
     );
 
-    // A message far over the limit.
+    // A message far over the limit is refused as its header comes in: the
+    // connection just ends.
     let mut client = env.connect();
     let _ = client.send_raw(vec![0; MAX_CONTROL_PAYLOAD_LEN * 4]);
     let told = client.read_raw(Duration::from_secs(5));
-    assert!(
-        matches!(
-            told,
-            Ok(Some(radovid_client::proto::ServerMsg::Event(Event::Bye {
-                error: Error::Malformed
-            })))
-        ),
-        "{told:?}"
-    );
+    assert!(matches!(told, Err(ClientError::Closed)), "{told:?}");
 
     // A flood is slowed, then ended.
     let mut flooder = env.connect();
