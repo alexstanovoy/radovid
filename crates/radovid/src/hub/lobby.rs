@@ -320,7 +320,7 @@ impl Hub {
         }
         let rules = config.ruleset(&l.ruleset).ok_or(Error::UnknownRuleset)?;
         let direct = match (&password, &l.password) {
-            (Some(given), Some(set)) if given == set => true,
+            (Some(given), Some(set)) if same_secret(given, set) => true,
             (Some(_), Some(_)) => return Err(Error::BadLobbyPassword),
             _ => false,
         };
@@ -577,4 +577,16 @@ impl Hub {
             self.forget_if_idle(member.account);
         }
     }
+}
+
+/// Whether two secrets are equal, in time that depends on their lengths
+/// only: how far a guess matched must not show in the answer's timing.
+fn same_secret(given: &Secret, set: &Secret) -> bool {
+    let (given, set) = (given.0.as_bytes(), set.0.as_bytes());
+    let mut differ = given.len() ^ set.len();
+    for at in 0..given.len().max(set.len()) {
+        let (a, b) = (given.get(at).copied(), set.get(at).copied());
+        differ |= usize::from(a.unwrap_or(0) ^ b.unwrap_or(0));
+    }
+    std::hint::black_box(differ) == 0
 }
