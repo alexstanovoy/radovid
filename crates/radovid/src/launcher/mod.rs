@@ -8,7 +8,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use radovid_proto::MatchId;
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdout, Command};
 
 use crate::config::{LauncherConfig, LauncherKind, RulesetConfig, parse_fingerprint};
@@ -181,12 +180,15 @@ fn docker_run_args(
 }
 
 /// Logs the first lines of a game server's stderr, cut short: a game prints
-/// no secret there (README "Launcher contract").
+/// no secret there (README "Launcher contract"). Reads to the end, a line at
+/// a time within the bound and whatever its bytes, so the game never blocks
+/// on a full pipe nor fails to write to a closed one.
 async fn log_stderr(match_id: MatchId, stderr: tokio::process::ChildStderr) {
-    let mut lines = BufReader::new(stderr).lines();
+    let mut lines = LineReader::new(stderr);
     let mut logged = 0;
-    while let Ok(Some(line)) = lines.next_line().await {
+    while let Some(line) = lines.next_line().await {
         if logged < STDERR_LINES {
+            let line = String::from_utf8_lossy(&line);
             let cut: String = line.chars().take(STDERR_LINE_LEN).collect();
             eprintln!("radovid: match {}: {cut}", match_id.0);
             logged += 1;

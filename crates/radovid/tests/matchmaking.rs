@@ -457,6 +457,21 @@ fn draws_count_half_and_a_crash_or_an_abandon_counts_nothing() {
     }
 }
 
+/// A game's stderr is drained whatever it holds: a line that is no UTF-8
+/// stopped the reading, the next write killed the game, and its result was
+/// lost.
+#[test]
+fn a_game_whose_stderr_is_no_text_still_reports_its_result() {
+    let env = start(rules("noisy"));
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = a.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason),
+        (Outcome::Winner { team: 0 }, EndReason::Decided)
+    );
+}
+
 #[test]
 fn a_game_that_never_gets_ready_or_runs_too_long_is_stopped() {
     let mut never = ruleset("solo", true, "noready", "0");

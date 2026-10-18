@@ -53,7 +53,7 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
     }
 
     /// The next line within the bound, without its end; longer ones are skipped.
-    async fn next_line(&mut self) -> Option<Vec<u8>> {
+    pub(super) async fn next_line(&mut self) -> Option<Vec<u8>> {
         self.line.clear();
         let mut too_long = false;
         loop {
