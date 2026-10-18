@@ -28,4 +28,4 @@ version_probe = ["--wire-fingerprint"]
 args = ["--map", "2", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
         "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
         "--heroes", "1", "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300"]
-env = { BOTA_SEATS = "{seats}" }           # tickets go into the environment only
+env = { BOTA_SEATS = "{seats}" }           # tickets go into the environment only; each seat is ticket:team:name:kind (bot|human, the account's own)

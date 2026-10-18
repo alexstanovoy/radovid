@@ -55,6 +55,10 @@ impl Env {
         }
     }
 
+    pub fn human(&self, login: &str) -> Account {
+        self.account(login, AccountKind::Human)
+    }
+
     pub fn bot(&self, login: &str) -> Account {
         self.account(login, AccountKind::Bot)
     }
@@ -340,9 +344,12 @@ pub fn pair_up(
     (first.wait_match_found(), second.wait_match_found())
 }
 
+/// One seat as the fake game was started with it: ticket, team, name, kind.
+pub type StartedSeat = (String, String, String, String);
+
 /// What the fake game was started with, from its report:
-/// `(match_id, port, seats)` with each seat `(ticket_hex, team, name)`.
-pub fn started_with(report: &[u8]) -> (String, String, Vec<(String, String, String)>) {
+/// `(match_id, port, seats)` with each seat `(ticket_hex, team, name, kind)`.
+pub fn started_with(report: &[u8]) -> (String, String, Vec<StartedSeat>) {
     let text = String::from_utf8(report.to_vec()).expect("utf-8 report");
     let mut parts = text.splitn(3, '|');
     let (match_id, port, seats) = (
@@ -355,6 +362,7 @@ pub fn started_with(report: &[u8]) -> (String, String, Vec<(String, String, Stri
         .map(|seat| {
             let mut fields = seat.split(':').map(str::to_owned);
             (
+                fields.next().unwrap_or_default(),
                 fields.next().unwrap_or_default(),
                 fields.next().unwrap_or_default(),
                 fields.next().unwrap_or_default(),

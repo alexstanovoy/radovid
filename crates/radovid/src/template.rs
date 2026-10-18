@@ -1,12 +1,12 @@
 //! The placeholders of a launcher's arguments, environment and public URL.
 //!
-//! `{match_id}`, `{port}`, `{seats}` (`ticket_hex:team:name` per slot in slot
-//! order, comma separated), `{ticket_<slot>}`, `{team_<slot>}`,
-//! `{name_<slot>}`; `{{` and `}}` are literal braces. Nothing else is
+//! `{match_id}`, `{port}`, `{seats}` (`ticket_hex:team:name:kind` per slot in
+//! slot order, comma separated; kind is `bot` or `human`, the account's own),
+//! `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>}`; `{{` and `}}` are literal braces. Nothing else is
 //! interpreted. Tickets may only go into the environment: an argument shows
 //! in every process listing.
 
-use radovid_proto::{MatchId, Ticket};
+use radovid_proto::{AccountKind, MatchId, Ticket};
 
 /// One seat as the game is told about it.
 #[derive(Clone, Debug)]
@@ -15,6 +15,17 @@ pub struct SeatSpec {
     pub team: u8,
     /// `[A-Za-z0-9_]`, unique within the match.
     pub name: String,
+    /// What the account is; only an administrator changes it.
+    pub kind: AccountKind,
+}
+
+impl SeatSpec {
+    fn kind_word(&self) -> &'static str {
+        match self.kind {
+            AccountKind::Human => "human",
+            AccountKind::Bot => "bot",
+        }
+    }
 }
 
 /// What the placeholders stand for in one launch.
@@ -62,7 +73,7 @@ fn per_seat(name: &str) -> Option<(usize, bool)> {
     let slot = slot.parse().ok()?;
     match kind {
         "ticket" => Some((slot, true)),
-        "team" | "name" => Some((slot, false)),
+        "team" | "name" | "kind" => Some((slot, false)),
         _ => None,
     }
 }
@@ -109,7 +120,15 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
                 let seats: Vec<String> = vars
                     .seats
                     .iter()
-                    .map(|s| format!("{}:{}:{}", s.ticket.to_hex(), s.team, s.name))
+                    .map(|s| {
+                        format!(
+                            "{}:{}:{}:{}",
+                            s.ticket.to_hex(),
+                            s.team,
+                            s.name,
+                            s.kind_word()
+                        )
+                    })
                     .collect();
                 out.push_str(&seats.join(","));
             }
@@ -120,6 +139,7 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
                 match name.split('_').next() {
                     Some("ticket") => out.push_str(&seat.ticket.to_hex()),
                     Some("team") => out.push_str(&seat.team.to_string()),
+                    Some("kind") => out.push_str(seat.kind_word()),
                     _ => out.push_str(&seat.name),
                 }
             }

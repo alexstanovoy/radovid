@@ -78,8 +78,9 @@ The result reaches radovid only on the game server's own stdout, which only that
 host's root) can write: clients never report outcomes, and there is no network path to forge one.
 
 Placeholders in `args`, `env` values and `public_url`: `{match_id}`, `{port}` (taken from
-`game_ports`, the host port of this match), `{seats}` (`ticket_hex:team:name` per slot in slot
-order, comma separated), `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`; `{{` and `}}` are
+`game_ports`, the host port of this match), `{seats}` (`ticket_hex:team:name:kind` per slot in slot
+order, comma separated; kind is `bot` or `human`: the account's own, chosen at registration and changed
+only by an administrator), `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>}`; `{{` and `}}` are
 braces. Tickets may only go into `env`: an argument shows in every process listing. Slots are
 numbered team by team. A ticket is 32 random bytes; the game checks it (in constant time) and
 decides what it allows: a seat, reconnecting to it, watching it.

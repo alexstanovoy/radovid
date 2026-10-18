@@ -11,6 +11,37 @@ fn rules(behaviour: &str) -> Vec<radovid::config::RulesetConfig> {
 }
 
 #[test]
+fn the_game_is_told_each_seats_account_kind() {
+    let env = start(rules("team0"));
+    let mut hana = env.human("hana");
+    let mut beta = env.bot("beta");
+    hana.queue(&solo());
+    beta.queue(&solo());
+    let offered = hana.wait_proposal();
+    hana.expect_done(ClientMsg::MatchAccept {
+        proposal: offered.proposal,
+    });
+    let theirs = beta.wait_proposal();
+    beta.expect_done(ClientMsg::MatchAccept {
+        proposal: theirs.proposal,
+    });
+    let result = hana.wait_result();
+    let (_, _, seats) = started_with(&result.game_report);
+    let mut kinds: Vec<(String, String)> = seats
+        .into_iter()
+        .map(|(_, _, name, kind)| (name, kind))
+        .collect();
+    kinds.sort();
+    assert_eq!(
+        kinds,
+        vec![
+            ("beta".to_owned(), "bot".to_owned()),
+            ("hana".to_owned(), "human".to_owned())
+        ]
+    );
+}
+
+#[test]
 fn two_bots_accept_are_launched_play_and_are_rated() {
     let env = start(rules("team0"));
     let mut alpha = env.bot("alpha");
@@ -101,9 +132,15 @@ fn two_bots_accept_are_launched_play_and_are_rated() {
             (
                 for_alpha.ticket.to_hex(),
                 "0".to_owned(),
-                "alpha".to_owned()
+                "alpha".to_owned(),
+                "bot".to_owned()
             ),
-            (for_beta.ticket.to_hex(), "1".to_owned(), "beta".to_owned()),
+            (
+                for_beta.ticket.to_hex(),
+                "1".to_owned(),
+                "beta".to_owned(),
+                "bot".to_owned()
+            ),
         ]
     );
     let (winner, loser) = (&result.seats[0], &result.seats[1]);

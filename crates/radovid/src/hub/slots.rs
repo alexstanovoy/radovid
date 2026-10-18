@@ -69,6 +69,10 @@ impl Hub {
                 ticket: seat.ticket,
                 team: seat.team,
                 name,
+                kind: self
+                    .accounts
+                    .get(&seat.account)
+                    .map_or(AccountKind::Human, |a| a.info.kind),
             })
             .collect();
         let spec = LaunchSpec {
