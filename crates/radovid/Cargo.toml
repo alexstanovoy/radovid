@@ -3,7 +3,7 @@ name = "radovid"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Accounts, matchmaking, ratings and game-server orchestration for bota"
+description = "Accounts, matchmaking, ratings and game-server launching for any game"
 
 [lib]
 name = "radovid"
@@ -14,8 +14,6 @@ name = "radovid"
 path = "src/main.rs"
 
 [dependencies]
-postcard = { workspace = true }
-bota_proto = { workspace = true }
 radovid_proto = { workspace = true }
 serde = { workspace = true }
 rustls = { workspace = true }
@@ -30,14 +28,9 @@ clap = { version = "4.6.7", features = ["derive"] }
 rcgen = "0.14.10"
 futures-util = "0.3.34"
 getrandom = "0.4.3"
-socket2 = "0.6.5"
 
 [dev-dependencies]
-bota_core = { workspace = true }
-bota_server = { workspace = true }
 radovid_client = { workspace = true }
-bota_client_core = { workspace = true }
-bota_proto = { workspace = true }
 
 [lints]
 workspace = true

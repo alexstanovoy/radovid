@@ -1,32 +1,32 @@
-//! The hub: one task that owns every piece of live state (sessions, presence,
-//! queues, lobbies, running matches) and serves requests one at a time, so the
-//! invariant "an account is in at most one of queue, lobby, match" cannot be
-//! broken by a race.
+//! The hub: one task that owns every piece of live state (sessions, queue
+//! entries, proposals, lobbies, matches, game slots) and serves requests one
+//! at a time, so no limit can be broken by a race.
 
 mod admin;
+mod limits;
 mod lobby;
 mod matches;
+mod proposal;
 mod queue;
+mod slots;
 
-use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::Duration;
 
-use bota_proto::{HeroId, SeatKey, SlotId, Team};
 use radovid_proto::*;
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
-use crate::backend::Backend;
 use crate::config::Config;
-use crate::db::{AccountRow, Db};
+use crate::db::{AccountRow, DELETED_NICKNAME, Db};
 use crate::supervisor::End;
-
-pub use matches::GameRoute;
 
 /// Capacity of a session's event queue; a session that falls this far behind is
 /// dropped.
 const EVENT_QUEUE: usize = 256;
+/// How often the hub looks at queue positions and cooldowns.
+const TICK: Duration = Duration::from_secs(1);
 
 pub type SessionId = u64;
 
@@ -49,32 +49,32 @@ pub enum Cmd {
         account: AccountId,
         keep: [u8; 32],
     },
-    /// A game connection wants the container behind its key.
-    GameRoute {
-        key: SeatKey,
-        spectator: bool,
-        reply: oneshot::Sender<Option<GameRoute>>,
+    /// The account is deleted: everything it has in flight but its running
+    /// matches ends, and so do its sessions.
+    AccountDeleted {
+        account: AccountId,
+        done: oneshot::Sender<()>,
     },
-    GameClosed {
-        key: SeatKey,
-        spectator: bool,
+    ProposalDeadline {
+        proposal: ProposalId,
     },
-    MatchUp {
+    CountdownDone {
+        lobby: LobbyId,
+    },
+    /// The game server printed `READY`.
+    MatchReady {
         match_id: MatchId,
-        addr: SocketAddr,
-    },
-    MatchStarted {
-        match_id: MatchId,
-        picks: Vec<(SlotId, HeroId)>,
     },
     MatchEnded {
         match_id: MatchId,
         end: End,
     },
-    CountdownDone {
-        lobby: LobbyId,
+    /// A game server is gone and its port may be handed out again.
+    PortFree {
+        port: u16,
     },
-    /// Stop the service: every running match is stopped.
+    Tick,
+    /// Stop the service: every match is stopped.
     Shutdown,
 }
 
@@ -82,9 +82,12 @@ pub struct Attach {
     pub account: AccountRow,
     /// The SHA-256 of the session token it logged in with.
     pub token_hash: [u8; 32],
-    pub bota_wire: u64,
+    /// The game wire the client named in its Hello.
+    pub game_fingerprint: u64,
+    /// The connection's source (an IPv4 address or an IPv6 /64).
+    pub source: IpAddr,
     pub events: mpsc::Sender<ServerMsg>,
-    pub reply: oneshot::Sender<Result<(SessionId, Presence), Error>>,
+    pub reply: oneshot::Sender<Result<(SessionId, Activities), Error>>,
 }
 
 /// A handle to the hub.
@@ -97,77 +100,100 @@ pub fn event_channel() -> (mpsc::Sender<ServerMsg>, mpsc::Receiver<ServerMsg>) {
     mpsc::channel(EVENT_QUEUE)
 }
 
-/// Where an account is.
-#[derive(Clone, Debug)]
-enum Where {
-    Idle,
-    Queued { ruleset: RulesetId, since: Instant },
-    InLobby(LobbyId),
-    InMatch(MatchId),
-}
-
+/// What the hub keeps of an account that is online or has games in flight.
 struct Account {
     info: AccountInfo,
     bot_version: Option<String>,
-    at: Where,
     sessions: Vec<SessionId>,
-    /// The lobby a join request is pending in.
-    asking: Option<LobbyId>,
+    entries: Vec<QueueEntryId>,
+    lobbies: Vec<LobbyId>,
+    /// Lobbies with a join request of the account pending.
+    asking: Vec<LobbyId>,
+    /// Unfinished matches: waiting for a slot, starting or running.
+    matches: Vec<MatchId>,
+}
+
+impl Account {
+    /// Games in flight: what the per-account limit counts.
+    fn in_flight(&self) -> usize {
+        self.entries.len() + self.lobbies.len() + self.asking.len() + self.matches.len()
+    }
+
+    fn is_idle(&self) -> bool {
+        self.sessions.is_empty() && self.in_flight() == 0
+    }
 }
 
 struct Session {
     account: AccountId,
     token_hash: [u8; 32],
     events: mpsc::Sender<ServerMsg>,
-    bota_wire: u64,
+    game_fingerprint: u64,
+    source: IpAddr,
 }
 
 pub struct Hub {
     config: Arc<Config>,
     db: Db,
-    backend: Arc<dyn Backend>,
     me: mpsc::Sender<Cmd>,
-    slots: Arc<Semaphore>,
     accounts: HashMap<AccountId, Account>,
     sessions: HashMap<SessionId, Session>,
     next_session: SessionId,
-    queues: HashMap<RulesetId, Vec<AccountId>>,
+    entries: HashMap<QueueEntryId, queue::Entry>,
+    /// Entry ids per ruleset, oldest first.
+    queues: HashMap<RulesetId, Vec<QueueEntryId>>,
+    next_entry: u32,
+    proposals: HashMap<ProposalId, proposal::ProposalState>,
+    next_proposal: u32,
     lobbies: BTreeMap<LobbyId, lobby::Lobby>,
     next_lobby: u32,
     matches: HashMap<MatchId, matches::MatchState>,
-    routes: HashMap<[u8; 32], matches::Route>,
+    /// Matches waiting for a game slot, in the order they were formed.
+    waiting: VecDeque<MatchId>,
+    free_ports: BTreeSet<u16>,
+    penalties: HashMap<AccountId, limits::Penalty>,
 }
 
-/// Starts the hub task.
-pub fn spawn(
-    config: Arc<Config>,
-    db: Db,
-    backend: Arc<dyn Backend>,
-) -> (HubHandle, tokio::task::JoinHandle<()>) {
+/// Starts the hub task and its clock.
+pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel(1024);
     let mut hub = Hub {
-        slots: Arc::new(Semaphore::new(config.max_matches)),
+        free_ports: config.game_ports.ports().collect(),
         config,
         db,
-        backend,
         me: tx.clone(),
         accounts: HashMap::new(),
         sessions: HashMap::new(),
         next_session: 1,
+        entries: HashMap::new(),
         queues: HashMap::new(),
+        next_entry: 1,
+        proposals: HashMap::new(),
+        next_proposal: 1,
         lobbies: BTreeMap::new(),
         next_lobby: 1,
         matches: HashMap::new(),
-        routes: HashMap::new(),
+        waiting: VecDeque::new(),
+        penalties: HashMap::new(),
     };
+    let clock = tx.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(TICK);
+        loop {
+            tick.tick().await;
+            match clock.try_send(Cmd::Tick) {
+                Err(mpsc::error::TrySendError::Closed(_)) => return,
+                _ => continue,
+            }
+        }
+    });
     let task = tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
             if matches!(cmd, Cmd::Shutdown) {
-                hub.shutdown();
+                hub.shutdown().await;
                 // The matches report their ends; serve until they have.
                 while !hub.matches.is_empty() {
-                    match tokio::time::timeout(std::time::Duration::from_secs(15), rx.recv()).await
-                    {
+                    match tokio::time::timeout(Duration::from_secs(15), rx.recv()).await {
                         Ok(Some(cmd)) => hub.handle(cmd).await,
                         _ => break,
                     }
@@ -194,18 +220,19 @@ impl Hub {
             }
             Cmd::Detach { session } => self.detach(session),
             Cmd::EndOtherSessions { account, keep } => self.end_other_sessions(account, keep),
-            Cmd::GameRoute {
-                key,
-                spectator,
-                reply,
-            } => {
-                let _ = reply.send(self.route(&key, spectator));
+            Cmd::AccountDeleted { account, done } => {
+                self.account_deleted(account);
+                let _ = done.send(());
             }
-            Cmd::GameClosed { key, spectator } => self.release_route(&key, spectator),
-            Cmd::MatchUp { match_id, addr } => self.match_up(match_id, addr),
-            Cmd::MatchStarted { match_id, picks } => self.match_started(match_id, picks),
+            Cmd::ProposalDeadline { proposal } => self.proposal_deadline(proposal),
+            Cmd::CountdownDone { lobby } => self.countdown_done(lobby).await,
+            Cmd::MatchReady { match_id } => self.match_ready(match_id),
             Cmd::MatchEnded { match_id, end } => self.match_ended(match_id, end).await,
-            Cmd::CountdownDone { lobby } => self.countdown_done(lobby),
+            Cmd::PortFree { port } => {
+                self.free_ports.insert(port);
+                self.try_launch();
+            }
+            Cmd::Tick => self.tick(),
             Cmd::Shutdown => {}
         }
     }
@@ -214,7 +241,8 @@ impl Hub {
         let Attach {
             account,
             token_hash,
-            bota_wire,
+            game_fingerprint,
+            source,
             events,
             reply,
         } = attach;
@@ -232,21 +260,49 @@ impl Hub {
                 account: id,
                 token_hash,
                 events,
-                bota_wire,
+                game_fingerprint,
+                source,
             },
         );
         let entry = self.accounts.entry(id).or_insert_with(|| Account {
             info: account.info(),
             bot_version: None,
-            at: Where::Idle,
             sessions: Vec::new(),
-            asking: None,
+            entries: Vec::new(),
+            lobbies: Vec::new(),
+            asking: Vec::new(),
+            matches: Vec::new(),
         });
         entry.info = account.info();
         entry.bot_version = account.bot_version.clone();
         entry.sessions.push(session);
-        let presence = self.presence_of(id);
-        let _ = reply.send(Ok((session, presence)));
+        let activities = self.activities(id);
+        let _ = reply.send(Ok((session, activities)));
+    }
+
+    /// Everything an account has in flight, as `LoggedIn` shows it.
+    fn activities(&self, id: AccountId) -> Activities {
+        let Some(account) = self.accounts.get(&id) else {
+            return Activities::default();
+        };
+        let mut proposals = Vec::new();
+        for entry in &account.entries {
+            if let Some(proposal) = self.proposal_for(*entry) {
+                proposals.push(proposal);
+            }
+        }
+        Activities {
+            queued: account
+                .entries
+                .iter()
+                .filter_map(|e| self.entry_status(*e))
+                .collect(),
+            proposals,
+            lobbies: account.lobbies.clone(),
+            matches: account.matches.clone(),
+            cooldown_ms: self.cooldown_ms(id),
+            asking: account.asking.clone(),
+        }
     }
 
     fn detach(&mut self, session: SessionId) {
@@ -263,54 +319,59 @@ impl Hub {
         }
     }
 
-    /// The last control session of an account is gone (3.3 of the design).
+    /// The last control session of an account is gone: its queue entries
+    /// (an open proposal counts as declined), join requests and lobbies end
+    /// (but not a lobby counting down); its matches run on.
     fn account_went_away(&mut self, id: AccountId) {
-        self.cancel_ask(id);
-        match self.accounts.get(&id).map(|a| a.at.clone()) {
-            Some(Where::Queued { ruleset, .. }) => self.leave_queue(id, &ruleset),
-            Some(Where::InLobby(lobby)) => {
-                let counting = self
-                    .lobbies
-                    .get(&lobby)
-                    .is_some_and(|l| l.starting.is_some());
-                if !counting {
-                    self.leave_lobby(id, lobby);
-                }
-            }
-            _ => {}
-        }
+        self.drop_entries(id, true);
+        self.drop_lobbies(id);
         self.forget_if_idle(id);
     }
 
-    fn forget_if_idle(&mut self, id: AccountId) {
-        if self
+    fn drop_entries(&mut self, id: AccountId, cooldown: bool) {
+        let entries = self
             .accounts
             .get(&id)
-            .is_some_and(|a| a.sessions.is_empty() && matches!(a.at, Where::Idle))
-        {
+            .map(|a| a.entries.clone())
+            .unwrap_or_default();
+        for entry in entries {
+            self.leave_queue(entry, QueueLeftReason::Cancelled, cooldown);
+        }
+    }
+
+    fn drop_lobbies(&mut self, id: AccountId) {
+        let (asking, lobbies) = self
+            .accounts
+            .get(&id)
+            .map(|a| (a.asking.clone(), a.lobbies.clone()))
+            .unwrap_or_default();
+        for lobby in asking {
+            self.cancel_ask(id, lobby);
+        }
+        for lobby in lobbies {
+            if self
+                .lobbies
+                .get(&lobby)
+                .is_some_and(|l| l.starting.is_none())
+            {
+                self.leave_lobby(id, lobby);
+            }
+        }
+    }
+
+    fn account_deleted(&mut self, id: AccountId) {
+        self.drop_entries(id, false);
+        self.drop_lobbies(id);
+        if let Some(account) = self.accounts.get_mut(&id) {
+            account.info.nickname = DELETED_NICKNAME.to_owned();
+            account.bot_version = None;
+        }
+        self.bye(id, Error::BadSession);
+    }
+
+    fn forget_if_idle(&mut self, id: AccountId) {
+        if self.accounts.get(&id).is_some_and(Account::is_idle) {
             self.accounts.remove(&id);
-        }
-    }
-
-    pub(crate) fn presence_of(&self, id: AccountId) -> Presence {
-        match self.accounts.get(&id).map(|a| &a.at) {
-            None | Some(Where::Idle) => Presence::Idle,
-            Some(Where::Queued { ruleset, since }) => Presence::Queued {
-                ruleset: ruleset.clone(),
-                for_ms: since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
-            },
-            Some(Where::InLobby(lobby)) => Presence::InLobby { lobby: *lobby },
-            Some(Where::InMatch(match_id)) => Presence::InMatch {
-                match_id: *match_id,
-            },
-        }
-    }
-
-    /// Refuses unless the account is idle.
-    fn require_idle(&self, id: AccountId) -> Result<(), Error> {
-        match self.presence_of(id) {
-            Presence::Idle => Ok(()),
-            presence => Err(Error::Busy { presence }),
         }
     }
 
@@ -369,39 +430,32 @@ impl Hub {
     }
 
     async fn request(&mut self, session: SessionId, msg: ClientMsg) -> Result<Reply, Error> {
-        let (id, wire) = {
-            let s = self.sessions.get(&session).ok_or(Error::NotLoggedIn)?;
-            (s.account, s.bota_wire)
-        };
+        let id = self
+            .sessions
+            .get(&session)
+            .map(|s| s.account)
+            .ok_or(Error::NotLoggedIn)?;
         match msg {
             ClientMsg::Hello { .. }
             | ClientMsg::Register { .. }
             | ClientMsg::Login { .. }
             | ClientMsg::Resume { .. } => Err(Error::AlreadyLoggedIn),
             // The control task answers these itself.
-            ClientMsg::Logout | ClientMsg::ChangePassword { .. } => Err(Error::Internal),
+            ClientMsg::Logout
+            | ClientMsg::ChangePassword { .. }
+            | ClientMsg::DeleteAccount { .. } => Err(Error::Internal),
             ClientMsg::ChangeNickname { nickname } => self.change_nickname(id, nickname).await,
             ClientMsg::Account { account } => self.public_account(account).await,
             ClientMsg::Rulesets => Ok(Reply::Rulesets {
-                list: self.config.rulesets.iter().map(|r| r.info()).collect(),
+                list: self.config.ruleset_infos(self.kind_of(id)),
             }),
-            ClientMsg::QueueJoin { ruleset } => self.queue_join(id, wire, ruleset).await,
-            ClientMsg::QueueLeave => self.queue_leave(id),
-            ClientMsg::LobbyCreate {
-                ruleset,
-                name,
-                audience,
-            } => self.lobby_create(id, wire, ruleset, name, audience).await,
-            ClientMsg::LobbyList => Ok(self.lobby_list()),
-            ClientMsg::LobbyAsk { lobby } => self.lobby_ask(id, wire, lobby),
-            ClientMsg::LobbyAskCancel => self.lobby_ask_cancel(id),
-            ClientMsg::LobbyDecide { account, allow } => {
-                self.lobby_decide(id, account, allow).await
-            }
-            ClientMsg::LobbyKick { account } => self.lobby_kick(id, account),
-            ClientMsg::LobbyReady { ready } => self.lobby_ready(id, ready).await,
-            ClientMsg::LobbyLeave => self.lobby_leave(id),
-            ClientMsg::MatchHandoff => self.match_handoff(id),
+            ClientMsg::Limits { ruleset } => self.limits(id, ruleset),
+            ClientMsg::QueueJoin { ruleset } => self.queue_join(session, ruleset),
+            ClientMsg::QueueLeave { entry } => self.queue_leave(id, entry),
+            ClientMsg::MatchAccept { proposal } => self.match_accept(id, proposal).await,
+            ClientMsg::MatchDecline { proposal } => self.match_decline(id, proposal),
+            ClientMsg::MyMatches => Ok(self.my_matches(id)),
+            ClientMsg::MatchHandoff { match_id } => self.match_handoff(id, match_id),
             ClientMsg::RecentMatches { account, limit } => {
                 self.recent_matches(account, limit).await
             }
@@ -419,8 +473,25 @@ impl Hub {
             ClientMsg::AdminSetKind { account, kind } => {
                 self.admin_set_kind(id, account, kind).await
             }
-            ClientMsg::AdminStopMatch { match_id } => self.admin_stop(id, match_id),
+            ClientMsg::AdminStopMatch { match_id } => self.admin_stop(id, match_id).await,
+            lobby => self.lobby_request(session, id, lobby).await,
         }
+    }
+
+    fn kind_of(&self, id: AccountId) -> AccountKind {
+        self.accounts
+            .get(&id)
+            .map_or(AccountKind::Human, |a| a.info.kind)
+    }
+
+    fn limits(&self, id: AccountId, ruleset: Option<RulesetId>) -> Result<Reply, Error> {
+        let ruleset = match &ruleset {
+            Some(ruleset) => Some(self.config.ruleset(ruleset).ok_or(Error::UnknownRuleset)?),
+            None => None,
+        };
+        Ok(Reply::Limits {
+            limits: self.config.limits_for(self.kind_of(id), ruleset),
+        })
     }
 
     async fn change_nickname(&mut self, id: AccountId, nickname: String) -> Result<Reply, Error> {
@@ -437,7 +508,17 @@ impl Hub {
         Ok(Reply::Done)
     }
 
-    fn shutdown(&mut self) {
+    /// Once a second: queue statuses, and forgetting cooldowns that are over.
+    fn tick(&mut self) {
+        self.send_queue_statuses();
+        self.sweep_penalties();
+    }
+
+    async fn shutdown(&mut self) {
+        let waiting: Vec<MatchId> = self.waiting.drain(..).collect();
+        for match_id in waiting {
+            self.match_ended(match_id, End::Stopped).await;
+        }
         for state in self.matches.values_mut() {
             if let Some(stop) = state.stop.take() {
                 let _ = stop.send(());
@@ -448,17 +529,15 @@ impl Hub {
             self.bye(id, Error::ServerStopping);
         }
     }
-
-    pub(crate) fn team_of_slot(slot: u8) -> Team {
-        if slot.is_multiple_of(2) {
-            Team::Radiant
-        } else {
-            Team::Dire
-        }
-    }
 }
 
 pub(crate) fn internal(error: impl std::fmt::Display) -> Error {
     eprintln!("radovid: internal error: {error}");
     Error::Internal
+}
+
+/// Milliseconds until `deadline`, for the wire.
+fn millis_until(deadline: tokio::time::Instant) -> u32 {
+    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+    left.as_millis().min(u128::from(u32::MAX)) as u32
 }

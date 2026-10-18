@@ -1,12 +1,15 @@
-//! The service's configuration file.
+//! The service's configuration file. Everything radovid knows about a game is
+//! here: its rulesets, and how to launch one game server per match.
 
-use std::net::SocketAddr;
+use std::collections::BTreeMap;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use radovid_proto::{HeroId, RulesetId, RulesetInfo, valid_ruleset_id};
+use radovid_proto::*;
 use serde::Deserialize;
 
 use crate::password::PasswordCost;
+use crate::template;
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
@@ -15,38 +18,24 @@ pub struct Config {
     pub listen: SocketAddr,
     /// The SQLite file.
     pub database: PathBuf,
-    /// PEM certificate chain and private key of the listener.
+    /// PEM certificate chain and private key of the listener; reread on SIGHUP.
     pub tls_cert: PathBuf,
     pub tls_key: PathBuf,
-    /// The `/game` URL clients are told to connect to.
-    pub public_game_url: String,
-    /// Matches running at once at most; a formed match waits for a slot.
-    #[serde(default = "default_max_matches")]
-    pub max_matches: usize,
-    /// Connections held at once at most, on both paths and whether logged in
-    /// or not; one past it is closed as soon as it is accepted.
+    /// Host ports handed to game servers, one per launched match: `"20000-20100"`.
+    pub game_ports: PortRange,
+    /// Connections held at once at most, logged in or not; one past it is
+    /// closed as soon as it is accepted.
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
     /// What the server calls itself in `Welcome`.
     #[serde(default = "default_server_name")]
     pub server_name: String,
-    /// Messages per second one game connection may send (a realtime client
-    /// sends tens; a lockstep one, used in tests, an acknowledgement per tick).
-    #[serde(default = "default_game_rate")]
-    pub game_messages_per_sec: u32,
     #[serde(default)]
     pub password: PasswordCost,
-    pub backend: BackendConfig,
+    #[serde(default)]
+    pub limits: LimitsConfig,
     #[serde(rename = "ruleset")]
     pub rulesets: Vec<RulesetConfig>,
-}
-
-fn default_game_rate() -> u32 {
-    2000
-}
-
-fn default_max_matches() -> usize {
-    8
 }
 
 fn default_max_connections() -> usize {
@@ -57,77 +46,260 @@ fn default_server_name() -> String {
     "radovid".to_owned()
 }
 
-/// Where game servers run.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum BackendConfig {
-    /// A child process of the service, for development and tests.
-    Local {
-        /// The `bota_server` executable.
-        bota_server: PathBuf,
-    },
-    /// One docker container per match on a private network.
-    Docker {
-        image: String,
-        network: String,
-        #[serde(default = "default_docker")]
-        docker: String,
-        #[serde(default = "default_memory")]
-        memory: String,
-        #[serde(default = "default_cpus")]
-        cpus: String,
-        /// Reach the container on a loopback port the docker daemon publishes,
-        /// not on its address in the network: for a rootless daemon, whose
-        /// container addresses the host cannot reach.
-        #[serde(default)]
-        publish_loopback: bool,
-    },
+/// An inclusive range of ports, written `"first-last"`.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(try_from = "String")]
+pub struct PortRange {
+    pub first: u16,
+    pub last: u16,
 }
 
-fn default_docker() -> String {
-    "docker".to_owned()
+impl TryFrom<String> for PortRange {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        let bad = || format!("game_ports {text:?} is not \"first-last\" with 1 <= first <= last");
+        let (first, last) = text.split_once('-').ok_or_else(bad)?;
+        let first: u16 = first.trim().parse().map_err(|_| bad())?;
+        let last: u16 = last.trim().parse().map_err(|_| bad())?;
+        if first == 0 || first > last {
+            return Err(bad());
+        }
+        Ok(PortRange { first, last })
+    }
 }
 
-fn default_memory() -> String {
-    "512m".to_owned()
+impl PortRange {
+    pub fn ports(&self) -> impl Iterator<Item = u16> {
+        self.first..=self.last
+    }
+
+    pub fn count(&self) -> usize {
+        usize::from(self.last - self.first) + 1
+    }
 }
 
-fn default_cpus() -> String {
-    "1".to_owned()
+/// One number per account kind.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PerKind {
+    pub human: u8,
+    pub bot: u8,
+}
+
+impl PerKind {
+    pub fn of(&self, kind: AccountKind) -> u8 {
+        match kind {
+            AccountKind::Human => self.human,
+            AccountKind::Bot => self.bot,
+        }
+    }
+}
+
+/// A per-kind number, or one number for both kinds.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PerKindOrBoth {
+    Both(u8),
+    PerKind(PerKind),
+}
+
+impl PerKindOrBoth {
+    fn per_kind(self) -> PerKind {
+        match self {
+            PerKindOrBoth::Both(n) => PerKind { human: n, bot: n },
+            PerKindOrBoth::PerKind(per_kind) => per_kind,
+        }
+    }
+}
+
+/// How much play the service takes on, and what an account may hold.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct LimitsConfig {
+    /// Games in flight per account: queue entries, lobbies, join requests and
+    /// unfinished matches.
+    pub games_per_account: PerKind,
+    /// Games in flight of all accounts of one source (an IPv4 address or an
+    /// IPv6 /64).
+    pub games_per_source: u8,
+    /// Seconds to accept a proposal; silence counts as a decline.
+    pub accept_timeout_secs: u32,
+    /// Seconds out of the queues after a decline or a silence.
+    pub decline_cooldown_secs: u32,
+    /// Games launched at once; accepted matches wait for a slot in order.
+    pub game_capacity: u32,
+    /// Of those, the most lobby games may hold, so that queued matches always
+    /// have slots of their own.
+    pub lobby_games_max: u32,
+    /// Queue entries across every ruleset; past it `QueueFull`.
+    pub queue_capacity: u32,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        LimitsConfig {
+            games_per_account: PerKind { human: 2, bot: 8 },
+            games_per_source: 8,
+            accept_timeout_secs: 30,
+            decline_cooldown_secs: 120,
+            game_capacity: 8,
+            lobby_games_max: 6,
+            queue_capacity: 256,
+        }
+    }
 }
 
 /// One entry of the ruleset catalog.
 #[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct RulesetConfig {
+    /// `[a-z0-9_]`, never reused for other rules.
     pub id: String,
     pub name: String,
-    pub seats: u8,
-    /// Hero ids the ruleset allows, for display ahead of a match.
-    #[serde(default)]
-    pub heroes: Vec<u16>,
-    /// Has a queue and a ladder.
-    pub queue: bool,
-    /// Arguments for the game server that make these rules (`--map 2`, ...).
-    #[serde(default)]
-    pub bota_args: Vec<String>,
-    /// Seconds after the game server came up at which the hero select ends.
-    #[serde(default = "default_start_after")]
-    pub start_after_secs: u64,
+    /// The game's label for clients; radovid never interprets it.
+    pub game: String,
+    /// 16 hex digits: the game wire a client must name in its Hello.
+    #[serde(deserialize_with = "hex_u64")]
+    pub game_fingerprint: u64,
+    /// Team sizes; slots are numbered team by team.
+    pub teams: Vec<u8>,
+    /// Has a queue and a ladder; its queued matches are rated.
+    pub rated: bool,
+    /// Hex bytes shown to clients as `RulesetInfo.info`.
+    #[serde(default, deserialize_with = "hex_bytes")]
+    pub info: Vec<u8>,
+    /// A match still running after this long is stopped (a null).
+    #[serde(default = "default_max_duration")]
+    pub max_duration_secs: u64,
+    /// Overrides `[limits] games_per_account` for this ruleset.
+    pub games_per_account: Option<PerKindOrBoth>,
+    pub launcher: LauncherConfig,
 }
 
-fn default_start_after() -> u64 {
+fn default_max_duration() -> u64 {
+    1800
+}
+
+/// How a ruleset's game servers are started: a local process or a docker
+/// container, with arguments and environment in which radovid expands
+/// `{match_id}`, `{port}`, `{seats}`, `{ticket_<slot>}`, `{team_<slot>}` and
+/// `{name_<slot>}` (`{{` and `}}` are braces).
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct LauncherConfig {
+    pub kind: LauncherKind,
+    /// local: the executable.
+    pub binary: Option<PathBuf>,
+    /// docker: the image, and the port the game listens on inside it.
+    pub image: Option<String>,
+    pub container_port: Option<u16>,
+    /// docker: the client binary (default `docker`), the network (default
+    /// docker's own), the limits of the container (512m, 1 CPU, 256 pids),
+    /// the host address the game port is published on (default 0.0.0.0) and
+    /// read-only `-v` mounts.
+    pub docker: Option<String>,
+    pub network: Option<String>,
+    pub memory: Option<String>,
+    pub cpus: Option<String>,
+    pub pids_limit: Option<u32>,
+    pub publish_address: Option<IpAddr>,
+    #[serde(default)]
+    pub mounts: Vec<String>,
+    /// What players are told to connect to, e.g. `wss://game.example.org:{port}`.
+    pub public_url: String,
+    /// Arguments that make the game print its wire fingerprint (16 hex
+    /// digits) and exit; checked against `game_fingerprint` at start.
+    #[serde(default)]
+    pub version_probe: Vec<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Environment; the only place tickets may go (`{seats}`, `{ticket_<slot>}`).
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Seconds from the start to the game's `READY` line at most.
+    #[serde(default = "default_start_timeout")]
+    pub start_timeout_secs: u64,
+}
+
+fn default_start_timeout() -> u64 {
     60
 }
 
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LauncherKind {
+    Local,
+    Docker,
+}
+
+fn hex_u64<'de, D: serde::Deserializer<'de>>(de: D) -> Result<u64, D::Error> {
+    let text = String::deserialize(de)?;
+    parse_fingerprint(&text)
+        .ok_or_else(|| serde::de::Error::custom(format!("{text:?} is not 16 hex digits")))
+}
+
+/// A wire fingerprint as games print it: 16 hex digits.
+pub fn parse_fingerprint(text: &str) -> Option<u64> {
+    let text = text.trim();
+    (text.len() == 16 && text.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| u64::from_str_radix(text, 16).ok())
+        .flatten()
+}
+
+fn hex_bytes<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<u8>, D::Error> {
+    let text = String::deserialize(de)?;
+    decode_hex(&text).ok_or_else(|| serde::de::Error::custom("info is not hex bytes"))
+}
+
+/// Pairs of hex digits as bytes.
+pub fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    text.as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .collect()
+}
+
 impl RulesetConfig {
-    pub fn info(&self) -> RulesetInfo {
+    pub fn ruleset_id(&self) -> RulesetId {
+        RulesetId(self.id.clone())
+    }
+
+    pub fn seats(&self) -> usize {
+        self.teams.iter().map(|&n| usize::from(n)).sum()
+    }
+
+    /// The team of a slot: slots are numbered team by team.
+    pub fn team_of(&self, slot: usize) -> u8 {
+        let mut first = 0;
+        for (team, &size) in self.teams.iter().enumerate() {
+            first += usize::from(size);
+            if slot < first {
+                return team as u8;
+            }
+        }
+        0
+    }
+
+    pub fn games_per_account(&self, limits: &LimitsConfig, kind: AccountKind) -> u8 {
+        self.games_per_account
+            .map_or(limits.games_per_account, PerKindOrBoth::per_kind)
+            .of(kind)
+    }
+
+    pub fn info(&self, limits: &LimitsConfig, kind: AccountKind) -> RulesetInfo {
         RulesetInfo {
-            id: RulesetId(self.id.clone()),
+            id: self.ruleset_id(),
             name: self.name.clone(),
-            seats: self.seats,
-            heroes: self.heroes.iter().copied().map(HeroId).collect(),
-            queue: self.queue,
+            game: self.game.clone(),
+            game_fingerprint: self.game_fingerprint,
+            teams: self.teams.clone(),
+            rated: self.rated,
+            info: self.info.clone(),
+            games_per_account: self.games_per_account(limits, kind),
         }
     }
 }
@@ -146,40 +318,44 @@ impl Config {
         if self.rulesets.is_empty() {
             return Err("no ruleset is configured".to_owned());
         }
-        if self.max_matches == 0 {
-            return Err("max_matches must be at least 1".to_owned());
-        }
         if self.max_connections == 0 {
             return Err("max_connections must be at least 1".to_owned());
         }
+        self.validate_limits()?;
         for (i, ruleset) in self.rulesets.iter().enumerate() {
-            if !valid_ruleset_id(&ruleset.id) {
-                return Err(format!(
-                    "ruleset id {:?} is not [a-z0-9_] of 1 to 32 bytes",
-                    ruleset.id
-                ));
-            }
             if self.rulesets[..i].iter().any(|r| r.id == ruleset.id) {
                 return Err(format!("ruleset {} is configured twice", ruleset.id));
             }
-            if ruleset.seats < 2 || ruleset.seats % 2 != 0 || ruleset.seats > 10 {
-                return Err(format!(
-                    "ruleset {} needs an even number of seats from 2 to 10",
-                    ruleset.id
-                ));
-            }
-            if ruleset.queue && ruleset.seats != 2 {
-                return Err(format!(
-                    "ruleset {}: a queue pairs two accounts",
-                    ruleset.id
-                ));
-            }
-            if ruleset.name.is_empty() || ruleset.name.len() > 64 {
-                return Err(format!(
-                    "ruleset {} needs a name of 1 to 64 bytes",
-                    ruleset.id
-                ));
-            }
+            validate_ruleset(ruleset).map_err(|e| format!("ruleset {}: {e}", ruleset.id))?;
+        }
+        Ok(())
+    }
+
+    fn validate_limits(&self) -> Result<(), String> {
+        let limits = &self.limits;
+        if limits.games_per_account.human == 0 || limits.games_per_account.bot == 0 {
+            return Err("limits.games_per_account must be at least 1".to_owned());
+        }
+        if limits.games_per_source == 0 || limits.queue_capacity == 0 {
+            return Err("limits.games_per_source and queue_capacity must be at least 1".to_owned());
+        }
+        if !(1..=600).contains(&limits.accept_timeout_secs) {
+            return Err("limits.accept_timeout_secs must be 1 to 600".to_owned());
+        }
+        if limits.decline_cooldown_secs > 86_400 {
+            return Err("limits.decline_cooldown_secs must be at most a day".to_owned());
+        }
+        if limits.game_capacity == 0 || limits.lobby_games_max > limits.game_capacity {
+            return Err(
+                "limits.game_capacity must be at least 1 and at least lobby_games_max".to_owned(),
+            );
+        }
+        if self.game_ports.count() < limits.game_capacity as usize {
+            return Err(format!(
+                "game_ports holds {} ports for a game_capacity of {}",
+                self.game_ports.count(),
+                limits.game_capacity
+            ));
         }
         Ok(())
     }
@@ -187,4 +363,103 @@ impl Config {
     pub fn ruleset(&self, id: &RulesetId) -> Option<&RulesetConfig> {
         self.rulesets.iter().find(|r| r.id == id.0)
     }
+
+    /// The limits as they apply to an account of `kind`, for `ruleset` if named.
+    pub fn limits_for(&self, kind: AccountKind, ruleset: Option<&RulesetConfig>) -> Limits {
+        let limits = &self.limits;
+        Limits {
+            games_per_account: ruleset.map_or(limits.games_per_account.of(kind), |r| {
+                r.games_per_account(limits, kind)
+            }),
+            accept_timeout_ms: limits.accept_timeout_secs * 1000,
+            decline_cooldown_ms: limits.decline_cooldown_secs * 1000,
+            queue_capacity: limits.queue_capacity,
+            game_capacity: limits.game_capacity,
+            lobby_games_max: limits.lobby_games_max,
+            games_per_source: limits.games_per_source,
+        }
+    }
+
+    pub fn ruleset_infos(&self, kind: AccountKind) -> Vec<RulesetInfo> {
+        self.rulesets
+            .iter()
+            .map(|r| r.info(&self.limits, kind))
+            .collect()
+    }
+}
+
+fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {
+    if !valid_ruleset_id(&ruleset.id) {
+        return Err("the id is not [a-z0-9_] of 1 to 32 bytes".to_owned());
+    }
+    if ruleset.name.is_empty() || ruleset.name.len() > 64 {
+        return Err("needs a name of 1 to 64 bytes".to_owned());
+    }
+    if ruleset.game.is_empty()
+        || ruleset.game.len() > 32
+        || ruleset.game.chars().any(char::is_control)
+    {
+        return Err("needs a game label of 1 to 32 bytes".to_owned());
+    }
+    if ruleset.teams.len() < 2 || ruleset.teams.contains(&0) || ruleset.seats() > MAX_SEATS {
+        return Err(format!(
+            "needs two or more teams of at least one, {MAX_SEATS} seats at most"
+        ));
+    }
+    if ruleset.rated && ruleset.teams != [1, 1] {
+        return Err("a rated ruleset is two teams of one: teams = [1, 1]".to_owned());
+    }
+    if ruleset.info.len() > MAX_RULESET_INFO_LEN {
+        return Err(format!("info is over {MAX_RULESET_INFO_LEN} bytes"));
+    }
+    if ruleset.max_duration_secs == 0 {
+        return Err("max_duration_secs must be at least 1".to_owned());
+    }
+    if let Some(per) = ruleset.games_per_account.map(PerKindOrBoth::per_kind)
+        && (per.human == 0 || per.bot == 0)
+    {
+        return Err("games_per_account must be at least 1".to_owned());
+    }
+    validate_launcher(&ruleset.launcher, ruleset.seats())
+}
+
+fn validate_launcher(launcher: &LauncherConfig, seats: usize) -> Result<(), String> {
+    let docker_only = launcher.image.is_some()
+        || launcher.container_port.is_some()
+        || launcher.docker.is_some()
+        || launcher.network.is_some()
+        || launcher.memory.is_some()
+        || launcher.cpus.is_some()
+        || launcher.pids_limit.is_some()
+        || launcher.publish_address.is_some()
+        || !launcher.mounts.is_empty();
+    match launcher.kind {
+        LauncherKind::Local if launcher.binary.is_none() || docker_only => {
+            return Err("a local launcher has a binary and no docker settings".to_owned());
+        }
+        LauncherKind::Docker
+            if launcher.binary.is_some()
+                || launcher.image.is_none()
+                || launcher.container_port.is_none() =>
+        {
+            return Err(
+                "a docker launcher has an image and a container_port, no binary".to_owned(),
+            );
+        }
+        _ => {}
+    }
+    if launcher.start_timeout_secs == 0 {
+        return Err("start_timeout_secs must be at least 1".to_owned());
+    }
+    template::check(&launcher.public_url, seats, false).map_err(|e| format!("public_url: {e}"))?;
+    for arg in &launcher.args {
+        template::check(arg, seats, false).map_err(|e| format!("args: {e}"))?;
+    }
+    for (name, value) in &launcher.env {
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            return Err(format!("env name {name:?} is not [A-Za-z0-9_]"));
+        }
+        template::check(value, seats, true).map_err(|e| format!("env {name}: {e}"))?;
+    }
+    Ok(())
 }

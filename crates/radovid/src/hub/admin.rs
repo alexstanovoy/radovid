@@ -2,8 +2,10 @@
 
 use radovid_proto::*;
 
+use super::matches::Phase;
 use super::{Hub, internal};
 use crate::db::{Ban, now_ms};
+use crate::supervisor::End;
 
 impl Hub {
     pub(super) async fn public_account(&mut self, id: AccountId) -> Result<Reply, Error> {
@@ -22,7 +24,6 @@ impl Hub {
         Ok(Reply::Account {
             account: PublicAccount {
                 id,
-                login: row.login,
                 nickname: row.nickname,
                 kind,
                 online,
@@ -60,7 +61,7 @@ impl Hub {
         limit: u8,
     ) -> Result<Reply, Error> {
         let config = self.config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?;
-        if !config.queue {
+        if !config.rated {
             return Err(Error::NoQueue);
         }
         let (total, rows) = self
@@ -132,7 +133,6 @@ impl Hub {
     ) -> Result<Reply, Error> {
         self.require_admin(admin)?;
         self.require_account(target).await?;
-        self.require_idle(target)?;
         self.db.set_kind(target, kind).await.map_err(internal)?;
         if let Some(account) = self.accounts.get_mut(&target) {
             account.info.kind = kind;
@@ -140,20 +140,23 @@ impl Hub {
         Ok(Reply::Done)
     }
 
-    pub(super) fn admin_stop(
+    /// Stops a match: a waiting one ends at once, a launched one when its
+    /// game server is gone. Either is a null.
+    pub(super) async fn admin_stop(
         &mut self,
         admin: AccountId,
         match_id: MatchId,
     ) -> Result<Reply, Error> {
         self.require_admin(admin)?;
-        let stop = self
-            .matches
-            .get_mut(&match_id)
-            .ok_or(Error::UnknownMatch)?
-            .stop
-            .take();
-        if let Some(stop) = stop {
-            let _ = stop.send(());
+        let state = self.matches.get_mut(&match_id).ok_or(Error::UnknownMatch)?;
+        match state.stop.take() {
+            Some(stop) => {
+                let _ = stop.send(());
+            }
+            None if state.phase == Phase::Waiting => {
+                self.match_ended(match_id, End::Stopped).await;
+            }
+            None => {}
         }
         Ok(Reply::Done)
     }

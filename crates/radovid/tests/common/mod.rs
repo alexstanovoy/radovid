@@ -1,21 +1,23 @@
-//! A service on a loopback port with a scripted or a real game server, and
-//! bots to talk to it.
+//! A service on a loopback port whose game servers are `fake_game.sh`, and
+//! accounts to talk to it.
 #![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use bota_client_core::Transport;
-use bota_proto::{HeroId, ServerMsg, Team};
-use radovid::config::{BackendConfig, Config, RulesetConfig};
+use radovid::config::{
+    Config, LauncherConfig, LauncherKind, LimitsConfig, PerKind, PortRange, RulesetConfig,
+};
 use radovid::password::PasswordCost;
 use radovid::service::Service;
 use radovid::tls;
 use radovid_client::proto::*;
-use radovid_client::{Client, ClientError, GameLink, TlsConfig, take_seat};
+use radovid_client::{Client, ClientError, Incoming, TlsConfig};
 
 pub const PASSWORD: &str = "correct horse battery";
+/// The game wire the test rulesets and clients name.
+pub const FINGERPRINT: u64 = 0x1e88_417a_0b3c_5d6f;
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
@@ -34,7 +36,7 @@ impl Env {
     }
 
     pub fn connect(&self) -> Client {
-        Client::connect(&self.url, &self.tls).expect("connect")
+        Client::connect(&self.url, &self.tls, FINGERPRINT).expect("connect")
     }
 
     /// A registered, logged-in account.
@@ -57,12 +59,33 @@ impl Env {
         self.account(login, AccountKind::Bot)
     }
 
+    /// Another session of an existing account.
+    pub fn login(&self, login: &str) -> Account {
+        let mut client = self.connect();
+        let logged = client
+            .login(login, PASSWORD, ClientInfo::default())
+            .expect("login");
+        Account {
+            client,
+            me: logged.me,
+            token: logged.session,
+        }
+    }
+
     /// Makes an account an admin, the way an operator would on the host.
     pub fn grant_admin(&self, login: &str) {
         self.runtime.block_on(async {
             let db = radovid::db::Db::open(&self.db_path()).expect("open");
             assert!(db.grant_admin(login.to_owned()).await.expect("grant"));
         });
+    }
+
+    pub fn reload_tls(&self, identity: &tls::Identity) {
+        self.service
+            .as_ref()
+            .expect("running")
+            .reload_tls(identity)
+            .expect("reload");
     }
 
     pub fn stop(mut self) {
@@ -81,40 +104,66 @@ impl Drop for Env {
     }
 }
 
-/// One ruleset of the catalog; `bota_args` script the fake game server.
-pub fn ruleset(id: &str, queue: bool, bota_args: &[&str]) -> RulesetConfig {
+pub fn fake_game() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fake_game.sh")
+}
+
+/// A ruleset of two teams of one whose game does `behaviour` (see
+/// fake_game.sh) after `seconds`.
+pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> RulesetConfig {
     RulesetConfig {
         id: id.to_owned(),
         name: format!("Test {id}"),
-        seats: 2,
-        heroes: vec![0, 1],
-        queue,
-        bota_args: bota_args.iter().map(|a| (*a).to_owned()).collect(),
-        start_after_secs: 30,
+        game: "testgame".to_owned(),
+        game_fingerprint: FINGERPRINT,
+        teams: vec![1, 1],
+        rated,
+        info: vec![1, 2, 3],
+        max_duration_secs: 600,
+        games_per_account: None,
+        launcher: LauncherConfig {
+            kind: LauncherKind::Local,
+            binary: Some(fake_game()),
+            image: None,
+            container_port: None,
+            docker: None,
+            network: None,
+            memory: None,
+            cpus: None,
+            pids_limit: None,
+            publish_address: None,
+            mounts: Vec::new(),
+            public_url: "wss://game.example.org:{port}/m{match_id}".to_owned(),
+            version_probe: vec!["--probe".to_owned(), format!("{FINGERPRINT:016x}")],
+            args: [behaviour, seconds, "{match_id}", "{port}"]
+                .map(str::to_owned)
+                .to_vec(),
+            env: [("GAME_SEATS".to_owned(), "{seats}".to_owned())].into(),
+            start_timeout_secs: 30,
+        },
     }
 }
 
-/// The scripted game server built beside the tests.
-pub fn fake_game_server() -> PathBuf {
-    let exe = std::env::current_exe().expect("test executable");
-    let target = exe
-        .parent()
-        .and_then(|deps| deps.parent())
-        .expect("target dir");
-    target.join("examples").join("fake_bota_server")
+/// The default test limits: the per-source one out of the way, since every
+/// test client comes from 127.0.0.1.
+pub fn test_limits() -> LimitsConfig {
+    LimitsConfig {
+        games_per_account: PerKind { human: 2, bot: 8 },
+        games_per_source: 200,
+        accept_timeout_secs: 30,
+        decline_cooldown_secs: 120,
+        game_capacity: 8,
+        lobby_games_max: 6,
+        queue_capacity: 256,
+    }
 }
 
 pub fn start(rulesets: Vec<RulesetConfig>) -> Env {
-    start_with(
-        BackendConfig::Local {
-            bota_server: fake_game_server(),
-        },
-        rulesets,
-    )
+    try_start(rulesets, |_| {}).expect("service")
 }
 
-pub fn start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Env {
-    try_start_with(backend, rulesets).expect("service")
+pub fn start_configured(rulesets: Vec<RulesetConfig>, adjust: impl FnOnce(&mut Config)) -> Env {
+    try_start(rulesets, adjust).expect("service")
 }
 
 /// A fresh directory for one service.
@@ -133,34 +182,29 @@ pub fn test_dir() -> PathBuf {
     dir
 }
 
-pub fn try_start_with(backend: BackendConfig, rulesets: Vec<RulesetConfig>) -> Result<Env, String> {
-    try_start_configured(backend, rulesets, |_| {})
-}
-
 /// A service whose configuration `adjust` changes first.
-pub fn try_start_configured(
-    backend: BackendConfig,
+pub fn try_start(
     rulesets: Vec<RulesetConfig>,
     adjust: impl FnOnce(&mut Config),
 ) -> Result<Env, String> {
     let dir = test_dir();
-    let identity = tls::self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()])
-        .expect("certificate");
+    let identity = self_signed();
     let mut config = Config {
         listen: "127.0.0.1:0".parse().expect("address"),
         database: dir.join("radovid.db"),
         tls_cert: PathBuf::new(),
         tls_key: PathBuf::new(),
-        public_game_url: "wss://127.0.0.1:{port}/game".to_owned(),
-        max_matches: 8,
+        game_ports: PortRange {
+            first: 40000,
+            last: 40063,
+        },
         max_connections: 1024,
         server_name: "radovid-test".to_owned(),
-        game_messages_per_sec: 1_000_000,
         password: PasswordCost {
             memory_kib: 1024,
             iterations: 1,
         },
-        backend,
+        limits: test_limits(),
         rulesets,
     };
     adjust(&mut config);
@@ -185,6 +229,14 @@ pub fn try_start_configured(
     })
 }
 
+pub fn self_signed() -> tls::Identity {
+    tls::self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()]).expect("certificate")
+}
+
+pub fn solo() -> RulesetId {
+    RulesetId("solo".to_owned())
+}
+
 /// A logged-in account and its control connection.
 pub struct Account {
     pub client: Client,
@@ -207,9 +259,9 @@ impl Account {
 
     /// The next event of the kind `pick` selects, within `secs` seconds.
     pub fn wait_for<T>(&mut self, secs: u64, mut pick: impl FnMut(Event) -> Option<T>) -> T {
-        let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+        let deadline = Instant::now() + Duration::from_secs(secs);
         loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = deadline.saturating_duration_since(Instant::now());
             match self.client.next_event(left).expect("connection") {
                 Some(event) => {
                     if let Some(found) = pick(event) {
@@ -219,6 +271,43 @@ impl Account {
                 None => panic!("the awaited event never came"),
             }
         }
+    }
+
+    /// No event `pick` selects arrives within `millis`.
+    pub fn quiet(&mut self, millis: u64, mut pick: impl FnMut(&Event) -> bool) {
+        let deadline = Instant::now() + Duration::from_millis(millis);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.client.next_event(left).expect("connection") {
+                Some(event) => assert!(!pick(&event), "unexpected {event:?}"),
+                None => return,
+            }
+        }
+    }
+
+    pub fn queue(&mut self, ruleset: &RulesetId) -> QueueEntry {
+        match self.ask(ClientMsg::QueueJoin {
+            ruleset: ruleset.clone(),
+        }) {
+            Ok(Reply::Queued { entry }) => entry,
+            other => panic!("queue: {other:?}"),
+        }
+    }
+
+    pub fn wait_proposal(&mut self) -> Proposal {
+        self.wait_for(10, |event| match event {
+            Event::MatchProposed { proposal } => Some(proposal),
+            _ => None,
+        })
+    }
+
+    /// Accepts the next proposal.
+    pub fn accept(&mut self) -> Proposal {
+        let proposal = self.wait_proposal();
+        self.expect_done(ClientMsg::MatchAccept {
+            proposal: proposal.proposal,
+        });
+        proposal
     }
 
     pub fn wait_match_found(&mut self) -> Handoff {
@@ -236,47 +325,45 @@ impl Account {
     }
 }
 
-/// Takes the seat and plays the (scripted) match to its end on a thread.
-pub fn play(handoff: Handoff, tls: TlsConfig) -> std::thread::JoinHandle<Option<Team>> {
-    std::thread::spawn(move || {
-        let (mut link, _) = take_seat(&handoff, HeroId::SHADOW_FIEND, &tls).expect("seat");
-        winner_of(&mut link)
-    })
-}
-
-/// Reads the stream until the match is over.
-pub fn winner_of(link: &mut GameLink) -> Option<Team> {
-    loop {
-        match link.recv().expect("readable") {
-            Some(ServerMsg::MatchOver { winner, .. }) => return Some(winner),
-            Some(_) => {}
-            None => return None,
-        }
-    }
-}
-
-/// Two accounts queue for `ruleset` and are matched: their handoffs, the longer
-/// waiting one first.
-pub fn pair_up(first: &mut Account, second: &mut Account, ruleset: &str) -> (Handoff, Handoff) {
-    let ruleset = RulesetId(ruleset.to_owned());
-    assert_eq!(
-        first.ask(ClientMsg::QueueJoin {
-            ruleset: ruleset.clone()
-        }),
-        Ok(Reply::Queued { waiting: 1 })
-    );
-    assert_eq!(
-        second.ask(ClientMsg::QueueJoin { ruleset }),
-        Ok(Reply::Queued { waiting: 2 })
-    );
+/// Two accounts queue for `ruleset`, accept, and get their handoffs, the
+/// longer waiting one first.
+pub fn pair_up(
+    first: &mut Account,
+    second: &mut Account,
+    ruleset: &RulesetId,
+) -> (Handoff, Handoff) {
+    first.queue(ruleset);
+    second.queue(ruleset);
+    first.accept();
+    second.accept();
     (first.wait_match_found(), second.wait_match_found())
 }
 
-/// Where an account is, as a fresh login tells.
-pub fn presence_of(env: &Env, login: &str) -> Presence {
-    let mut client = env.connect();
-    client
-        .login(login, PASSWORD, ClientInfo::default())
-        .expect("login")
-        .presence
+/// What the fake game was started with, from its report:
+/// `(match_id, port, seats)` with each seat `(ticket_hex, team, name)`.
+pub fn started_with(report: &[u8]) -> (String, String, Vec<(String, String, String)>) {
+    let text = String::from_utf8(report.to_vec()).expect("utf-8 report");
+    let mut parts = text.splitn(3, '|');
+    let (match_id, port, seats) = (
+        parts.next().unwrap_or_default().to_owned(),
+        parts.next().unwrap_or_default().to_owned(),
+        parts.next().unwrap_or_default(),
+    );
+    let seats = seats
+        .split(',')
+        .map(|seat| {
+            let mut fields = seat.split(':').map(str::to_owned);
+            (
+                fields.next().unwrap_or_default(),
+                fields.next().unwrap_or_default(),
+                fields.next().unwrap_or_default(),
+            )
+        })
+        .collect();
+    (match_id, port, seats)
+}
+
+/// Reads one raw message, for tests of hostile input.
+pub fn read_raw(client: &mut Client, secs: u64) -> Result<Option<Incoming>, ClientError> {
+    client.read_raw(Duration::from_secs(secs))
 }

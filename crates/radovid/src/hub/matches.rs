@@ -1,147 +1,119 @@
-//! Matches: creating them, handing the seats to their players, and recording
-//! how they ended.
+//! Matches: forming them from accepted proposals and lobbies, handing the
+//! seats to their players once the game server is ready, and recording how
+//! they ended.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::IpAddr;
 
-use bota_proto::{HeroId, SeatKey, SlotId, Team};
 use radovid_proto::*;
 use tokio::sync::oneshot;
 
-use super::{Hub, Where, internal};
-use crate::backend::MatchSpec;
-use crate::db::{Finish, NewSeat, RatingChange, now_ms};
-use crate::rating::Glicko;
-use crate::supervisor::{End, Supervisor};
+use super::{Hub, internal};
+use crate::config::RulesetConfig;
+use crate::db::{Finish, NewSeat, now_ms};
+use crate::supervisor::End;
 
 pub(super) struct SeatState {
     pub account: AccountId,
     pub slot: u8,
-    pub key: SeatKey,
-    pub hero: Option<HeroId>,
+    pub team: u8,
+    pub ticket: Ticket,
+    /// Where the seat's queue entry or lobby seat came from.
+    pub source: IpAddr,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Phase {
+    /// Formed, waiting for a game slot.
+    Waiting,
+    /// Launched, before the game's `READY`.
+    Starting,
+    /// The players may connect.
+    Running,
 }
 
 pub(super) struct MatchState {
     pub ruleset: RulesetId,
     pub rated: bool,
+    /// Came from a lobby: holds one of the `lobby_games_max` slots.
+    pub lobby: bool,
     pub seats: Vec<SeatState>,
-    /// The game server answered the referee.
-    pub up: bool,
-    pub addr: Option<SocketAddr>,
-    /// The seats have left their lobby (or never had one).
-    pub released: bool,
-    pub announced: bool,
+    pub phase: Phase,
     pub stop: Option<oneshot::Sender<()>>,
-    /// Each seat's rating when the match was formed, for the lobby's and handoff's display.
+    /// Each seat's rating when the match was formed, for display.
     pub ratings: HashMap<AccountId, Rating>,
-}
-
-pub(super) struct Route {
-    pub addr: SocketAddr,
-    pub spectators: usize,
-}
-
-/// Where a game connection is to be bridged.
-pub struct GameRoute {
-    pub addr: SocketAddr,
+    /// Where the players connect, once launched.
+    pub game_url: String,
+    /// The last `ahead` the seats were told in `MatchQueued`.
+    pub told_ahead: Option<u32>,
 }
 
 impl Hub {
-    /// Registers a match with its seats and starts a task to run it. The
-    /// accounts become `InMatch` unless the caller keeps them elsewhere (a
-    /// lobby's countdown).
-    pub(super) async fn create_match(
+    /// Records a match with its seats in slot order and puts it at the end of
+    /// the slot queue; the caller then calls `try_launch`.
+    pub(super) async fn form_match(
         &mut self,
-        ruleset: RulesetId,
-        rated: bool,
-        members: &[AccountId],
+        ruleset: &RulesetConfig,
+        lobby: bool,
+        members: Vec<(AccountId, IpAddr)>,
     ) -> Result<MatchId, Error> {
-        let config = self
-            .config
-            .ruleset(&ruleset)
-            .ok_or(Error::UnknownRuleset)?
-            .clone();
         let seats: Vec<NewSeat> = members
             .iter()
             .enumerate()
-            .map(|(slot, account)| NewSeat {
+            .map(|(slot, (account, _))| NewSeat {
                 account: *account,
-                slot: SlotId(slot as u8),
-                team: Self::team_of_slot(slot as u8),
+                slot: slot as u8,
+                team: ruleset.team_of(slot),
             })
             .collect();
+        let rated = ruleset.rated && !lobby;
         let match_id = self
             .db
-            .create_match(ruleset.clone(), rated, seats)
+            .create_match(ruleset.ruleset_id(), rated, seats.clone())
             .await
             .map_err(internal)?;
-        let keyed = members
-            .iter()
-            .enumerate()
-            .map(|(slot, account)| {
-                Ok(SeatState {
-                    account: *account,
-                    slot: slot as u8,
-                    key: random_key().map_err(internal)?,
-                    hero: None,
-                })
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-        let names = self.seat_names(members);
-        let spec = MatchSpec {
-            match_id,
-            seats: keyed
-                .iter()
-                .zip(names)
-                .map(|(seat, name)| (seat.key, name))
-                .collect(),
-            referee_key: random_key().map_err(internal)?,
-            rules_args: config.bota_args.clone(),
-            start_after_secs: config.start_after_secs,
-        };
-        let ratings = self.seat_ratings(members, &ruleset).await;
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let supervisor = Supervisor {
-            match_id,
-            spec,
-            backend: self.backend.clone(),
-            hub: self.me.clone(),
-            slots: self.slots.clone(),
-        };
-        tokio::spawn(supervisor.run(stop_rx));
-        let in_lobby = !rated;
+        let mut states = Vec::new();
+        for (seat, (_, source)) in seats.iter().zip(&members) {
+            states.push(SeatState {
+                account: seat.account,
+                slot: seat.slot,
+                team: seat.team,
+                ticket: random_ticket().map_err(internal)?,
+                source: *source,
+            });
+        }
+        let ratings = self.seat_ratings(&members, &ruleset.ruleset_id()).await;
         self.matches.insert(
             match_id,
             MatchState {
-                ruleset,
+                ruleset: ruleset.ruleset_id(),
                 rated,
-                seats: keyed,
-                up: false,
-                addr: None,
-                released: !in_lobby,
-                announced: false,
-                stop: Some(stop_tx),
+                lobby,
+                seats: states,
+                phase: Phase::Waiting,
+                stop: None,
                 ratings,
+                game_url: String::new(),
+                told_ahead: None,
             },
         );
-        if !in_lobby {
-            for account in members {
-                if let Some(a) = self.accounts.get_mut(account) {
-                    a.at = Where::InMatch(match_id);
-                }
+        for (account, _) in &members {
+            if let Some(a) = self.accounts.get_mut(account) {
+                a.matches.push(match_id);
             }
         }
+        self.waiting.push_back(match_id);
         Ok(match_id)
     }
 
     /// Each member's stored rating; a member without one or a failed lookup shows none.
     async fn seat_ratings(
         &self,
-        members: &[AccountId],
+        members: &[(AccountId, IpAddr)],
         ruleset: &RulesetId,
     ) -> HashMap<AccountId, Rating> {
         let mut ratings = HashMap::new();
-        for account in members {
+        for (account, _) in members {
             if let Ok(Some(row)) = self.db.rating(*account, ruleset.clone()).await {
                 ratings.insert(*account, row.glicko.public());
             }
@@ -149,67 +121,12 @@ impl Hub {
         ratings
     }
 
-    /// Nicknames, with the login appended where two coincide.
-    fn seat_names(&self, members: &[AccountId]) -> Vec<String> {
-        let infos: Vec<(&str, &str)> = members
-            .iter()
-            .map(|m| {
-                self.accounts.get(m).map_or(("", ""), |a| {
-                    (a.info.nickname.as_str(), a.info.login.as_str())
-                })
-            })
-            .collect();
-        infos
-            .iter()
-            .map(|(nickname, login)| {
-                if infos.iter().filter(|(n, _)| n == nickname).count() > 1 {
-                    format!("{nickname}_{login}")
-                } else {
-                    (*nickname).to_owned()
-                }
-            })
-            .collect()
-    }
-
-    pub(super) fn match_up(&mut self, match_id: MatchId, addr: SocketAddr) {
-        if let Some(state) = self.matches.get_mut(&match_id) {
-            state.up = true;
-            state.addr = Some(addr);
-        }
-        self.try_announce(match_id);
-    }
-
-    pub(super) fn match_started(&mut self, match_id: MatchId, picks: Vec<(SlotId, HeroId)>) {
-        if let Some(state) = self.matches.get_mut(&match_id) {
-            for (slot, hero) in picks {
-                if let Some(seat) = state.seats.iter_mut().find(|s| s.slot == slot.0) {
-                    seat.hero = Some(hero);
-                }
-            }
-        }
-    }
-
-    /// Opens the game path for the seats and tells the players, once the game
-    /// server is up and the seats have left their lobby.
-    pub(super) fn try_announce(&mut self, match_id: MatchId) {
+    /// The game server is ready: every seat gets its handoff.
+    pub(super) fn match_ready(&mut self, match_id: MatchId) {
         let Some(state) = self.matches.get_mut(&match_id) else {
             return;
         };
-        let (Some(addr), true, true, false) =
-            (state.addr, state.up, state.released, state.announced)
-        else {
-            return;
-        };
-        state.announced = true;
-        for seat in &state.seats {
-            self.routes.insert(
-                seat.key.0,
-                Route {
-                    addr,
-                    spectators: 0,
-                },
-            );
-        }
+        state.phase = Phase::Running;
         let accounts: Vec<AccountId> = state.seats.iter().map(|s| s.account).collect();
         for account in accounts {
             if let Some(handoff) = self.handoff_for(match_id, account) {
@@ -218,23 +135,37 @@ impl Hub {
         }
     }
 
-    pub(super) fn match_handoff(&self, id: AccountId) -> Result<Reply, Error> {
-        let Some(Where::InMatch(match_id)) = self.accounts.get(&id).map(|a| a.at.clone()) else {
-            return Err(Error::NotInMatch);
-        };
+    pub(super) fn match_handoff(&self, id: AccountId, match_id: MatchId) -> Result<Reply, Error> {
+        let state = self.matches.get(&match_id).ok_or(Error::UnknownMatch)?;
+        if state.seats.iter().all(|s| s.account != id) {
+            return Err(Error::UnknownMatch);
+        }
         self.handoff_for(match_id, id)
             .map(|handoff| Reply::Handoff { handoff })
             .ok_or(Error::NotInMatch)
+    }
+
+    pub(super) fn my_matches(&self, id: AccountId) -> Reply {
+        let list = self
+            .accounts
+            .get(&id)
+            .map(|a| {
+                a.matches
+                    .iter()
+                    .filter_map(|m| self.handoff_for(*m, id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Reply::Handoffs { list }
     }
 
     fn seat_info(&self, state: &MatchState, seat: &SeatState) -> SeatInfo {
         let account = self.accounts.get(&seat.account);
         let kind = account.map_or(AccountKind::Human, |a| a.info.kind);
         SeatInfo {
-            slot: SlotId(seat.slot),
-            team: Self::team_of_slot(seat.slot),
+            slot: seat.slot,
+            team: seat.team,
             account: seat.account,
-            login: account.map(|a| a.info.login.clone()).unwrap_or_default(),
             nickname: account.map(|a| a.info.nickname.clone()).unwrap_or_default(),
             kind,
             bot_version: account
@@ -244,108 +175,93 @@ impl Hub {
         }
     }
 
+    /// The account's handoff, once the match runs.
     fn handoff_for(&self, match_id: MatchId, id: AccountId) -> Option<Handoff> {
         let state = self.matches.get(&match_id)?;
-        if !state.announced {
+        if state.phase != Phase::Running {
             return None;
         }
+        let rules = self.config.ruleset(&state.ruleset)?;
         let mine = state.seats.iter().find(|s| s.account == id)?;
         Some(Handoff {
             match_id,
             ruleset: state.ruleset.clone(),
             rated: state.rated,
-            game_url: self.config.public_game_url.clone(),
-            seat_key: mine.key,
-            slot: SlotId(mine.slot),
-            team: Self::team_of_slot(mine.slot),
+            game: rules.game.clone(),
+            game_url: state.game_url.clone(),
+            ticket: mine.ticket,
+            slot: mine.slot,
+            team: mine.team,
             seats: state
                 .seats
                 .iter()
                 .map(|s| self.seat_info(state, s))
                 .collect(),
-            bota_wire: bota_proto::WIRE_FINGERPRINT,
+            game_fingerprint: rules.game_fingerprint,
         })
     }
 
-    /// Where a connection with the key goes. Spectators are counted; a
-    /// player connection is passed on as it is, and the game server refuses
-    /// it (`SeatHeld`) while a live connection holds the seat.
-    pub(super) fn route(&mut self, key: &SeatKey, spectator: bool) -> Option<GameRoute> {
-        let route = self.routes.get_mut(&key.0)?;
-        if spectator {
-            if route.spectators >= MAX_SPECTATORS_PER_KEY {
-                return None;
-            }
-            route.spectators += 1;
-        }
-        Some(GameRoute { addr: route.addr })
-    }
-
-    pub(super) fn release_route(&mut self, key: &SeatKey, spectator: bool) {
-        if spectator && let Some(route) = self.routes.get_mut(&key.0) {
-            route.spectators = route.spectators.saturating_sub(1);
-        }
-    }
-
+    /// Records the end, rates a rated match with a result (arrival order, one
+    /// transaction each), tells every seat, and hands the slot on.
     pub(super) async fn match_ended(&mut self, match_id: MatchId, end: End) {
         let Some(state) = self.matches.remove(&match_id) else {
             return;
         };
-        for seat in &state.seats {
-            self.routes.remove(&seat.key.0);
-        }
-        let (outcome, reason, duration, stats) = match end {
-            End::Over { winner, stats } => {
-                let outcome = match winner {
-                    Team::Radiant => Outcome::Radiant,
-                    Team::Dire => Outcome::Dire,
-                    Team::Neutral => Outcome::Draw,
-                };
-                let reason = if outcome == Outcome::Draw {
-                    EndReason::TimeCap
-                } else {
-                    EndReason::Decided
-                };
-                (outcome, reason, stats.duration, Some(stats))
-            }
+        self.waiting.retain(|m| *m != match_id);
+        let (outcome, reason, duration_ms, report) = match end {
+            End::Result(result) => match result.winner {
+                Some(team) => (
+                    Outcome::Winner { team },
+                    EndReason::Decided,
+                    result.duration_ms,
+                    result.report,
+                ),
+                None => (
+                    Outcome::Draw,
+                    EndReason::Draw,
+                    result.duration_ms,
+                    result.report,
+                ),
+            },
+            End::Abandoned => (Outcome::Null, EndReason::Abandoned, 0, Vec::new()),
             End::Crashed(why) => {
                 eprintln!("radovid: match {} lost: {why}", match_id.0);
-                (Outcome::Null, EndReason::Crashed, 0, None)
+                (Outcome::Null, EndReason::Crashed, 0, Vec::new())
             }
-            End::Stopped => (Outcome::Null, EndReason::Stopped, 0, None),
+            End::Stopped => (Outcome::Null, EndReason::Stopped, 0, Vec::new()),
         };
         let finished_at = now_ms();
-        let changes = if state.rated && stats.is_some() {
-            self.rate(&state, outcome, finished_at).await
-        } else {
-            Vec::new()
-        };
         let finish = Finish {
             match_id,
             ruleset: state.ruleset.clone(),
+            rate: state.rated && outcome != Outcome::Null,
             outcome,
             reason,
-            duration_ticks: duration,
-            stats: stats.clone(),
-            heroes: state
+            duration_ms,
+            report: report.clone(),
+            seats: state
                 .seats
                 .iter()
-                .map(|s| (SlotId(s.slot), s.hero))
+                .map(|s| NewSeat {
+                    account: s.account,
+                    slot: s.slot,
+                    team: s.team,
+                })
                 .collect(),
-            changes: changes.clone(),
             finished_at,
         };
-        if let Err(error) = self.db.finish_match(finish).await {
+        let changes = self.db.finish_match(finish).await.unwrap_or_else(|error| {
             internal(error);
-        }
+            Vec::new()
+        });
         let result = MatchResult {
             match_id,
             ruleset: state.ruleset.clone(),
             rated: state.rated,
             outcome,
             reason,
-            duration_ticks: duration,
-            stats,
+            duration_ms,
+            game_report: report,
             seats: state
                 .seats
                 .iter()
@@ -356,10 +272,8 @@ impl Hub {
                         slot: info.slot,
                         team: info.team,
                         account: info.account,
-                        login: info.login,
                         nickname: info.nickname,
                         kind: info.kind,
-                        hero: seat.hero,
                         before: change.map(|c| c.before.public()),
                         after: change.map(|c| c.after.public()),
                     }
@@ -368,7 +282,14 @@ impl Hub {
             finished_at,
         };
         for seat in &state.seats {
-            self.release_seat(seat.account, match_id);
+            if let Some(a) = self.accounts.get_mut(&seat.account) {
+                a.matches.retain(|m| *m != match_id);
+            }
+            match reason {
+                EndReason::Abandoned => self.note_abandon(seat.account),
+                EndReason::Decided | EndReason::Draw => self.note_played(seat.account),
+                EndReason::Crashed | EndReason::Stopped => {}
+            }
             self.notify(
                 seat.account,
                 Event::MatchResult {
@@ -377,86 +298,13 @@ impl Hub {
             );
             self.forget_if_idle(seat.account);
         }
-    }
-
-    /// An account whose match is over is idle again; so is one still counting
-    /// down in a lobby whose match died.
-    fn release_seat(&mut self, account: AccountId, match_id: MatchId) {
-        let at = self.accounts.get(&account).map(|a| a.at.clone());
-        match at {
-            Some(Where::InMatch(m)) if m == match_id => {
-                if let Some(a) = self.accounts.get_mut(&account) {
-                    a.at = Where::Idle;
-                }
-            }
-            Some(Where::InLobby(lobby))
-                if self
-                    .lobbies
-                    .get(&lobby)
-                    .is_some_and(|l| l.match_id == Some(match_id)) =>
-            {
-                if let Some(l) = self.lobbies.remove(&lobby) {
-                    for member in l.members {
-                        if let Some(a) = self.accounts.get_mut(&member.account) {
-                            a.at = Where::Idle;
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// The Glicko-2 update of both seats of a rated match: the deviation grown
-    /// for idle time first, each side against the other's standing before the game.
-    async fn rate(&self, state: &MatchState, outcome: Outcome, now: UnixMs) -> Vec<RatingChange> {
-        let mut before = Vec::new();
-        for seat in &state.seats {
-            let row = match self.db.rating(seat.account, state.ruleset.clone()).await {
-                Ok(row) => row,
-                Err(error) => {
-                    internal(error);
-                    return Vec::new();
-                }
-            };
-            let standing = match row {
-                Some(row) => {
-                    let idle_days = now.0.saturating_sub(row.last_played.0) as f64 / 86_400_000.0;
-                    row.glicko.after_idle(idle_days)
-                }
-                None => Glicko::NEW,
-            };
-            before.push((seat.account, standing));
-        }
-        if before.len() != 2 {
-            return Vec::new();
-        }
-        let score_of_first = match outcome {
-            Outcome::Radiant => 1.0,
-            Outcome::Dire => 0.0,
-            Outcome::Draw => 0.5,
-            Outcome::Null => return Vec::new(),
-        };
-        let (a, b) = (before[0], before[1]);
-        vec![
-            RatingChange {
-                account: a.0,
-                before: a.1,
-                after: a.1.updated(&[(b.1, score_of_first)]),
-                score: score_of_first,
-            },
-            RatingChange {
-                account: b.0,
-                before: b.1,
-                after: b.1.updated(&[(a.1, 1.0 - score_of_first)]),
-                score: 1.0 - score_of_first,
-            },
-        ]
+        self.try_launch();
+        self.pair_all();
     }
 }
 
-fn random_key() -> Result<SeatKey, getrandom::Error> {
-    let mut key = [0u8; 32];
-    getrandom::fill(&mut key)?;
-    Ok(SeatKey(key))
+fn random_ticket() -> Result<Ticket, getrandom::Error> {
+    let mut ticket = [0u8; 32];
+    getrandom::fill(&mut ticket)?;
+    Ok(Ticket(ticket))
 }

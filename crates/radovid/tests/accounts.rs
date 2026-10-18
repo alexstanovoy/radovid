@@ -1,5 +1,5 @@
-//! Accounts over real WebSockets: registration, login, tokens, the brute-force
-//! delay, versions and hostile input.
+//! Accounts over real WebSockets: registration, login, tokens, deletion, the
+//! brute-force delay, versions, hostile input and certificate reloads.
 
 mod common;
 
@@ -7,10 +7,10 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use radovid_client::proto::*;
-use radovid_client::{Client, ClientError};
+use radovid_client::{Client, ClientError, Incoming, TlsConfig};
 
-fn solo() -> Vec<radovid::config::RulesetConfig> {
-    vec![ruleset("solo_mid", true, &[])]
+fn rules() -> Vec<radovid::config::RulesetConfig> {
+    vec![ruleset("solo", true, "team0", "0.1")]
 }
 
 fn refused(result: Result<impl std::fmt::Debug, ClientError>) -> Error {
@@ -22,7 +22,7 @@ fn refused(result: Result<impl std::fmt::Debug, ClientError>) -> Error {
 
 #[test]
 fn accounts_register_log_in_resume_and_change_their_data() {
-    let env = start(solo());
+    let env = start(rules());
     let mut alice = env.account("alice", AccountKind::Human);
     assert_eq!(alice.me.login, "alice");
     assert_eq!(alice.me.nickname, "alice");
@@ -50,8 +50,31 @@ fn accounts_register_log_in_resume_and_change_their_data() {
         refused(other.register("bob", PASSWORD, AccountKind::Human, bot_label)),
         Error::BadBotVersion
     );
+    // The catalog and the limits are public; everything else needs a login.
+    let Ok(Reply::Rulesets { list }) = other.request(ClientMsg::Rulesets) else {
+        panic!("rulesets");
+    };
     assert_eq!(
-        refused(other.request(ClientMsg::Rulesets)),
+        (
+            list[0].game.as_str(),
+            list[0].teams.as_slice(),
+            list[0].games_per_account
+        ),
+        ("testgame", &[1u8, 1][..], 2)
+    );
+    let Ok(Reply::Limits { limits }) = other.request(ClientMsg::Limits { ruleset: None }) else {
+        panic!("limits");
+    };
+    assert_eq!(
+        (
+            limits.games_per_account,
+            limits.decline_cooldown_ms,
+            limits.accept_timeout_ms
+        ),
+        (2, 120_000, 30_000)
+    );
+    assert_eq!(
+        refused(other.request(ClientMsg::QueueJoin { ruleset: solo() })),
         Error::NotLoggedIn
     );
 
@@ -62,7 +85,7 @@ fn accounts_register_log_in_resume_and_change_their_data() {
     let mut resumed = env.connect();
     let logged = resumed.resume(alice.token, info.clone()).expect("resume");
     assert_eq!(logged.me.id, alice.me.id);
-    assert_eq!(logged.presence, Presence::Idle);
+    assert_eq!(logged.activities, Activities::default());
     assert_eq!(
         refused(env.connect().resume(SessionToken([7; 32]), info.clone())),
         Error::BadSession
@@ -89,7 +112,7 @@ fn accounts_register_log_in_resume_and_change_their_data() {
         .expect("account")
     {
         Reply::Account { account } => {
-            assert_eq!(account.login, "alice");
+            assert_eq!(account.id, alice.me.id);
             assert_eq!(account.nickname, "Queen_A");
             assert!(account.online);
         }
@@ -105,8 +128,8 @@ fn accounts_register_log_in_resume_and_change_their_data() {
     // A new password revokes every other token and the old password.
     let new_password = "another long passphrase";
     alice.expect_done(ClientMsg::ChangePassword {
-        current: PASSWORD.to_owned(),
-        new: new_password.to_owned(),
+        current: Secret::new(PASSWORD),
+        new: Secret::new(new_password),
     });
     assert_eq!(
         refused(env.connect().resume(second.session, info.clone())),
@@ -140,8 +163,8 @@ fn accounts_register_log_in_resume_and_change_their_data() {
     std::thread::sleep(Duration::from_millis(1100));
     assert_eq!(
         alice.ask(ClientMsg::ChangePassword {
-            current: "wrong password".to_owned(),
-            new: new_password.to_owned()
+            current: Secret::new("wrong password"),
+            new: Secret::new(new_password)
         }),
         Err(Error::BadCredentials)
     );
@@ -149,7 +172,7 @@ fn accounts_register_log_in_resume_and_change_their_data() {
 
 #[test]
 fn failed_logins_wait_longer_and_a_right_password_always_gets_in() {
-    let env = start(solo());
+    let env = start(rules());
     env.account("carol", AccountKind::Human);
     let info = ClientInfo::default();
     let mut client = env.connect();
@@ -181,7 +204,7 @@ fn failed_logins_wait_longer_and_a_right_password_always_gets_in() {
 
 #[test]
 fn failed_resumes_hold_up_nobody() {
-    let env = start(solo());
+    let env = start(rules());
     let gina = env.account("gina", AccountKind::Human);
     let info = ClientInfo::default();
     for byte in 1..=8 {
@@ -201,36 +224,29 @@ fn failed_resumes_hold_up_nobody() {
 
 #[test]
 fn connections_past_the_limit_are_closed_and_their_places_come_back() {
-    let env = try_start_configured(
-        radovid::config::BackendConfig::Local {
-            bota_server: fake_game_server(),
-        },
-        solo(),
-        |config| config.max_connections = 2,
-    )
-    .expect("service");
+    let env = start_configured(rules(), |config| config.max_connections = 2);
     let first = env.connect();
     let _second = env.connect();
     assert!(
-        Client::connect(&env.url, &env.tls).is_err(),
+        Client::connect(&env.url, &env.tls, FINGERPRINT).is_err(),
         "a third connection was served"
     );
     drop(first);
     let deadline = Instant::now() + Duration::from_secs(10);
-    while Client::connect(&env.url, &env.tls).is_err() {
+    while Client::connect(&env.url, &env.tls, FINGERPRINT).is_err() {
         assert!(Instant::now() < deadline, "the place never came back");
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 #[test]
-fn another_protocol_version_is_refused_and_a_stale_game_wire_cannot_queue() {
-    let env = start(solo());
+fn another_protocol_version_is_refused_and_another_game_wire_cannot_play() {
+    let env = start(rules());
     let error = refused(Client::connect_as(
         &env.url,
         &env.tls,
         PROTO_VERSION + 1,
-        bota_proto::WIRE_FINGERPRINT,
+        FINGERPRINT,
     ));
     assert_eq!(
         error,
@@ -239,36 +255,108 @@ fn another_protocol_version_is_refused_and_a_stale_game_wire_cannot_queue() {
         }
     );
 
-    let mut client =
-        Client::connect_as(&env.url, &env.tls, PROTO_VERSION, 12345).expect("accounts still work");
+    let mut client = Client::connect(&env.url, &env.tls, 12345).expect("accounts still work");
     client
         .register("dave", PASSWORD, AccountKind::Human, ClientInfo::default())
         .expect("register");
-    let error = refused(client.request(ClientMsg::QueueJoin {
-        ruleset: RulesetId("solo_mid".to_owned()),
-    }));
+    let stale = Error::GameVersionMismatch {
+        server: FINGERPRINT,
+    };
     assert_eq!(
-        error,
-        Error::BotaWireMismatch {
-            server: bota_proto::WIRE_FINGERPRINT
-        }
+        refused(client.request(ClientMsg::QueueJoin { ruleset: solo() })),
+        stale
+    );
+    assert_eq!(
+        refused(client.request(ClientMsg::LobbyCreate {
+            ruleset: solo(),
+            name: "x".to_owned(),
+            audience: Audience::Everyone,
+            password: None,
+        })),
+        stale
     );
     assert!(client.request(ClientMsg::Rulesets).is_ok());
 }
 
 #[test]
+fn a_deleted_account_is_gone_but_its_matches_stay_anonymous() {
+    let env = start(rules());
+    let mut erin = env.account("erin", AccountKind::Human);
+    let mut fred = env.account("fred", AccountKind::Human);
+    let mut second = env.login("erin");
+    let (handoff, _) = pair_up(&mut erin, &mut fred, &solo());
+    erin.wait_result();
+    fred.wait_result();
+
+    assert_eq!(
+        erin.ask(ClientMsg::DeleteAccount {
+            password: Secret::new("wrong password")
+        }),
+        Err(Error::BadCredentials)
+    );
+    erin.expect_done(ClientMsg::DeleteAccount {
+        password: Secret::new(PASSWORD),
+    });
+    // Every session ends; the password and the tokens are gone.
+    let told = second.wait_for(5, |event| match event {
+        Event::Bye { error } => Some(error),
+        _ => None,
+    });
+    assert_eq!(told, Error::BadSession);
+    assert_eq!(
+        refused(env.connect().login("erin", PASSWORD, ClientInfo::default())),
+        Error::BadCredentials
+    );
+    assert_eq!(
+        refused(env.connect().resume(erin.token, ClientInfo::default())),
+        Error::BadSession
+    );
+    // The login is free again; the history shows an anonymous seat and no rating.
+    env.account("erin", AccountKind::Human);
+    let Ok(Reply::Matches { list }) = fred.ask(ClientMsg::RecentMatches {
+        account: fred.me.id,
+        limit: 5,
+    }) else {
+        panic!("matches");
+    };
+    assert_eq!(list[0].match_id, handoff.match_id);
+    assert_eq!(list[0].seats[0].nickname, "deleted");
+    let Ok(Reply::LadderPage { total, rows }) = fred.ask(ClientMsg::Ladder {
+        ruleset: solo(),
+        offset: 0,
+        limit: 10,
+    }) else {
+        panic!("ladder");
+    };
+    assert_eq!((total, rows[0].account), (1, fred.me.id));
+}
+
+#[test]
+fn a_reloaded_certificate_serves_new_connections() {
+    let env = start(rules());
+    let renewed = self_signed();
+    env.reload_tls(&renewed);
+    let trusting_new = TlsConfig::trust_pem(&renewed.cert_pem).expect("trust");
+    Client::connect(&env.url, &trusting_new, FINGERPRINT).expect("the new certificate");
+    assert!(
+        Client::connect(&env.url, &env.tls, FINGERPRINT).is_err(),
+        "the old certificate is still served"
+    );
+}
+
+#[test]
 fn hostile_input_closes_that_connection_and_nothing_else() {
-    let env = start(solo());
+    let env = start(rules());
     let healthy = env.account("erin", AccountKind::Human);
 
     // Bytes that are no frame.
     let mut client = env.connect();
     client.send_raw(vec![1, 2, 3]).expect("sent");
-    let told = client.read_raw(Duration::from_secs(5));
+    let told = read_raw(&mut client, 5);
     assert!(
         matches!(
             told,
-            Ok(Some(radovid_client::proto::ServerMsg::Event(Event::Bye {
+            Ok(Some(Incoming::Event(Event::Bye {
                 error: Error::Malformed
             })))
         ),
@@ -278,11 +366,11 @@ fn hostile_input_closes_that_connection_and_nothing_else() {
     // A frame whose prefix lies.
     let mut client = env.connect();
     client.send_raw(vec![200, 0, 0, 0, 1]).expect("sent");
-    let told = client.read_raw(Duration::from_secs(5));
+    let told = read_raw(&mut client, 5);
     assert!(
         matches!(
             told,
-            Ok(Some(radovid_client::proto::ServerMsg::Event(Event::Bye {
+            Ok(Some(Incoming::Event(Event::Bye {
                 error: Error::Malformed
             })))
         ),
@@ -293,7 +381,7 @@ fn hostile_input_closes_that_connection_and_nothing_else() {
     // connection just ends.
     let mut client = env.connect();
     let _ = client.send_raw(vec![0; MAX_CONTROL_PAYLOAD_LEN * 4]);
-    let told = client.read_raw(Duration::from_secs(5));
+    let told = read_raw(&mut client, 5);
     assert!(matches!(told, Err(ClientError::Closed)), "{told:?}");
 
     // A flood is slowed, then ended.
@@ -301,7 +389,7 @@ fn hostile_input_closes_that_connection_and_nothing_else() {
     let mut limited = 0;
     let mut closed = false;
     for _ in 0..400 {
-        match flooder.request(ClientMsg::Rulesets) {
+        match flooder.request(ClientMsg::LobbyList) {
             Err(ClientError::Refused(Error::RateLimited { .. })) => limited += 1,
             Err(ClientError::Refused(Error::NotLoggedIn)) => {}
             Err(_) => {

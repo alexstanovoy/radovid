@@ -1,14 +1,16 @@
-//! The listener: TLS, the WebSocket upgrade, and the choice of path.
+//! The listener: TLS (its certificate swapped on reload), the WebSocket
+//! upgrade, and `/control`.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
 use radovid_proto::*;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, watch};
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::server::TlsStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -26,6 +28,10 @@ const HANDSHAKE_SECS: u64 = 10;
 const REGISTRATIONS_PER_HOUR: u32 = 20;
 
 pub type Socket = WebSocketStream<TlsStream<TcpStream>>;
+
+/// The TLS configuration new connections get; a reload replaces it, and
+/// connections already up keep theirs.
+pub type Certificates = Arc<RwLock<Arc<ServerConfig>>>;
 
 /// What every connection shares.
 pub struct Shared {
@@ -138,7 +144,7 @@ impl Drop for Unauthenticated {
 /// Accepts connections until `stop` says so.
 pub async fn serve(
     listener: TcpListener,
-    acceptor: TlsAcceptor,
+    certificates: Certificates,
     shared: Arc<Shared>,
     mut stop: watch::Receiver<bool>,
 ) {
@@ -159,7 +165,11 @@ pub async fn serve(
         let Some(guard) = Unauthenticated::take(&shared, source) else {
             continue;
         };
-        let acceptor = acceptor.clone();
+        let current = certificates
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let acceptor = TlsAcceptor::from(current);
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
             handle(stream, source, acceptor, shared, guard).await;
@@ -180,11 +190,9 @@ async fn handle(
     let Ok(Ok(tls)) = tokio::time::timeout(deadline, acceptor.accept(stream)).await else {
         return;
     };
-    let mut path = String::new();
     #[allow(clippy::result_large_err)] // the type tungstenite's callback fixes
     let callback = |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
-        path = request.uri().path().to_owned();
-        if path == "/control" || path == "/game" {
+        if request.uri().path() == "/control" {
             Ok(response)
         } else {
             let mut refusal = ErrorResponse::new(None);
@@ -192,8 +200,8 @@ async fn handle(
             Err(refusal)
         }
     };
-    // What a client sends on either path (requests, a Hello, orders) is small:
-    // a larger message is refused as its header comes in, not buffered first.
+    // What a client sends is small: a larger message is refused as its header
+    // comes in, not buffered first.
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_CONTROL_PAYLOAD_LEN + LEN_PREFIX))
         .max_frame_size(Some(MAX_CONTROL_PAYLOAD_LEN + LEN_PREFIX));
@@ -205,9 +213,5 @@ async fn handle(
     let Ok(Ok(ws)) = upgraded else {
         return;
     };
-    match path.as_str() {
-        "/control" => crate::control::run(ws, source, shared, guard).await,
-        "/game" => crate::game::run(ws, shared, guard).await,
-        _ => {}
-    }
+    crate::control::run(ws, source, shared, guard).await;
 }

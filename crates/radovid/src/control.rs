@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::config::Config;
 use crate::db::{AccountRow, DbError, now_ms};
 use crate::hub::{Attach, Cmd, SessionId, event_channel};
 use crate::server::{Shared, Socket, Unauthenticated};
@@ -186,6 +187,14 @@ impl Conn {
                 let result = self.resume(session, client, guard).await;
                 self.reply(seq, result).await
             }
+            (None, ClientMsg::Rulesets) => {
+                let list = self.shared.config.ruleset_infos(AccountKind::Human);
+                self.reply(seq, Ok(Reply::Rulesets { list })).await
+            }
+            (None, ClientMsg::Limits { ruleset }) => {
+                let result = human_limits(&self.shared.config, ruleset);
+                self.reply(seq, result).await
+            }
             (None, _) => self.refuse(seq, Error::NotLoggedIn).await,
             (
                 Some(_),
@@ -203,6 +212,32 @@ impl Conn {
             }
             (Some(_), ClientMsg::ChangePassword { current, new }) => {
                 let result = self.change_password(current, new).await;
+                self.reply(seq, result).await
+            }
+            (Some(_), ClientMsg::DeleteAccount { password }) => {
+                let result = self.delete_account(password).await;
+                let deleted = result.is_ok();
+                self.reply(seq, result).await?;
+                if deleted { Err(Closed) } else { Ok(()) }
+            }
+            (
+                Some(live),
+                msg @ (ClientMsg::LobbyAsk {
+                    password: Some(_), ..
+                }
+                | ClientMsg::LobbyJoinByName {
+                    password: Some(_), ..
+                }),
+            ) => {
+                // A lobby password is guessed like a login: the same delay per source.
+                let session = live.id;
+                let result = match self.throttled("") {
+                    Some(error) => Err(error),
+                    None => self.ask_hub(session, msg).await,
+                };
+                if result == Err(Error::BadLobbyPassword) {
+                    self.failed("");
+                }
                 self.reply(seq, result).await
             }
             (Some(live), msg) => {
@@ -233,7 +268,7 @@ impl Conn {
     async fn hello(&mut self, seq: u32, msg: ClientMsg) -> Result<(), Closed> {
         let ClientMsg::Hello {
             proto,
-            bota_wire,
+            game_fingerprint,
             client,
         } = msg
         else {
@@ -252,16 +287,14 @@ impl Conn {
         if !valid_client_label(&client) {
             return self.bye(Error::Malformed).await;
         }
-        self.hello = Some(bota_wire);
-        self.reply(
-            seq,
-            Ok(Reply::Welcome {
-                proto: PROTO_VERSION,
-                bota_wire: bota_proto::WIRE_FINGERPRINT,
-                server: self.shared.config.server_name.clone(),
-            }),
-        )
-        .await
+        self.hello = Some(game_fingerprint);
+        let config = &self.shared.config;
+        let welcome = Reply::Welcome {
+            proto: PROTO_VERSION,
+            server: config.server_name.clone(),
+            rulesets: config.ruleset_infos(AccountKind::Human),
+        };
+        self.reply(seq, Ok(welcome)).await
     }
 
     fn throttled(&self, login: &str) -> Option<Error> {
@@ -275,7 +308,7 @@ impl Conn {
     async fn register(
         &mut self,
         login: String,
-        password: String,
+        Secret(password): Secret,
         kind: AccountKind,
         client: ClientInfo,
         guard: &mut Unauthenticated,
@@ -318,7 +351,7 @@ impl Conn {
     async fn login(
         &mut self,
         login: String,
-        password: String,
+        Secret(password): Secret,
         client: ClientInfo,
         guard: &mut Unauthenticated,
     ) -> Result<Reply, Error> {
@@ -429,13 +462,14 @@ impl Conn {
             .send(Cmd::Attach(Box::new(Attach {
                 account: row,
                 token_hash: token_hash(&token),
-                bota_wire: self.hello.unwrap_or(0),
+                game_fingerprint: self.hello.unwrap_or(0),
+                source: self.ip,
                 events: events_tx,
                 reply,
             })))
             .await
             .map_err(|_| Error::ServerStopping)?;
-        let (id, presence) = answer.await.map_err(|_| Error::ServerStopping)??;
+        let (id, activities) = answer.await.map_err(|_| Error::ServerStopping)??;
         guard.release();
         self.live = Some(Live {
             id,
@@ -446,20 +480,18 @@ impl Conn {
         Ok(Reply::LoggedIn {
             me,
             session: token,
-            presence,
+            activities,
         })
     }
 
-    async fn change_password(&mut self, current: String, new: String) -> Result<Reply, Error> {
+    /// Checks the account's own password again, under the login delay.
+    async fn reverify(&self, password: String) -> Result<(AccountId, [u8; 32]), Error> {
         let (id, login, keep) = match &self.live {
             Some(live) => (live.account.id, live.account.login.clone(), live.token_hash),
             None => return Err(Error::NotLoggedIn),
         };
         if let Some(error) = self.throttled(&login) {
             return Err(error);
-        }
-        if !valid_password(&new) {
-            return Err(Error::WeakPassword);
         }
         let row = self
             .shared
@@ -468,10 +500,40 @@ impl Conn {
             .await
             .map_err(crate::hub::internal)?
             .ok_or(Error::Internal)?;
-        if !self.shared.passwords.verify(current, Some(row.hash)).await {
+        if !self.shared.passwords.verify(password, Some(row.hash)).await {
             self.failed(&login);
             return Err(Error::BadCredentials);
         }
+        Ok((id, keep))
+    }
+
+    async fn delete_account(&mut self, Secret(password): Secret) -> Result<Reply, Error> {
+        let (id, _) = self.reverify(password).await?;
+        self.shared
+            .db
+            .delete_account(id)
+            .await
+            .map_err(crate::hub::internal)?;
+        let (done, deleted) = oneshot::channel();
+        self.shared
+            .hub
+            .tx
+            .send(Cmd::AccountDeleted { account: id, done })
+            .await
+            .map_err(|_| Error::ServerStopping)?;
+        deleted.await.map_err(|_| Error::ServerStopping)?;
+        Ok(Reply::Done)
+    }
+
+    async fn change_password(
+        &mut self,
+        Secret(current): Secret,
+        Secret(new): Secret,
+    ) -> Result<Reply, Error> {
+        if !valid_password(&new) {
+            return Err(Error::WeakPassword);
+        }
+        let (id, keep) = self.reverify(current).await?;
         let hash = self
             .shared
             .passwords
@@ -522,4 +584,15 @@ async fn next_event(live: &mut Option<Live>) -> Option<ServerMsg> {
         Some(live) => live.events.recv().await,
         None => std::future::pending().await,
     }
+}
+
+/// The limits of a human account, for a client not logged in yet.
+fn human_limits(config: &Config, ruleset: Option<RulesetId>) -> Result<Reply, Error> {
+    let ruleset = match &ruleset {
+        Some(ruleset) => Some(config.ruleset(ruleset).ok_or(Error::UnknownRuleset)?),
+        None => None,
+    };
+    Ok(Reply::Limits {
+        limits: config.limits_for(AccountKind::Human, ruleset),
+    })
 }

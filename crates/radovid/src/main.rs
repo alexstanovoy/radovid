@@ -1,6 +1,6 @@
 //! The radovid command line.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use radovid::config::Config;
@@ -9,7 +9,7 @@ use radovid::service::Service;
 use radovid::tls;
 
 #[derive(Parser)]
-#[command(about = "Accounts, matchmaking, ratings and game-server orchestration for bota")]
+#[command(about = "Accounts, matchmaking, ratings and game-server launching for any game")]
 struct Args {
     #[command(subcommand)]
     command: Command,
@@ -52,15 +52,36 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Waits for SIGINT or SIGTERM; on SIGHUP rereads the certificate and key
+/// (a renewal), keeping the old ones if the new ones do not load.
+async fn serve_until_stopped(service: &Service, cert: &Path, key: &Path) -> Result<(), String> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut hangup = signal(SignalKind::hangup()).map_err(|e| e.to_string())?;
+    let mut terminate = signal(SignalKind::terminate()).map_err(|e| e.to_string())?;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = terminate.recv() => return Ok(()),
+            _ = hangup.recv() => {
+                match tls::load(cert, key).and_then(|identity| service.reload_tls(&identity)) {
+                    Ok(()) => eprintln!("radovid: certificate reloaded"),
+                    Err(error) => eprintln!("radovid: certificate not reloaded: {error}"),
+                }
+            }
+        }
+    }
+}
+
 fn run(args: Args) -> Result<(), String> {
     match args.command {
         Command::Serve { config } => {
             let config = Config::load(&config)?;
             let identity = tls::load(&config.tls_cert, &config.tls_key)?;
+            let (cert, key) = (config.tls_cert.clone(), config.tls_key.clone());
             runtime()?.block_on(async {
                 let service = Service::start(config, &identity).await?;
                 eprintln!("radovid: listening on {}", service.addr);
-                tokio::signal::ctrl_c().await.map_err(|e| e.to_string())?;
+                serve_until_stopped(&service, &cert, &key).await?;
                 eprintln!("radovid: stopping");
                 service.shutdown().await;
                 Ok(())

@@ -1,176 +1,130 @@
-//! One task per match: starts the game server, attends it as its referee and
-//! reports to the hub what became of it.
+//! One task per launched match: starts the game server, reads its stdout
+//! (README "Launcher contract") and reports to the hub what became of it.
 
-use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
-use bota_proto::{ClientMsg, FrameReader, Role, ServerMsg, Team, encode_frame_to_vec};
-use radovid_proto::{MatchId, MatchStats};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::sync::{Semaphore, mpsc, oneshot};
+use radovid_proto::MatchId;
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{Instant, sleep_until};
 
-use crate::backend::{Backend, Container, MatchSpec};
+use crate::config::RulesetConfig;
 use crate::hub::Cmd;
+use crate::launcher::{self, GameProcess, GameResult, LaunchSpec, Line};
 
-/// How long the referee keeps trying to connect to a game server that is up.
-const REFEREE_CONNECT: Duration = Duration::from_secs(5);
-/// How long a game server has to exit after the match is over.
+/// How long a game server has to exit after its result, or after its stdout
+/// closed, before it is killed.
 const EXIT_GRACE: Duration = Duration::from_secs(10);
+/// The exit code of a game nobody played: nobody came, or everybody left.
+const EXIT_ABANDONED: i32 = 3;
 
 /// How a match ended, as the hub learns it.
 #[derive(Debug)]
 pub enum End {
-    Over {
-        winner: Team,
-        stats: MatchStats,
-    },
-    /// The game server died or could not be attended.
+    /// The game's `RESULT` line.
+    Result(GameResult),
+    /// Exit code 3 without a result.
+    Abandoned,
+    /// No start, no `READY` in time, a bad `RESULT`, or an exit without a result.
     Crashed(String),
-    /// An admin stopped it.
+    /// An admin, the time limit or the service's shutdown.
     Stopped,
 }
 
 pub struct Supervisor {
     pub match_id: MatchId,
-    pub spec: MatchSpec,
-    pub backend: Arc<dyn Backend>,
+    pub ruleset: RulesetConfig,
+    pub spec: LaunchSpec,
     pub hub: mpsc::Sender<Cmd>,
-    pub slots: Arc<Semaphore>,
 }
 
 impl Supervisor {
     pub async fn run(self, mut stop: oneshot::Receiver<()>) {
-        let id = self.match_id;
-        let mut container = None;
-        let permit = tokio::select! {
-            permit = Arc::clone(&self.slots).acquire_owned() => permit.ok(),
-            _ = &mut stop => None,
-        };
-        let end = match permit {
-            None => End::Stopped,
-            Some(_) => self.attend(&mut stop, &mut container).await,
-        };
-        // A finished match's server exits by itself; any other end kills it.
-        if let Some(container) = &container
-            && !matches!(end, End::Over { .. })
-        {
-            container.kill();
-        }
-        let _ = self.hub.send(Cmd::MatchEnded { match_id: id, end }).await;
-        if let Some(mut container) = container
-            && tokio::time::timeout(EXIT_GRACE, container.exited())
-                .await
-                .is_err()
-        {
-            container.kill();
-            container.exited().await;
-        }
-    }
-
-    async fn attend(&self, stop: &mut oneshot::Receiver<()>, slot: &mut Option<Container>) -> End {
-        let started = tokio::select! {
-            started = self.backend.start(&self.spec) => started,
-            _ = &mut *stop => return End::Stopped,
-        };
-        let container = match started {
-            Ok(container) => slot.insert(container),
-            Err(error) => return End::Crashed(format!("start: {error}")),
-        };
-        let addr = container.addr;
-        let referee = tokio::select! {
-            referee = connect_referee(addr, &self.spec) => referee,
-            _ = &mut *stop => return End::Stopped,
-            exit = container.exited() => return End::Crashed(format!("exited before the referee attached: {}", exit.description)),
-        };
-        let mut stream = match referee {
-            Ok(stream) => stream,
-            Err(error) => return End::Crashed(format!("referee: {error}")),
-        };
-        let mut reader = FrameReader::new();
-        let mut buf = vec![0u8; 16 * 1024];
-        let pong = encode_frame_to_vec(&ClientMsg::Pong).expect("a pong encodes");
-        loop {
-            let message = loop {
-                match reader.next_message::<ServerMsg>() {
-                    Ok(Some(message)) => break message,
-                    Ok(None) => {}
-                    Err(error) => return End::Crashed(format!("referee stream: {error}")),
-                }
-                let read = tokio::select! {
-                    read = stream.read(&mut buf) => read,
-                    _ = &mut *stop => return End::Stopped,
-                    exit = container.exited() => return End::Crashed(format!("exited: {}", exit.description)),
-                };
-                match read {
-                    Ok(0) | Err(_) => {
-                        return End::Crashed(
-                            "the referee stream ended without a result".to_owned(),
-                        );
-                    }
-                    Ok(n) => reader.push(&buf[..n]),
-                }
-            };
-            if matches!(message, ServerMsg::Ping) {
-                // The game server drops a connection that answers nothing.
-                if let Err(error) = stream.write_all(&pong).await {
-                    return End::Crashed(format!("referee: {error}"));
-                }
-                continue;
-            }
-            if let Some(end) = self.relay(message, addr).await {
-                return end;
-            }
-        }
-    }
-
-    /// Tells the hub what the referee stream says; `Some` when it says the match is over.
-    async fn relay(&self, message: ServerMsg, addr: SocketAddr) -> Option<End> {
         let match_id = self.match_id;
-        match message {
-            ServerMsg::Welcome { .. } => {
-                let _ = self.hub.send(Cmd::MatchUp { match_id, addr }).await;
+        match launcher::spawn(&self.ruleset, &self.spec) {
+            Err(error) => {
+                let end = End::Crashed(format!("start: {error}"));
+                let _ = self.hub.send(Cmd::MatchEnded { match_id, end }).await;
             }
-            ServerMsg::MatchStart { info } => {
-                let picks = info.picks.iter().map(|p| (p.slot, p.hero)).collect();
-                let _ = self.hub.send(Cmd::MatchStarted { match_id, picks }).await;
+            Ok(mut game) => {
+                let end = self.attend(&mut game, &mut stop).await;
+                let over = matches!(end, End::Result(_));
+                if !over {
+                    game.kill().await;
+                }
+                let _ = self.hub.send(Cmd::MatchEnded { match_id, end }).await;
+                if tokio::time::timeout(EXIT_GRACE, game.exited())
+                    .await
+                    .is_err()
+                {
+                    game.kill().await;
+                    game.exited().await;
+                }
             }
-            ServerMsg::MatchOver { winner, stats } => return Some(End::Over { winner, stats }),
-            ServerMsg::Refused { reason } => {
-                return Some(End::Crashed(format!(
-                    "the game server refused the referee: {reason:?}"
-                )));
-            }
-            ServerMsg::WireMismatch { server_fingerprint } => {
-                return Some(End::Crashed(format!(
-                    "the game server speaks bota wire {server_fingerprint:016x} and radovid \
-                     {:016x}: build both from one bota commit",
-                    bota_proto::WIRE_FINGERPRINT
-                )));
-            }
-            _ => {}
         }
-        None
+        // The port is free only once the game server is gone.
+        let port = self.spec.port;
+        let _ = self.hub.send(Cmd::PortFree { port }).await;
+    }
+
+    async fn attend(&self, game: &mut GameProcess, stop: &mut oneshot::Receiver<()>) -> End {
+        let start_by =
+            Instant::now() + Duration::from_secs(self.ruleset.launcher.start_timeout_secs);
+        tokio::select! {
+            line = game.stdout.next() => match line {
+                Some(Line::Ready) => {}
+                Some(line) => return self.end_of(line),
+                None => return exit_end(game).await,
+            },
+            _ = &mut *stop => return End::Stopped,
+            _ = sleep_until(start_by) => return End::Crashed("no READY in time".to_owned()),
+        }
+        let match_id = self.match_id;
+        let _ = self.hub.send(Cmd::MatchReady { match_id }).await;
+        let end_by = Instant::now() + Duration::from_secs(self.ruleset.max_duration_secs);
+        loop {
+            tokio::select! {
+                line = game.stdout.next() => match line {
+                    Some(Line::Ready) => {}
+                    Some(line) => return self.end_of(line),
+                    None => return exit_end(game).await,
+                },
+                _ = &mut *stop => return End::Stopped,
+                _ = sleep_until(end_by) => return End::Stopped,
+            }
+        }
+    }
+
+    /// A `RESULT` line, checked against the ruleset's teams.
+    fn end_of(&self, line: Line) -> End {
+        match line {
+            Line::Result(result)
+                if result
+                    .winner
+                    .is_none_or(|team| usize::from(team) < self.ruleset.teams.len()) =>
+            {
+                End::Result(result)
+            }
+            Line::Result(result) => End::Crashed(format!(
+                "RESULT names team {:?} of {}",
+                result.winner,
+                self.ruleset.teams.len()
+            )),
+            Line::Ready | Line::BadResult => End::Crashed("a malformed RESULT line".to_owned()),
+        }
     }
 }
 
-async fn connect_referee(addr: SocketAddr, spec: &MatchSpec) -> std::io::Result<TcpStream> {
-    let deadline = tokio::time::Instant::now() + REFEREE_CONNECT;
-    let mut stream = loop {
-        match TcpStream::connect(addr).await {
-            Ok(stream) => break stream,
-            Err(error) if tokio::time::Instant::now() >= deadline => return Err(error),
-            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+/// The stdout closed without a result: what the exit code says.
+async fn exit_end(game: &mut GameProcess) -> End {
+    let code = match tokio::time::timeout(EXIT_GRACE, game.exited()).await {
+        Ok(code) => code,
+        Err(_) => {
+            game.kill().await;
+            return End::Crashed("stdout closed, the process lived on".to_owned());
         }
     };
-    stream.set_nodelay(true)?;
-    let hello = encode_frame_to_vec(&ClientMsg::hello(
-        Role::Referee,
-        "referee",
-        Some(spec.referee_key),
-    ))
-    .map_err(std::io::Error::other)?;
-    stream.write_all(&hello).await?;
-    Ok(stream)
+    match code {
+        Some(EXIT_ABANDONED) => End::Abandoned,
+        code => End::Crashed(format!("exited ({code:?}) without a result")),
+    }
 }

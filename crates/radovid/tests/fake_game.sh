@@ -1,0 +1,30 @@
+#!/bin/sh
+# A stand-in game server for the tests. It honours the launcher contract
+# (README, "Launcher contract") and plays nothing:
+#   fake_game.sh --probe <hex>                        prints the fingerprint
+#   fake_game.sh <behaviour> <seconds> <match_id> <port>
+# Its report is the hex of "<match_id>|<port>|$GAME_SEATS", so a test sees
+# what the game was started with.
+set -eu
+if [ "$1" = "--probe" ]; then
+    echo "$2"
+    exit 0
+fi
+behaviour=$1 delay=$2 match_id=$3 port=$4
+report=$(printf '%s|%s|%s' "$match_id" "$port" "${GAME_SEATS:-}" | od -An -v -tx1 | tr -d ' \n')
+case $behaviour in
+    noready) exec sleep 3600 ;;
+    fail) exit 1 ;;
+esac
+echo "an ignored line"
+echo READY
+sleep "$delay"
+case $behaviour in
+    team0) echo "RESULT winner=0 duration_ms=1234 report=$report" ;;
+    team1) echo "RESULT winner=1 duration_ms=1234 report=$report" ;;
+    draw) echo "RESULT winner=draw duration_ms=1234 report=$report" ;;
+    badteam) echo "RESULT winner=5 duration_ms=1234 report=$report" ;;
+    crash) exit 1 ;;
+    abandon) exit 3 ;;
+    hang) exec sleep 3600 ;;
+esac
