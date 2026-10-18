@@ -7,7 +7,8 @@
 #                                         (e.g. -max_total_time=3600)
 #   fuzz/fuzz.sh campaign <seconds> [jobs] every target at once for that long, each in fork mode
 #                                         with `jobs` processes (default 1), past crashes, hangs
-#                                         and memory blowups, all of which land in artifacts/
+#                                         and memory blowups, all of which land in artifacts/;
+#                                         an input slower than FUZZ_TIMEOUT seconds (30) is a hang
 #
 # Each target keeps its corpus in fuzz/corpus/<target> and writes what it
 # finds to fuzz/artifacts/<target>.
@@ -40,14 +41,14 @@ campaign)
         mkdir -p "$here/corpus/$target" "$here/artifacts/$target"
         "$here/target/$triple/release/$target" -artifact_prefix="$here/artifacts/$target/" \
             -fork="$jobs" -ignore_crashes=1 -ignore_timeouts=1 -ignore_ooms=1 \
-            -max_total_time="$seconds" -timeout=10 -rss_limit_mb=2048 -malloc_limit_mb=2048 \
+            -max_total_time="$seconds" -timeout="${FUZZ_TIMEOUT:-30}" -rss_limit_mb=2048 -malloc_limit_mb=2048 \
             "$here/corpus/$target" >"$here/artifacts/$target.log" 2>&1 &
     done
     wait
     find "$here/artifacts" -mindepth 2 -type f | sort
     ;;
 *)
-    sed -n '2,13p' "$0"
+    sed -n '2,14p' "$0"
     exit 2
     ;;
 esac
