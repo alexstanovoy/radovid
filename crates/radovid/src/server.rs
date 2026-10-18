@@ -1,7 +1,7 @@
 //! The listener: TLS, the WebSocket upgrade, and the choice of path.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::hub::HubHandle;
 use crate::password::Passwords;
-use crate::throttle::{LoginThrottle, Windowed};
+use crate::throttle::{LoginThrottle, Windowed, source};
 
 /// Seconds a peer has for the TLS and WebSocket handshakes.
 const HANDSHAKE_SECS: u64 = 10;
@@ -151,20 +151,21 @@ pub async fn serve(
             tokio::time::sleep(Duration::from_millis(50)).await;
             continue;
         };
-        let Some(guard) = Unauthenticated::take(&shared, peer.ip()) else {
+        let source = source(peer.ip());
+        let Some(guard) = Unauthenticated::take(&shared, source) else {
             continue;
         };
         let acceptor = acceptor.clone();
         let shared = Arc::clone(&shared);
         tokio::spawn(async move {
-            handle(stream, peer, acceptor, shared, guard).await;
+            handle(stream, source, acceptor, shared, guard).await;
         });
     }
 }
 
 async fn handle(
     stream: TcpStream,
-    peer: SocketAddr,
+    source: IpAddr,
     acceptor: TlsAcceptor,
     shared: Arc<Shared>,
     guard: Unauthenticated,
@@ -200,7 +201,7 @@ async fn handle(
         return;
     };
     match path.as_str() {
-        "/control" => crate::control::run(ws, peer.ip(), shared, guard).await,
+        "/control" => crate::control::run(ws, source, shared, guard).await,
         "/game" => crate::game::run(ws, shared, guard).await,
         _ => {}
     }

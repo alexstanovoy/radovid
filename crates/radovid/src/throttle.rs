@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 use radovid_proto::valid_login;
@@ -33,6 +33,19 @@ impl Failures {
             .checked_shl(self.count - FREE_FAILURES)
             .map_or(MAX_DELAY_SECS, |s| s.min(MAX_DELAY_SECS));
         (self.last + Duration::from_secs(secs)).saturating_duration_since(now)
+    }
+}
+
+/// The source a per-address limit counts: an IPv4 address (also one mapped
+/// into IPv6), or the /64 prefix of an IPv6 address, since one subscriber is
+/// handed a whole /64 and could take a fresh address for every attempt.
+pub fn source(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(Ipv6Addr::from_bits(v6.to_bits() & !u128::from(u64::MAX))),
+        },
     }
 }
 
@@ -227,6 +240,17 @@ mod tests {
             Duration::ZERO
         );
         assert_eq!(counters.wait(&"b", start), Duration::ZERO);
+    }
+
+    #[test]
+    fn one_ipv6_subscriber_is_one_source() {
+        let a: IpAddr = "2001:db8:1:2:aaaa::1".parse().expect("address");
+        let b: IpAddr = "2001:db8:1:2:ffff:1:2:3".parse().expect("address");
+        let other: IpAddr = "2001:db8:1:3::1".parse().expect("address");
+        assert_eq!(source(a), source(b));
+        assert_ne!(source(a), source(other));
+        let mapped: IpAddr = "::ffff:192.0.2.7".parse().expect("address");
+        assert_eq!(source(mapped), IpAddr::from([192, 0, 2, 7]));
     }
 
     #[test]
