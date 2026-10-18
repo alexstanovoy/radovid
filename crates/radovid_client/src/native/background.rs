@@ -2,6 +2,8 @@
 //! block (a GUI's frame loop): requests go out through a channel, and what
 //! arrives is polled.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::time::Duration;
 
@@ -17,6 +19,10 @@ const IO_TIMEOUT: Duration = Duration::from_secs(30);
 /// Messages held for a caller that has not polled them; past it the thread
 /// waits, and the service in time drops the connection.
 const MAX_UNPOLLED: usize = 1024;
+/// Bytes of messages held for such a caller at most, past which the thread
+/// waits as well: a service's message may be 4 MiB, and a thousand of them
+/// would be gigabytes.
+const MAX_UNPOLLED_BYTES: usize = 16 * 1024 * 1024;
 
 /// What the connection thread reports.
 enum Report {
@@ -31,6 +37,8 @@ pub struct Background {
     control: Control,
     requests: Sender<Vec<u8>>,
     reports: Receiver<Report>,
+    /// Bytes of the messages reported and not yet polled.
+    unpolled: Arc<AtomicUsize>,
     ended: Option<ClientError>,
 }
 
@@ -52,11 +60,13 @@ impl Background {
             .map_err(|_| ClientError::Closed)?;
         let url = control_url(url);
         let tls = tls.clone();
+        let unpolled = Arc::new(AtomicUsize::new(0));
+        let held = Arc::clone(&unpolled);
         std::thread::Builder::new()
             .name("radovid-control".to_owned())
             .spawn(move || {
                 let end = match connect(&url, &tls, IO_TIMEOUT) {
-                    Ok(ws) => pump(ws, &outgoing, &report),
+                    Ok(ws) => pump(ws, &outgoing, &report, &held),
                     Err(error) => error,
                 };
                 let _ = report.send(Report::Ended(end));
@@ -65,6 +75,7 @@ impl Background {
             control,
             requests,
             reports,
+            unpolled,
             ended: None,
         })
     }
@@ -88,7 +99,10 @@ impl Background {
             return Err(error.clone());
         }
         match self.reports.try_recv() {
-            Ok(Report::Message(bytes)) => self.control.receive(&bytes).map(Some),
+            Ok(Report::Message(bytes)) => {
+                self.unpolled.fetch_sub(bytes.len(), Ordering::Relaxed);
+                self.control.receive(&bytes).map(Some)
+            }
             Ok(Report::Ended(error)) => {
                 self.ended = Some(error.clone());
                 Err(error)
@@ -108,7 +122,12 @@ impl Background {
 }
 
 /// Carries messages both ways until either side ends; returns why it ended.
-fn pump(mut ws: Ws, outgoing: &Receiver<Vec<u8>>, report: &SyncSender<Report>) -> ClientError {
+fn pump(
+    mut ws: Ws,
+    outgoing: &Receiver<Vec<u8>>,
+    report: &SyncSender<Report>,
+    unpolled: &AtomicUsize,
+) -> ClientError {
     if let Err(error) = set_read_timeout(&ws, POLL) {
         return error;
     }
@@ -128,8 +147,13 @@ fn pump(mut ws: Ws, outgoing: &Receiver<Vec<u8>>, report: &SyncSender<Report>) -
                 }
             }
         }
+        if unpolled.load(Ordering::Relaxed) >= MAX_UNPOLLED_BYTES {
+            std::thread::sleep(POLL);
+            continue;
+        }
         match read_binary(&mut ws) {
             Ok(Some(bytes)) => {
+                unpolled.fetch_add(bytes.len(), Ordering::Relaxed);
                 if report.send(Report::Message(bytes)).is_err() {
                     return ClientError::Closed;
                 }
