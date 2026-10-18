@@ -294,7 +294,7 @@ impl Harness {
         let id = self.actors[at].id;
         let row = self.runtime.block_on(self.db.account_by_id(id));
         match row {
-            Ok(Some(row)) if !row.login.starts_with("deleted_") => {
+            Ok(Some(row)) if !row.login.starts_with("deleted#") => {
                 let mut actor = std::mem::replace(
                     &mut self.actors[at],
                     Actor {
