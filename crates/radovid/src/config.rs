@@ -463,3 +463,15 @@ fn validate_launcher(launcher: &LauncherConfig, seats: usize) -> Result<(), Stri
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_example_configuration_loads() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../radovid.example.toml");
+        let config = Config::load(&path).expect("radovid.example.toml");
+        assert_eq!(config.limits, LimitsConfig::default());
+    }
+}

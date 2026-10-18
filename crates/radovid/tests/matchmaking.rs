@@ -280,8 +280,12 @@ fn an_account_plays_several_games_at_once_up_to_its_limit() {
             .iter()
             .all(|r| r.outcome == Outcome::Winner { team: 1 })
     );
+    // The second starts from the first's result as stored, its deviation
+    // grown only for the moments between them.
     let first_after = results[0].seats[0].after.expect("rated");
-    assert_eq!(results[1].seats[0].before, Some(first_after));
+    let second_before = results[1].seats[0].before.expect("rated");
+    assert_eq!(second_before.rating, first_after.rating);
+    assert!((second_before.deviation - first_after.deviation).abs() < 0.01);
     let Ok(Reply::Account { account }) = many.ask(ClientMsg::Account {
         account: many.me.id,
     }) else {

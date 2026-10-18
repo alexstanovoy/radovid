@@ -1,12 +1,12 @@
 # radovid configuration. Run: radovid serve --config radovid.toml
+# SIGHUP rereads tls_cert and tls_key (a renewal); SIGINT or SIGTERM stops.
 
 listen = "0.0.0.0:4460"
 database = "radovid.db"
-tls_cert = "cert.pem"
-tls_key = "key.pem"
-# What clients are told to connect to for the game. `{port}` is the port bound.
-public_game_url = "wss://localhost:{port}/game"
-max_matches = 8
+tls_cert = "/etc/radovid/play-cert/fullchain.pem"
+tls_key = "/etc/radovid/play-cert/privkey.pem"
+# Host ports handed to game servers, one per launched match; at least game_capacity of them.
+game_ports = "20000-20100"
 # Connections held at once at most (each is a TLS session and a WebSocket).
 max_connections = 2048
 
@@ -14,27 +14,55 @@ max_connections = 2048
 memory_kib = 65536
 iterations = 3
 
-# Development: game servers as child processes. The binary must come from the bota commit radovid
-# is built against (the pin in Cargo.toml): `cargo build --release -p bota_server --bin bota_server`
-# there. The service refuses to start when its wire fingerprint differs.
-[backend]
-kind = "local"
-bota_server = "../bota-radovid-pin/target/release/bota_server"
+[limits]
+games_per_account = { human = 2, bot = 8 }  # in flight: queue entries, lobbies, join requests, unfinished matches
+games_per_source = 8                        # the same, for all accounts of an IPv4 address or IPv6 /64
+accept_timeout_secs = 30                    # to accept a proposal; silence is a decline
+decline_cooldown_secs = 120                 # out of the queues after a decline or a silence
+game_capacity = 8                           # games launched at once; formed matches wait for a slot
+lobby_games_max = 6                         # of those, the most lobby games may hold
+queue_capacity = 256                        # queue entries across rulesets; past it QueueFull
 
-# Production: one container per match on a private docker network.
-# [backend]
-# kind = "docker"
-# image = "bota_server:local"
-# network = "radovid"
+# One rated ruleset of one game, its servers in docker. The example is bota's solo mid:
+# its server speaks WebSocket over TLS on 4456 inside the container and enforces its own
+# spectator cap and message rate.
+[[ruleset]]
+id = "solo_mid"                       # [a-z0-9_], never reused for other rules
+name = "1x1 Mid Only"
+game = "bota"                         # a label for clients
+game_fingerprint = "0123456789abcdef" # what `bota_server --wire-fingerprint` prints
+teams = [1, 1]                        # a rated ruleset is two teams of one
+rated = true
+info = "0100"                         # hex bytes for clients; bota: the allowed heroes
+max_duration_secs = 1800
+# games_per_account = { human = 1, bot = 4 }   # this ruleset's own limit
+
+[ruleset.launcher]
+kind = "docker"
+image = "bota_server:7f6489e"
+container_port = 4456
+public_url = "wss://game.example.org:{port}"
+mounts = ["/etc/radovid/game-cert:/certs:ro"]
+version_probe = ["--wire-fingerprint"]
+start_timeout_secs = 60
+args = ["--map", "2", "--mode", "realtime", "--tick-rate", "30", "--match-id", "{match_id}",
+        "--start-after-secs", "60", "--port", "4455", "--ws-port", "4456",
+        "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
+        "--max-connections", "24", "--max-spectators-per-seat", "7", "--messages-per-sec", "1000",
+        "--heroes", "1", "--spectators", "off", "--abandon-unjoined", "--empty-after-secs", "300"]
+env = { BOTA_SEATS = "{seats}" }      # tickets go into the environment only
 # memory = "512m"
 # cpus = "1"
-# publish_loopback = false   # true: reach the container on a loopback port (rootless docker)
+# pids_limit = 256
+# network = "games"                   # default: docker's bridge
+# publish_address = "0.0.0.0"
 
-[[ruleset]]
-id = "solo_mid"
-name = "1x1 Mid Only"
-seats = 2
-heroes = [1]
-queue = true
-bota_args = ["--map", "2", "--mode", "realtime", "--tick-rate", "30"]
-start_after_secs = 60
+# Development: the same game as a local process, plain WebSocket on the handed-out port.
+# [ruleset.launcher]
+# kind = "local"
+# binary = "/path/to/bota_server"
+# public_url = "ws://127.0.0.1:{port}"
+# version_probe = ["--wire-fingerprint"]
+# args = ["--map", "2", "--mode", "realtime", "--match-id", "{match_id}", "--bind", "127.0.0.1",
+#         "--port", "0", "--ws-port", "{port}", "--abandon-unjoined"]
+# env = { BOTA_SEATS = "{seats}" }
