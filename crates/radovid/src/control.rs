@@ -352,9 +352,9 @@ impl Conn {
         client: ClientInfo,
         guard: &mut Unauthenticated,
     ) -> Result<Reply, Error> {
-        if let Some(error) = self.throttled("") {
-            return Err(error);
-        }
+        // No delay and no count: a token has 256 random bits, so guessing
+        // gains nothing, and a count shared by every resume would let anyone
+        // hold up everyone's.
         let hash = token_hash(&session);
         let Some(id) = self
             .shared
@@ -363,7 +363,6 @@ impl Conn {
             .await
             .map_err(crate::hub::internal)?
         else {
-            self.failed("");
             return Err(Error::BadSession);
         };
         let row = self

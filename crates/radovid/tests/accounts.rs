@@ -167,6 +167,26 @@ fn failed_logins_wait_longer_and_a_right_password_always_gets_in() {
 }
 
 #[test]
+fn failed_resumes_hold_up_nobody() {
+    let env = start(solo());
+    let gina = env.account("gina", AccountKind::Human);
+    let info = ClientInfo::default();
+    for byte in 1..=8 {
+        assert_eq!(
+            refused(env.connect().resume(SessionToken([byte; 32]), info.clone())),
+            Error::BadSession
+        );
+    }
+    // Neither the account's own token nor a password waits for the guesser.
+    env.connect()
+        .resume(gina.token, info.clone())
+        .expect("a valid token gets in at once");
+    env.connect()
+        .login("gina", PASSWORD, info)
+        .expect("a password gets in at once");
+}
+
+#[test]
 fn another_protocol_version_is_refused_and_a_stale_game_wire_cannot_queue() {
     let env = start(solo());
     let error = refused(Client::connect_as(
