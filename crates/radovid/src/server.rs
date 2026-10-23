@@ -81,8 +81,8 @@ impl Shared {
         lock(&self.throttle).failed(ip, login, Instant::now());
     }
 
-    pub fn login_succeeded(&self, login: &str) {
-        lock(&self.throttle).succeeded(login);
+    pub fn login_succeeded(&self, ip: IpAddr, login: &str) {
+        lock(&self.throttle).succeeded(ip, login);
     }
 
     /// Counts a registration from `ip`, or refuses it past the hourly limit.

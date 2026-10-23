@@ -10,8 +10,13 @@ use radovid_proto::valid_login;
 
 /// Failures forgotten after this long without one.
 const DECAY: Duration = Duration::from_secs(3600);
-/// Failures before the delay starts.
+/// Failures before the delay starts, for one login from one source.
 const FREE_FAILURES: u32 = 3;
+/// Failures before the delay starts, for one login counted across all
+/// sources: far above what an honest user mistypes, so that a few guessers
+/// elsewhere cannot hold the owner's login back, yet a spread-out brute force
+/// still slows down.
+const LOGIN_FREE_FAILURES: u32 = 30;
 /// The longest delay.
 const MAX_DELAY_SECS: u64 = 300;
 /// Counters kept at most; the oldest are dropped past it.
@@ -24,13 +29,14 @@ struct Failures {
 }
 
 impl Failures {
-    /// How long until the next attempt may be evaluated.
-    fn wait(&self, now: Instant) -> Duration {
-        if now.duration_since(self.last) >= DECAY || self.count < FREE_FAILURES {
+    /// How long until the next attempt may be evaluated, once `free`
+    /// failures are forgiven.
+    fn wait(&self, free: u32, now: Instant) -> Duration {
+        if now.duration_since(self.last) >= DECAY || self.count < free {
             return Duration::ZERO;
         }
         let secs = 1u64
-            .checked_shl(self.count - FREE_FAILURES)
+            .checked_shl(self.count - free)
             .map_or(MAX_DELAY_SECS, |s| s.min(MAX_DELAY_SECS));
         (self.last + Duration::from_secs(secs)).saturating_duration_since(now)
     }
@@ -49,11 +55,13 @@ pub fn source(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// Failure counters per key, with the delay the spec asks for: after three
-/// failures the next attempt waits `min(2^(failures-3), 300)` seconds from the
-/// last failure. Nothing locks: a correct password after the delay always works.
+/// Failure counters per key, with the delay the spec asks for: after `free`
+/// failures (three by default) the next attempt waits `min(2^(failures-free),
+/// 300)` seconds from the last failure. Nothing locks: a correct password
+/// after the delay always works.
 pub struct Counters<K> {
     map: HashMap<K, Failures>,
+    free: u32,
 }
 
 impl<K: Eq + Hash + Clone> Default for Counters<K> {
@@ -64,14 +72,22 @@ impl<K: Eq + Hash + Clone> Default for Counters<K> {
 
 impl<K: Eq + Hash + Clone> Counters<K> {
     pub fn new() -> Self {
+        Self::with_free(FREE_FAILURES)
+    }
+
+    pub fn with_free(free: u32) -> Self {
         Counters {
             map: HashMap::new(),
+            free,
         }
     }
 
     /// How long `key` must still wait, if at all.
     pub fn wait(&self, key: &K, now: Instant) -> Duration {
-        self.map.get(key).map_or(Duration::ZERO, |f| f.wait(now))
+        let free = self.free;
+        self.map
+            .get(key)
+            .map_or(Duration::ZERO, |f| f.wait(free, now))
     }
 
     pub fn fail(&mut self, key: &K, now: Instant) {
@@ -97,9 +113,13 @@ impl<K: Eq + Hash + Clone> Counters<K> {
     }
 }
 
-/// The two counters of the brute-force defence, per source address and per login.
+/// The counters of the brute-force defence. The delay an attempt earns is
+/// keyed by its address, by its (login, address) pair, and, at a much higher
+/// threshold, by its login alone. The pair is what keeps a stranger's failures
+/// from delaying the owner of a login from the owner's own address.
 pub struct LoginThrottle {
     by_ip: Counters<IpAddr>,
+    by_pair: Counters<(IpAddr, String)>,
     by_login: Counters<String>,
 }
 
@@ -113,17 +133,20 @@ impl LoginThrottle {
     pub fn new() -> Self {
         LoginThrottle {
             by_ip: Counters::new(),
-            by_login: Counters::new(),
+            by_pair: Counters::new(),
+            by_login: Counters::with_free(LOGIN_FREE_FAILURES),
         }
     }
 
-    /// How long this attempt must wait, whichever counter says longer.
+    /// How long this attempt must wait, whichever counter says longest.
     pub fn wait(&self, ip: IpAddr, login: &str, now: Instant) -> Duration {
-        let by_login = match valid_login(login) {
-            true => self.by_login.wait(&login.to_owned(), now),
-            false => Duration::ZERO,
-        };
-        self.by_ip.wait(&ip, now).max(by_login)
+        let ip_wait = self.by_ip.wait(&ip, now);
+        if !valid_login(login) {
+            return ip_wait;
+        }
+        let pair = self.by_pair.wait(&(ip, login.to_owned()), now);
+        let any_source = self.by_login.wait(&login.to_owned(), now);
+        ip_wait.max(pair).max(any_source)
     }
 
     /// Counts a failure against the address, and against the login when it
@@ -132,13 +155,15 @@ impl LoginThrottle {
     pub fn failed(&mut self, ip: IpAddr, login: &str, now: Instant) {
         self.by_ip.fail(&ip, now);
         if valid_login(login) {
+            self.by_pair.fail(&(ip, login.to_owned()), now);
             self.by_login.fail(&login.to_owned(), now);
         }
     }
 
-    /// A correct password clears the login's counter, not the address's: one
+    /// A correct password clears the login's counters, not the address's: one
     /// account of one's own must not wash away the guesses at others.
-    pub fn succeeded(&mut self, login: &str) {
+    pub fn succeeded(&mut self, ip: IpAddr, login: &str) {
+        self.by_pair.clear(&(ip, login.to_owned()));
         self.by_login.clear(&login.to_owned());
     }
 }
@@ -262,7 +287,7 @@ mod tests {
             throttle.failed(ip, &format!("{i}{}", "x".repeat(60_000)), now);
         }
         throttle.failed(ip, "carol", now);
-        assert_eq!(throttle.by_login.map.len(), 1);
+        assert_eq!(throttle.by_pair.map.len(), 1);
         assert!(throttle.wait(ip, "anyone", now) > Duration::ZERO);
     }
 }

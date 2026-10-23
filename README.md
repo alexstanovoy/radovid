@@ -137,6 +137,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `max_connections` | `2048` | connections at once, logged in or not | the host has fewer file descriptors or more memory |
 | `server_name` | `radovid` | the name in `Welcome` | |
 | `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes (stored hashes keep theirs) | lower only for tests |
+| `password.max_waiting` | `64` | password checks waiting for a hash slot (one hash per source at a time); more are answered `Throttled` | |
 | `limits.games_per_account` | `{ human = 2, bot = 8 }` | games in flight per account: queue entries, lobbies, join requests, unfinished matches | |
 | `limits.games_per_source` | `8` | the same for all accounts of an IPv4 address or IPv6 /64 | players behind one NAT |
 | `limits.accept_timeout_secs` | `30` | to accept a proposal (1 to 600); silence declines | |
@@ -189,9 +190,12 @@ Docker containers always run `--read-only`, `--cap-drop ALL`, `no-new-privileges
 
 ## Security notes
 
-- argon2id, at most four hashes at once; an unknown login costs a hash too. Failed logins
-  grow a delay per source and per login (after 3: 1, 2, 4 ... 300 s); a right password after
-  the delay always works; a resume is never delayed (its token cannot be guessed).
+- argon2id, at most four hashes at once and one per source; the line of waiting checks is
+  bounded and a full line answers `Throttled`. An unknown login costs a hash too. Failed logins
+  grow a delay per source and per (login, source) pair (after 3: 1, 2, 4 ... 300 s) and per
+  login across all sources (after 30), so strangers cannot hold a login back from its owner; a
+  right password after the delay always works; a resume is never delayed (its token cannot be
+  guessed).
 - Session tokens are random, stored as SHA-256, expire after 30 days idle and are revoked by a
   password change, which also ends the other tokens' live sessions.
 - Also bounded: a client's message size (64 KiB) and rate, unauthenticated connections per

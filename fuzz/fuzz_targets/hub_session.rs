@@ -112,6 +112,7 @@ fn config(dir: &std::path::Path) -> Config {
         password: PasswordCost {
             memory_kib: 64,
             iterations: 1,
+            ..PasswordCost::default()
         },
         limits: LimitsConfig {
             games_per_account: PerKind { human: 2, bot: 4 },
@@ -208,7 +209,7 @@ impl Harness {
         let login = format!("fuzz_{}", self.created);
         let hash = self
             .runtime
-            .block_on(self.passwords.hash(PASSWORD.to_owned()))
+            .block_on(self.passwords.hash(std::net::Ipv4Addr::LOCALHOST.into(), PASSWORD.to_owned()))
             .expect("hash");
         let id = self
             .runtime

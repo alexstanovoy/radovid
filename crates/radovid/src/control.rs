@@ -322,12 +322,7 @@ impl Conn {
         }
         let bot_version = check_bot_version(kind, client)?;
         self.shared.register_allowed(self.ip)?;
-        let hash = self
-            .shared
-            .passwords
-            .hash(password)
-            .await
-            .map_err(crate::hub::internal)?;
+        let hash = self.shared.passwords.hash(self.ip, password).await?;
         let id = match self
             .shared
             .db
@@ -369,12 +364,17 @@ impl Conn {
             None
         };
         let stored = row.as_ref().map(|r| r.hash.clone());
-        if !self.shared.passwords.verify(password, stored).await {
+        if !self
+            .shared
+            .passwords
+            .verify(self.ip, password, stored)
+            .await?
+        {
             self.failed(&login);
             return Err(Error::BadCredentials);
         }
         let row = row.ok_or(Error::BadCredentials)?;
-        self.shared.login_succeeded(&login);
+        self.shared.login_succeeded(self.ip, &login);
         let row = self.admit(row, client).await?;
         self.finish_login(row, None, guard).await
     }
@@ -500,7 +500,12 @@ impl Conn {
             .await
             .map_err(crate::hub::internal)?
             .ok_or(Error::Internal)?;
-        if !self.shared.passwords.verify(password, Some(row.hash)).await {
+        if !self
+            .shared
+            .passwords
+            .verify(self.ip, password, Some(row.hash))
+            .await?
+        {
             self.failed(&login);
             return Err(Error::BadCredentials);
         }
@@ -534,12 +539,7 @@ impl Conn {
             return Err(Error::WeakPassword);
         }
         let (id, keep) = self.reverify(current).await?;
-        let hash = self
-            .shared
-            .passwords
-            .hash(new)
-            .await
-            .map_err(crate::hub::internal)?;
+        let hash = self.shared.passwords.hash(self.ip, new).await?;
         self.shared
             .db
             .set_password(id, hash)

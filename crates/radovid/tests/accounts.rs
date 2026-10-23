@@ -203,6 +203,88 @@ fn failed_logins_wait_longer_and_a_right_password_always_gets_in() {
 }
 
 #[test]
+fn a_stranger_failing_at_a_login_does_not_delay_its_owner() {
+    let env = start_configured(rules(), listen_on_both_families);
+    env.account("dora", AccountKind::Human);
+    let info = ClientInfo::default();
+    let mut attacker = env.connect_from_second_source();
+    for _ in 0..3 {
+        assert_eq!(
+            refused(attacker.login("dora", "wrong password!", info.clone())),
+            Error::BadCredentials
+        );
+    }
+    assert!(matches!(
+        refused(attacker.login("dora", "wrong password!", info.clone())),
+        Error::Throttled { .. }
+    ));
+    // The owner's own address has no failures at that login.
+    env.login("dora");
+}
+
+/// Twelve logins at once from the first source against a pool of `max_waiting`
+/// places. Returns how many were turned away, and whether a login from the
+/// second source got in before the flood was over.
+fn flood_and_bystander(max_waiting: usize) -> (usize, Option<bool>) {
+    const FLOOD: usize = 12;
+    let env = start_configured(rules(), |config| {
+        listen_on_both_families(config);
+        config.password = radovid::password::PasswordCost {
+            memory_kib: 256 * 1024,
+            iterations: 3,
+            max_waiting,
+        };
+    });
+    env.account("erin", AccountKind::Human);
+    env.account("finn", AccountKind::Human);
+    let ordering = std::sync::atomic::Ordering::SeqCst;
+    let finished = std::sync::atomic::AtomicUsize::new(0);
+    let throttled = std::sync::atomic::AtomicUsize::new(0);
+    let mut bystander = None;
+    std::thread::scope(|scope| {
+        let flood: Vec<_> = (0..FLOOD)
+            .map(|_| {
+                scope.spawn(|| {
+                    let result = env.connect().login("erin", PASSWORD, ClientInfo::default());
+                    if matches!(result, Err(ClientError::Refused(Error::Throttled { .. }))) {
+                        throttled.fetch_add(1, ordering);
+                    }
+                    finished.fetch_add(1, ordering);
+                })
+            })
+            .collect();
+        std::thread::sleep(Duration::from_millis(150));
+        let result =
+            env.connect_from_second_source()
+                .login("finn", PASSWORD, ClientInfo::default());
+        if result.is_ok() {
+            bystander = Some(finished.load(ordering) < FLOOD);
+        }
+        for handle in flood {
+            handle.join().expect("flood thread");
+        }
+    });
+    (throttled.load(ordering), bystander)
+}
+
+#[test]
+fn one_source_hashes_one_password_at_a_time() {
+    let (throttled, bystander) = flood_and_bystander(64);
+    assert_eq!(throttled, 0, "a roomy line turns nobody away");
+    assert_eq!(
+        bystander,
+        Some(true),
+        "the other source waited for the whole flood"
+    );
+}
+
+#[test]
+fn a_full_hashing_line_answers_throttled() {
+    let (throttled, _) = flood_and_bystander(4);
+    assert!(throttled >= 6, "{throttled} turned away");
+}
+
+#[test]
 fn failed_resumes_hold_up_nobody() {
     let env = start(rules());
     let gina = env.account("gina", AccountKind::Human);

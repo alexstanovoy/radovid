@@ -4,10 +4,12 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use radovid_proto::{LEN_PREFIX, MAX_SERVER_PAYLOAD_LEN};
+use rustls::pki_types::ServerName;
+use rustls::{ClientConnection, StreamOwned};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Connector, Message, WebSocket};
+use tungstenite::{Message, WebSocket};
 
 use crate::{ClientError, TlsConfig};
 
@@ -38,13 +40,14 @@ pub(crate) fn connect(url: &str, tls: &TlsConfig, io_timeout: Duration) -> Resul
     let config = WebSocketConfig::default()
         .max_message_size(Some(max))
         .max_frame_size(Some(max));
-    let (ws, _) = tungstenite::client_tls_with_config(
-        request,
-        stream,
-        Some(config),
-        Some(Connector::Rustls(tls.config.clone())),
-    )
-    .map_err(|e| ClientError::Io(e.to_string()))?;
+    // The handshake is ours rather than tungstenite's, which cannot name an
+    // IPv6 literal for the certificate check.
+    let name = ServerName::try_from(host).map_err(|_| bad())?;
+    let session = ClientConnection::new(tls.config.clone(), name)
+        .map_err(|e| ClientError::Io(e.to_string()))?;
+    let stream = MaybeTlsStream::Rustls(StreamOwned::new(session, stream));
+    let (ws, _) = tungstenite::client::client_with_config(request, stream, Some(config))
+        .map_err(|e| ClientError::Io(e.to_string()))?;
     Ok(ws)
 }
 

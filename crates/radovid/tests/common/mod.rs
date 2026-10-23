@@ -39,6 +39,13 @@ impl Env {
         Client::connect(&self.url, &self.tls, FINGERPRINT).expect("connect")
     }
 
+    /// A connection from another source than `connect`'s: over IPv6 loopback,
+    /// to a service listening on both families (`listen_on_both_families`).
+    pub fn connect_from_second_source(&self) -> Client {
+        let url = self.url.replace("127.0.0.1", "[::1]");
+        Client::connect(&url, &self.tls, FINGERPRINT).expect("connect from the second source")
+    }
+
     /// A registered, logged-in account.
     pub fn account(&self, login: &str, kind: AccountKind) -> Account {
         let mut client = self.connect();
@@ -163,6 +170,11 @@ pub fn test_limits() -> LimitsConfig {
     }
 }
 
+/// Makes the service listen on both IP families, so that a second source exists.
+pub fn listen_on_both_families(config: &mut Config) {
+    config.listen = "[::]:0".parse().expect("address");
+}
+
 pub fn start(rulesets: Vec<RulesetConfig>) -> Env {
     try_start(rulesets, |_| {}).expect("service")
 }
@@ -208,6 +220,7 @@ pub fn try_start(
         password: PasswordCost {
             memory_kib: 1024,
             iterations: 1,
+            ..PasswordCost::default()
         },
         limits: test_limits(),
         rulesets,
@@ -235,7 +248,12 @@ pub fn try_start(
 }
 
 pub fn self_signed() -> tls::Identity {
-    tls::self_signed(vec!["127.0.0.1".to_owned(), "localhost".to_owned()]).expect("certificate")
+    tls::self_signed(vec![
+        "127.0.0.1".to_owned(),
+        "::1".to_owned(),
+        "localhost".to_owned(),
+    ])
+    .expect("certificate")
 }
 
 pub fn solo() -> RulesetId {
