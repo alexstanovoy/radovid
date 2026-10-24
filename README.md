@@ -151,8 +151,10 @@ public_url = "ws://127.0.0.1:{port}"
 version_probe = ["--wire-fingerprint"]
 args = ["--map", "2", "--match-id", "{match_id}", "--bind", "127.0.0.1", "--port", "0",
         "--ws-port", "{port}", "--heroes", "1", "--start-after-secs", "60",
-        "--abandon-unjoined", "--empty-after-secs", "120"]
+        "--abandon-unjoined", "--empty-after-secs", "120", "--abandon-after-secs", "300",
+        "--replay", "/abs/dev/replays/replay-{match_id}.brp"]
 env = { BOTA_SEATS = "{seats}" }
+artifact = "/abs/dev/replays/replay-{match_id}.brp"    # the same file: seats fetch it after the match
 ```
 
 ```sh
