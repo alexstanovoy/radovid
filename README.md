@@ -30,8 +30,8 @@ radovid         the service (library + binary)
   never one account twice, and two from one source only when no other entry fits. A pairing is a
   proposal that names no opponent: every player accepts within `accept_timeout_secs`. A decline
   or silence ends it: the decliner's entry is gone and its account may not queue for
-  `decline_cooldown_secs`; the others keep their entries and places. Two abandoned matches within
-  an hour bar an account from queues and lobbies for an hour.
+  `decline_cooldown_secs`; the others keep their entries and places. Leaving a match costs nothing beyond the lost
+  match: there is no cooldown for it.
 - **Game slots.** At most `game_capacity` games run at once, lobby games at most
   `lobby_games_max` of them, so queued matches always have slots of their own. Formed matches wait
   in the order they were formed and are told how many wait before them (`MatchQueued`); the
@@ -67,10 +67,10 @@ Any game can be launched that honours this, a shell script included:
 2. The game prints a line `READY` once players may connect. Until then radovid tells them nothing;
    no `READY` within `start_timeout_secs` is a crash.
 3. When the match is over the game prints one line
-   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex> [abandoned=<slot>]` and exits 0. `report` is up to
-   64 KiB of the game's own bytes, stored and forwarded to clients untouched. `abandoned=<slot>` names a
+   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex> [left=<slot>]` and exits 0. `report` is up to
+   64 KiB of the game's own bytes, stored and forwarded to clients untouched. `left=<slot>` names a
    player who left the match for good (the game's own rule): `winner` must then be another team's;
-   the match is rated, ends as `Abandon`, and counts as an abandon for that seat's account only.
+   the match is rated, ends as `Left`, and nothing else is held against the leaver.
 4. Exit code 3 without `RESULT` means abandoned (nobody came, or everybody left); any other exit
    without `RESULT`, or a malformed one, means crashed. Both are null: nothing is rated. A match
    running past `max_duration_secs`, or stopped by an admin or the shutdown, is killed: stopped,
@@ -151,7 +151,7 @@ public_url = "ws://127.0.0.1:{port}"
 version_probe = ["--wire-fingerprint"]
 args = ["--map", "2", "--match-id", "{match_id}", "--bind", "127.0.0.1", "--port", "0",
         "--ws-port", "{port}", "--heroes", "1", "--start-after-secs", "60",
-        "--abandon-unjoined", "--empty-after-secs", "120", "--abandon-after-secs", "300",
+        "--abandon-unjoined", "--empty-after-secs", "120",
         "--replay", "{artifact}"]
 env = { BOTA_SEATS = "{seats}" }
 artifact = "/abs/dev/replays/replay-{match_id}.brp"    # the game writes it ({artifact}); seats fetch it after the match

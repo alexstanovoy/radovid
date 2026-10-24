@@ -21,8 +21,7 @@ pub enum Error {
     RateLimited {
         retry_after_ms: u32,
     },
-    /// Too many failed attempts (logins, lobby passwords), or too many
-    /// abandoned matches; the request was not evaluated.
+    /// Too many failed attempts (logins, lobby passwords); the request was not evaluated.
     Throttled {
         retry_after_ms: u32,
     },

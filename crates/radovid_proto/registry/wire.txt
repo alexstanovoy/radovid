@@ -118,7 +118,7 @@ variant EndReason 1 Draw
 variant EndReason 2 Abandoned
 variant EndReason 3 Crashed
 variant EndReason 4 Stopped
-variant EndReason 5 Abandon
+variant EndReason 5 Left
 variant Error 0 ProtoMismatch {}
 field Error::ProtoMismatch 0 server: u16
 variant Error 1 Malformed

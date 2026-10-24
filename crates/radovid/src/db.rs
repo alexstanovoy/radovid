@@ -904,7 +904,7 @@ fn reason_code(reason: EndReason) -> i64 {
         EndReason::Abandoned => 2,
         EndReason::Crashed => 3,
         EndReason::Stopped => 4,
-        EndReason::Abandon => 5,
+        EndReason::Left => 5,
     }
 }
 
@@ -914,7 +914,7 @@ fn reason_of(code: i64) -> EndReason {
         1 => EndReason::Draw,
         2 => EndReason::Abandoned,
         3 => EndReason::Crashed,
-        5 => EndReason::Abandon,
+        5 => EndReason::Left,
         _ => EndReason::Stopped,
     }
 }

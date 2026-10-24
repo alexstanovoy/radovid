@@ -22,8 +22,8 @@ sleep "$delay"
 case $behaviour in
     team0) echo "RESULT winner=0 duration_ms=1234 report=$report" ;;
     team1) echo "RESULT winner=1 duration_ms=1234 report=$report" ;;
-    leave0) echo "RESULT winner=1 duration_ms=1234 report=$report abandoned=0" ;;
-    badleave) echo "RESULT winner=0 duration_ms=1234 report=$report abandoned=0" ;;
+    leave0) echo "RESULT winner=1 duration_ms=1234 report=$report left=0" ;;
+    badleave) echo "RESULT winner=0 duration_ms=1234 report=$report left=0" ;;
     draw) echo "RESULT winner=draw duration_ms=1234 report=$report" ;;
     badteam) echo "RESULT winner=5 duration_ms=1234 report=$report" ;;
     noisy)

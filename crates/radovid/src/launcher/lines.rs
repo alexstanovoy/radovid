@@ -1,5 +1,5 @@
 //! What a game server says on stdout: `READY`, then one
-//! `RESULT winner=<team>|draw duration_ms=<n> report=<hex> [abandoned=<slot>]`. Every other line
+//! `RESULT winner=<team>|draw duration_ms=<n> report=<hex> [left=<slot>]`. Every other line
 //! is ignored; a line longer than any `RESULT` can be is skipped whole.
 
 use radovid_proto::MAX_GAME_REPORT_LEN;
@@ -27,7 +27,7 @@ pub struct GameResult {
     pub duration_ms: u32,
     pub report: Vec<u8>,
     /// The slot of a player who left the match for good: the other team won by it.
-    pub abandoned: Option<u8>,
+    pub left: Option<u8>,
 }
 
 /// Reads lines of bounded length.
@@ -105,9 +105,9 @@ fn parse_result(rest: &str) -> Option<GameResult> {
     };
     let duration_ms = fields.next()?.strip_prefix("duration_ms=")?.parse().ok()?;
     let report = decode_hex(fields.next()?.strip_prefix("report=")?)?;
-    let abandoned = match fields.next() {
+    let left = match fields.next() {
         None => None,
-        Some(field) => Some(field.strip_prefix("abandoned=")?.parse().ok()?),
+        Some(field) => Some(field.strip_prefix("left=")?.parse().ok()?),
     };
     if fields.next().is_some() || report.len() > MAX_GAME_REPORT_LEN {
         return None;
@@ -116,6 +116,6 @@ fn parse_result(rest: &str) -> Option<GameResult> {
         winner,
         duration_ms,
         report,
-        abandoned,
+        left,
     })
 }

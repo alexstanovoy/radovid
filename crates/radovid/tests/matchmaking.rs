@@ -402,7 +402,7 @@ fn matches_wait_for_a_game_slot_and_the_queues_are_bounded() {
 }
 
 #[test]
-fn draws_count_half_and_a_crash_or_an_abandon_counts_nothing() {
+fn draws_count_half_and_a_crash_or_a_match_nobody_came_to_counts_nothing() {
     let env = start(rules("draw"));
     let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
     pair_up(&mut a, &mut b, &solo());
@@ -443,17 +443,6 @@ fn draws_count_half_and_a_crash_or_an_abandon_counts_nothing() {
             panic!("ladder");
         };
         assert_eq!(total, 0);
-        if reason == EndReason::Abandoned {
-            // A second abandon in a row: an hour without new games.
-            pair_up(&mut a, &mut b, &solo());
-            a.wait_result();
-            match a.ask(ClientMsg::QueueJoin { ruleset: solo() }) {
-                Err(Error::Throttled { retry_after_ms }) => {
-                    assert!(retry_after_ms > 3_500_000, "{retry_after_ms}")
-                }
-                other => panic!("{other:?}"),
-            }
-        }
     }
 }
 
@@ -626,7 +615,7 @@ fn the_service_refuses_game_servers_of_another_wire_and_tickets_on_command_lines
     assert!(error.contains("env"), "{error}");
 }
 
-/// A player who leaves for good loses the rated match, which counts as his abandon, and the
+/// A player who leaves for good loses the rated match, and the
 /// match no longer holds one of his games.
 #[test]
 fn a_leaver_loses_the_rated_match_and_is_freed() {
@@ -636,7 +625,7 @@ fn a_leaver_loses_the_rated_match_and_is_freed() {
     let result = a.wait_result();
     assert_eq!(
         (result.outcome, result.reason),
-        (Outcome::Winner { team: 1 }, EndReason::Abandon)
+        (Outcome::Winner { team: 1 }, EndReason::Left)
     );
     let rating = |slot: u8| {
         let seat = result.seats.iter().find(|s| s.slot == slot).expect("seat");

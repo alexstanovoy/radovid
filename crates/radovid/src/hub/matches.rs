@@ -208,16 +208,12 @@ impl Hub {
             return;
         };
         self.waiting.retain(|m| *m != match_id);
-        let leaver = match &end {
-            End::Result(result) => result.abandoned,
-            _ => None,
-        };
         let (outcome, reason, duration_ms, report) = match end {
             End::Result(result) => match result.winner {
                 Some(team) => (
                     Outcome::Winner { team },
-                    if result.abandoned.is_some() {
-                        EndReason::Abandon
+                    if result.left.is_some() {
+                        EndReason::Left
                     } else {
                         EndReason::Decided
                     },
@@ -292,13 +288,6 @@ impl Hub {
         for seat in &state.seats {
             if let Some(a) = self.accounts.get_mut(&seat.account) {
                 a.matches.retain(|m| *m != match_id);
-            }
-            match reason {
-                EndReason::Abandoned => self.note_abandon(seat.account),
-                EndReason::Abandon if Some(seat.slot) == leaver => self.note_abandon(seat.account),
-                EndReason::Abandon => self.note_played(seat.account),
-                EndReason::Decided | EndReason::Draw => self.note_played(seat.account),
-                EndReason::Crashed | EndReason::Stopped => {}
             }
             self.notify(
                 seat.account,

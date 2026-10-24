@@ -119,7 +119,7 @@ impl Supervisor {
     /// A result that names a leaver names a seat of the ruleset, and a winner that is not the
     /// leaver's team.
     fn leaver_lost(&self, result: &launcher::GameResult) -> bool {
-        let Some(slot) = result.abandoned else {
+        let Some(slot) = result.left else {
             return true;
         };
         let mut first = 0usize;

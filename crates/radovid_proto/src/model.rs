@@ -38,7 +38,7 @@ pub enum Outcome {
         team: u8,
     },
     Draw,
-    /// Nothing counts: the match was abandoned, crashed or stopped.
+    /// Nothing counts: nobody came, the game crashed or stopped.
     Null,
 }
 
@@ -55,8 +55,8 @@ pub enum EndReason {
     /// With `Outcome::Null`: an admin, the time limit or the service's shutdown stopped it.
     Stopped,
     /// A team won because a player on the other left the match for good (the game's `RESULT`
-    /// names the leaver's seat): a rated loss for the leaver that also counts as an abandon.
-    Abandon,
+    /// names the leaver's seat): a rated loss for the leaver.
+    Left,
 }
 
 /// Glicko-2 rating and deviation on the 1500 scale; the volatility stays on
