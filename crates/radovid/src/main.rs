@@ -32,8 +32,8 @@ enum Command {
     DevCert {
         /// Directory to write `cert.pem` and `key.pem` into.
         out: PathBuf,
-        /// Names the certificate is valid for.
-        #[arg(long, default_value = "localhost")]
+        /// Names and IP addresses the certificate is valid for.
+        #[arg(long, default_values_t = ["localhost".to_owned(), "127.0.0.1".to_owned(), "::1".to_owned()])]
         name: Vec<String>,
     },
 }

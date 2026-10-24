@@ -98,7 +98,7 @@ fingerprint refuses its queue and lobby requests (`GameVersionMismatch`).
 
 ```sh
 cargo build --release -p radovid
-target/release/radovid dev-cert dev/          # self-signed cert.pem and key.pem (mode 0600), development only
+target/release/radovid dev-cert dev/          # self-signed cert.pem and key.pem (mode 0600) for localhost, 127.0.0.1 and ::1; development only
 cp radovid.example.toml radovid.toml          # tls_cert/tls_key: yours; image and public_url: your game's
 target/release/radovid serve --config radovid.toml
 target/release/radovid admin --config radovid.toml <login>   # make an existing account an admin
@@ -109,6 +109,60 @@ the old one); SIGINT or SIGTERM stops every match (a null) and exits. After a cr
 start records unfinished matches as lost (null) and removes the containers left behind.
 Backups, if wanted: `sqlite3 radovid.db ".backup copy.db"` takes a consistent copy while the
 service runs.
+
+### A development setup on one machine (no docker, no domain)
+
+Build the game server with its WebSocket listener (bota: `cargo build --release -p bota_server` in the bota
+checkout; the `websocket` feature is on by default) and make a certificate:
+
+```sh
+cargo build --release -p radovid
+mkdir dev && target/release/radovid dev-cert dev/
+GAME=../bota/target/release/bota_server
+$GAME --wire-fingerprint                      # 16 hex digits for game_fingerprint below
+```
+
+`dev/radovid.toml` (a `local` launcher runs the game server as a child process on loopback; the
+game's address is `ws://127.0.0.1:{port}`, which a non-`wss://` `public_url` may be only because
+it is loopback):
+
+```toml
+listen = "127.0.0.1:4460"
+database = "dev/radovid.db"
+tls_cert = "dev/cert.pem"
+tls_key = "dev/key.pem"
+game_ports = "20000-20010"
+
+[[ruleset]]
+id = "solo_mid"
+name = "1x1 Mid Only"
+game = "bota"
+game_fingerprint = "<the digits above>"
+teams = [1, 1]
+rated = true
+info = "0100"
+
+[ruleset.launcher]
+kind = "local"
+binary = "<absolute path of bota_server>"
+public_url = "ws://127.0.0.1:{port}"
+version_probe = ["--wire-fingerprint"]
+args = ["--map", "2", "--match-id", "{match_id}", "--bind", "127.0.0.1", "--port", "0",
+        "--ws-port", "{port}", "--heroes", "1", "--start-after-secs", "60",
+        "--abandon-unjoined", "--empty-after-secs", "120"]
+env = { BOTA_SEATS = "{seats}" }
+```
+
+```sh
+target/release/radovid serve --config dev/radovid.toml
+```
+
+Clients name the service `wss://localhost:4460` (the certificate names `localhost`, `127.0.0.1`
+and `::1`) and trust `dev/cert.pem` (dbota: `--trust-cert dev/cert.pem`). A bot client needs an
+account of its own: it registers one with kind `bot` on first login. A game server built without
+the listener (`--no-default-features`) refuses `--ws-port`: every match then ends as a crash,
+nothing is rated; start the service once and look at its stderr lines (`radovid: match N: ...`)
+when matches are lost.
 
 ### Safe by default
 
