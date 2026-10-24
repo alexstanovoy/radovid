@@ -155,7 +155,41 @@ pub struct Hub {
 }
 
 /// Starts the hub task and its clock.
+/// Keeps the artifact directories within their age and size limits, now and every hour.
+fn prune_artifacts(config: &Arc<Config>) {
+    let config = Arc::clone(config);
+    tokio::spawn(async move {
+        let mut hourly = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            hourly.tick().await;
+            let config = Arc::clone(&config);
+            let _ = tokio::task::spawn_blocking(move || {
+                let age =
+                    Duration::from_secs(u64::from(config.limits.artifact_retention_days) * 86_400);
+                let cap = u64::from(config.limits.artifact_cap_mib) << 20;
+                let mut seen = Vec::new();
+                for ruleset in &config.rulesets {
+                    let Some(template) = ruleset
+                        .launcher
+                        .artifact
+                        .as_deref()
+                        .and_then(|t| crate::artifacts::Template::parse(t).ok())
+                    else {
+                        continue;
+                    };
+                    if !seen.contains(&template) {
+                        crate::artifacts::prune(&template, age, cap);
+                        seen.push(template);
+                    }
+                }
+            })
+            .await;
+        }
+    });
+}
+
 pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle<()>) {
+    prune_artifacts(&config);
     let (tx, mut rx) = mpsc::channel(1024);
     let mut hub = Hub {
         free_ports: config.game_ports.ports().collect(),
@@ -456,6 +490,9 @@ impl Hub {
             ClientMsg::MatchDecline { proposal } => self.match_decline(id, proposal),
             ClientMsg::MyMatches => Ok(self.my_matches(id)),
             ClientMsg::MatchHandoff { match_id } => self.match_handoff(id, match_id),
+            ClientMsg::MatchArtifact { match_id, offset } => {
+                self.match_artifact(id, match_id, offset).await
+            }
             ClientMsg::RecentMatches { account, limit } => {
                 self.recent_matches(account, limit).await
             }

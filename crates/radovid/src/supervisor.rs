@@ -100,7 +100,8 @@ impl Supervisor {
             Line::Result(result)
                 if result
                     .winner
-                    .is_none_or(|team| usize::from(team) < self.ruleset.teams.len()) =>
+                    .is_none_or(|team| usize::from(team) < self.ruleset.teams.len())
+                    && self.leaver_lost(&result) =>
             {
                 End::Result(result)
             }
@@ -111,6 +112,27 @@ impl Supervisor {
             )),
             Line::Ready | Line::BadResult => End::Crashed("a malformed RESULT line".to_owned()),
         }
+    }
+}
+
+impl Supervisor {
+    /// A result that names a leaver names a seat of the ruleset, and a winner that is not the
+    /// leaver's team.
+    fn leaver_lost(&self, result: &launcher::GameResult) -> bool {
+        let Some(slot) = result.abandoned else {
+            return true;
+        };
+        let mut first = 0usize;
+        for (team, size) in self.ruleset.teams.iter().enumerate() {
+            let end = first + usize::from(*size);
+            if (first..end).contains(&usize::from(slot)) {
+                return result
+                    .winner
+                    .is_some_and(|winner| usize::from(winner) != team);
+            }
+            first = end;
+        }
+        false
     }
 }
 

@@ -155,6 +155,12 @@ pub enum ClientMsg {
     AdminStopMatch {
         match_id: MatchId,
     },
+    /// A piece of a finished match's artifact (the game's replay, kept by the service when the
+    /// ruleset names one), from `offset`, for an account that sat in the match.
+    MatchArtifact {
+        match_id: MatchId,
+        offset: u64,
+    },
 }
 
 /// The answer to a request that succeeded.
@@ -201,6 +207,14 @@ pub enum Reply {
     LadderPage {
         total: u32,
         rows: Vec<LadderRow>,
+    },
+    /// Up to `MAX_ARTIFACT_CHUNK` bytes of the artifact from `offset`, and its whole length; empty
+    /// `data` at the end.
+    Artifact {
+        match_id: MatchId,
+        offset: u64,
+        total: u64,
+        data: Vec<u8>,
     },
 }
 

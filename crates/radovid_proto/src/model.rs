@@ -54,6 +54,9 @@ pub enum EndReason {
     Crashed,
     /// With `Outcome::Null`: an admin, the time limit or the service's shutdown stopped it.
     Stopped,
+    /// A team won because a player on the other left the match for good (the game's `RESULT`
+    /// names the leaver's seat): a rated loss for the leaver that also counts as an abandon.
+    Abandon,
 }
 
 /// Glicko-2 rating and deviation on the 1500 scale; the volatility stays on

@@ -110,11 +110,15 @@ field ClientMsg::AdminSetKind 0 account: AccountId
 field ClientMsg::AdminSetKind 1 kind: AccountKind
 variant ClientMsg 31 AdminStopMatch {}
 field ClientMsg::AdminStopMatch 0 match_id: MatchId
+variant ClientMsg 32 MatchArtifact {}
+field ClientMsg::MatchArtifact 0 match_id: MatchId
+field ClientMsg::MatchArtifact 1 offset: u64
 variant EndReason 0 Decided
 variant EndReason 1 Draw
 variant EndReason 2 Abandoned
 variant EndReason 3 Crashed
 variant EndReason 4 Stopped
+variant EndReason 5 Abandon
 variant Error 0 ProtoMismatch {}
 field Error::ProtoMismatch 0 server: u16
 variant Error 1 Malformed
@@ -172,6 +176,7 @@ variant Error 42 UnknownProposal
 variant Error 43 ProposalExpired
 variant Error 44 BadLobbyPassword
 variant Error 45 LobbyNameTaken
+variant Error 46 NoArtifact
 variant Event 0 QueueStatus {}
 field Event::QueueStatus 0 entry: QueueEntry
 variant Event 1 MatchProposed {}
@@ -341,6 +346,11 @@ field Reply::Matches 0 list: Vec<MatchResult>
 variant Reply 12 LadderPage {}
 field Reply::LadderPage 0 total: u32
 field Reply::LadderPage 1 rows: Vec<LadderRow>
+variant Reply 13 Artifact {}
+field Reply::Artifact 0 match_id: MatchId
+field Reply::Artifact 1 offset: u64
+field Reply::Artifact 2 total: u64
+field Reply::Artifact 3 data: Vec<u8>
 newtype RulesetId String
 field RulesetInfo 0 id: RulesetId
 field RulesetInfo 1 name: String

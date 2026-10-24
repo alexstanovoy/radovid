@@ -67,8 +67,10 @@ Any game can be launched that honours this, a shell script included:
 2. The game prints a line `READY` once players may connect. Until then radovid tells them nothing;
    no `READY` within `start_timeout_secs` is a crash.
 3. When the match is over the game prints one line
-   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex>` and exits 0. `report` is up to
-   64 KiB of the game's own bytes, stored and forwarded to clients untouched.
+   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex> [abandoned=<slot>]` and exits 0. `report` is up to
+   64 KiB of the game's own bytes, stored and forwarded to clients untouched. `abandoned=<slot>` names a
+   player who left the match for good (the game's own rule): `winner` must then be another team's;
+   the match is rated, ends as `Abandon`, and counts as an abandon for that seat's account only.
 4. Exit code 3 without `RESULT` means abandoned (nobody came, or everybody left); any other exit
    without `RESULT`, or a malformed one, means crashed. Both are null: nothing is rated. A match
    running past `max_duration_secs`, or stopped by an admin or the shutdown, is killed: stopped,
@@ -214,6 +216,8 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `launcher.insecure_plaintext` | `false` | allow a non-`wss://` `public_url` to another host | a trusted network without TLS |
 | `launcher.args`, `launcher.env` | `[]`, `{}` | the game's command line and environment; tickets only in `env` | |
 | `launcher.version_probe` | `[]` | arguments that make the game print its wire fingerprint and exit; checked at start | always, when the game has one |
+| `launcher.artifact` | none | an absolute path whose file name holds `{match_id}`: the replay the game leaves for a match (a docker game's mounted directory); the seats of the finished match fetch it in chunks (`MatchArtifact`) | the game records matches |
+| `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the size cap, are deleted (hourly) | the disk is smaller or replays matter longer |
 | `launcher.start_timeout_secs` | `60` | from launch to the game's `READY` | slow-starting games |
 | `launcher.memory`, `cpus`, `pids_limit` | `512m`, `1`, `256` | docker limits per container | heavier games |
 | `launcher.network` | docker's bridge | the container's network | a network without egress |

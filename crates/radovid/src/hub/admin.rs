@@ -54,6 +54,40 @@ impl Hub {
         Ok(Reply::Matches { list })
     }
 
+    /// A piece of the replay a finished match left, for an account that sat in it.
+    pub(super) async fn match_artifact(
+        &mut self,
+        id: AccountId,
+        match_id: MatchId,
+        offset: u64,
+    ) -> Result<Reply, Error> {
+        let (ruleset, accounts) = self
+            .db
+            .finished_match_seats(match_id)
+            .await
+            .map_err(internal)?
+            .ok_or(Error::NoArtifact)?;
+        let template = self
+            .config
+            .ruleset(&ruleset)
+            .and_then(|r| r.launcher.artifact.as_deref())
+            .and_then(|t| crate::artifacts::Template::parse(t).ok())
+            .filter(|_| accounts.contains(&id))
+            .ok_or(Error::NoArtifact)?;
+        let (total, data) = tokio::task::spawn_blocking(move || {
+            crate::artifacts::read_chunk(&template, match_id, offset)
+        })
+        .await
+        .map_err(internal)?
+        .ok_or(Error::NoArtifact)?;
+        Ok(Reply::Artifact {
+            match_id,
+            offset,
+            total,
+            data,
+        })
+    }
+
     pub(super) async fn ladder(
         &mut self,
         ruleset: RulesetId,

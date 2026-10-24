@@ -208,11 +208,19 @@ impl Hub {
             return;
         };
         self.waiting.retain(|m| *m != match_id);
+        let leaver = match &end {
+            End::Result(result) => result.abandoned,
+            _ => None,
+        };
         let (outcome, reason, duration_ms, report) = match end {
             End::Result(result) => match result.winner {
                 Some(team) => (
                     Outcome::Winner { team },
-                    EndReason::Decided,
+                    if result.abandoned.is_some() {
+                        EndReason::Abandon
+                    } else {
+                        EndReason::Decided
+                    },
                     result.duration_ms,
                     result.report,
                 ),
@@ -287,6 +295,8 @@ impl Hub {
             }
             match reason {
                 EndReason::Abandoned => self.note_abandon(seat.account),
+                EndReason::Abandon if Some(seat.slot) == leaver => self.note_abandon(seat.account),
+                EndReason::Abandon => self.note_played(seat.account),
                 EndReason::Decided | EndReason::Draw => self.note_played(seat.account),
                 EndReason::Crashed | EndReason::Stopped => {}
             }

@@ -625,3 +625,86 @@ fn the_service_refuses_game_servers_of_another_wire_and_tickets_on_command_lines
     let error = try_start(vec![leaky], |_| {}).err().expect("refused");
     assert!(error.contains("env"), "{error}");
 }
+
+/// A player who leaves for good loses the rated match, which counts as his abandon, and the
+/// match no longer holds one of his games.
+#[test]
+fn a_leaver_loses_the_rated_match_and_is_freed() {
+    let env = start(rules("leave0"));
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = a.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason),
+        (Outcome::Winner { team: 1 }, EndReason::Abandon)
+    );
+    let rating = |slot: u8| {
+        let seat = result.seats.iter().find(|s| s.slot == slot).expect("seat");
+        (
+            seat.before.expect("rated").rating,
+            seat.after.expect("rated").rating,
+        )
+    };
+    assert!(rating(0).1 < rating(0).0, "the leaver lost rating");
+    assert!(rating(1).1 > rating(1).0, "the stayer won rating");
+    let Ok(Reply::Handoffs { list }) = a.ask(ClientMsg::MyMatches) else {
+        panic!("my matches");
+    };
+    assert!(list.is_empty(), "a decided match holds no game");
+    env.stop();
+
+    let env = start(rules("badleave"));
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = b.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason),
+        (Outcome::Null, EndReason::Crashed),
+        "a leaver cannot be the winner"
+    );
+}
+
+/// The replay a ruleset names goes, in chunks, to the seats of the finished match only.
+#[test]
+fn a_finished_matchs_artifact_goes_to_its_seats_in_chunks() {
+    let dir = std::env::temp_dir().join(format!("radovid-artifact-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let mut rules = rules("team0");
+    rules[0].launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+    let env = start(rules);
+    let (mut a, mut b, mut c) = (env.bot("alpha"), env.bot("beta"), env.bot("gamma"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = a.wait_result();
+    let size = MAX_ARTIFACT_CHUNK + 1000;
+    let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+    let file = dir.join(format!("replay-{}.brp", result.match_id.0));
+    std::fs::write(&file, &bytes).expect("replay");
+    let fetch = |who: &mut Account, offset: u64| {
+        who.ask(ClientMsg::MatchArtifact {
+            match_id: result.match_id,
+            offset,
+        })
+    };
+    let Ok(Reply::Artifact { total, data, .. }) = fetch(&mut b, 0) else {
+        panic!("first chunk");
+    };
+    assert_eq!((total, data.len()), (size as u64, MAX_ARTIFACT_CHUNK));
+    assert_eq!(data, bytes[..MAX_ARTIFACT_CHUNK]);
+    let Ok(Reply::Artifact { data, .. }) = fetch(&mut a, MAX_ARTIFACT_CHUNK as u64) else {
+        panic!("second chunk");
+    };
+    assert_eq!(data, bytes[MAX_ARTIFACT_CHUNK..]);
+    assert_eq!(
+        fetch(&mut c, 0).err(),
+        Some(Error::NoArtifact),
+        "not a seat"
+    );
+    assert!(matches!(
+        a.ask(ClientMsg::MatchArtifact {
+            match_id: MatchId(999),
+            offset: 0
+        }),
+        Err(Error::NoArtifact)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -152,6 +152,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
                 .to_vec(),
             env: [("GAME_SEATS".to_owned(), "{seats}".to_owned())].into(),
             start_timeout_secs: 30,
+            artifact: None,
         },
     }
 }
@@ -167,6 +168,8 @@ pub fn test_limits() -> LimitsConfig {
         game_capacity: 8,
         lobby_games_max: 6,
         queue_capacity: 256,
+        artifact_retention_days: 14,
+        artifact_cap_mib: 2048,
     }
 }
 

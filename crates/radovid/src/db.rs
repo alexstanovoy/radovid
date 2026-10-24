@@ -571,6 +571,33 @@ impl Db {
         .await
     }
 
+    /// The ruleset and the accounts of a finished match.
+    pub async fn finished_match_seats(
+        &self,
+        match_id: MatchId,
+    ) -> DbResult<Option<(RulesetId, Vec<AccountId>)>> {
+        self.run(move |c| {
+            let ruleset: Option<String> = c
+                .query_row(
+                    "SELECT ruleset FROM matches WHERE id = ?1 AND finished = 1",
+                    [match_id.0 as i64],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(ruleset) = ruleset else {
+                return Ok(None);
+            };
+            let mut seats = c.prepare("SELECT account FROM match_seats WHERE match_id = ?1")?;
+            let accounts = seats
+                .query_map([match_id.0 as i64], |row| {
+                    Ok(AccountId(row.get::<_, i64>(0)? as u64))
+                })?
+                .collect::<Result<_, _>>()?;
+            Ok(Some((RulesetId(ruleset), accounts)))
+        })
+        .await
+    }
+
     pub async fn ladder(
         &self,
         ruleset: RulesetId,
@@ -877,6 +904,7 @@ fn reason_code(reason: EndReason) -> i64 {
         EndReason::Abandoned => 2,
         EndReason::Crashed => 3,
         EndReason::Stopped => 4,
+        EndReason::Abandon => 5,
     }
 }
 
@@ -886,6 +914,7 @@ fn reason_of(code: i64) -> EndReason {
         1 => EndReason::Draw,
         2 => EndReason::Abandoned,
         3 => EndReason::Crashed,
+        5 => EndReason::Abandon,
         _ => EndReason::Stopped,
     }
 }

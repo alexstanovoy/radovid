@@ -134,6 +134,10 @@ pub struct LimitsConfig {
     pub lobby_games_max: u32,
     /// Queue entries across every ruleset; past it `QueueFull`.
     pub queue_capacity: u32,
+    /// Days a match's artifact is kept, and the most bytes (MiB) all of a ruleset's artifacts may
+    /// take: older and then the oldest go first.
+    pub artifact_retention_days: u32,
+    pub artifact_cap_mib: u32,
 }
 
 impl Default for LimitsConfig {
@@ -146,6 +150,8 @@ impl Default for LimitsConfig {
             game_capacity: 8,
             lobby_games_max: 6,
             queue_capacity: 256,
+            artifact_retention_days: 14,
+            artifact_cap_mib: 2048,
         }
     }
 }
@@ -225,6 +231,9 @@ pub struct LauncherConfig {
     /// Seconds from the start to the game's `READY` line at most.
     #[serde(default = "default_start_timeout")]
     pub start_timeout_secs: u64,
+    /// Where the game leaves the match's replay, as seen by radovid: an absolute path whose file
+    /// name holds `{match_id}` (a docker game's mounted directory). Seats of the match fetch it.
+    pub artifact: Option<String>,
 }
 
 fn default_start_timeout() -> u64 {
@@ -355,6 +364,12 @@ impl Config {
                 "limits.game_capacity must be at least 1 and at least lobby_games_max".to_owned(),
             );
         }
+        if !(1..=365).contains(&limits.artifact_retention_days) || limits.artifact_cap_mib == 0 {
+            return Err(
+                "limits.artifact_retention_days must be 1 to 365 and artifact_cap_mib at least 1"
+                    .to_owned(),
+            );
+        }
         if self.game_ports.count() < limits.game_capacity as usize {
             return Err(format!(
                 "game_ports holds {} ports for a game_capacity of {}",
@@ -455,6 +470,9 @@ fn validate_launcher(launcher: &LauncherConfig, seats: usize) -> Result<(), Stri
     }
     if launcher.start_timeout_secs == 0 {
         return Err("start_timeout_secs must be at least 1".to_owned());
+    }
+    if let Some(artifact) = &launcher.artifact {
+        crate::artifacts::Template::parse(artifact)?;
     }
     template::check(&launcher.public_url, seats, false).map_err(|e| format!("public_url: {e}"))?;
     if !launcher.insecure_plaintext && !stays_private(&launcher.public_url) {

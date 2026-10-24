@@ -2,7 +2,11 @@
 
 /// The version of every wire type here. Bumped on every change of any of them;
 /// a server accepts exactly its own.
-pub const PROTO_VERSION: u16 = 2;
+pub const PROTO_VERSION: u16 = 3;
+
+/// Bytes of a match artifact (a game's replay) one `Reply::Artifact` carries at most: well under
+/// `MAX_SERVER_PAYLOAD_LEN`.
+pub const MAX_ARTIFACT_CHUNK: usize = 1024 * 1024;
 
 /// Largest payload of a frame a client sends, in bytes.
 pub const MAX_CONTROL_PAYLOAD_LEN: usize = 64 * 1024;

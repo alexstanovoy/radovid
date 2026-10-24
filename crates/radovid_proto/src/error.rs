@@ -92,6 +92,8 @@ pub enum Error {
     ProposalExpired,
     BadLobbyPassword,
     LobbyNameTaken,
+    /// The match has no artifact: not finished, none made, already pruned, or not the caller's.
+    NoArtifact,
 }
 
 impl core::fmt::Display for Error {
