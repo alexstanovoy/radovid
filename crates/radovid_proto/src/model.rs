@@ -121,6 +121,8 @@ pub struct RulesetInfo {
     /// Games in flight an account of the caller's kind may have to queue or
     /// sit here (a human's before login).
     pub games_per_account: u8,
+    /// Who may queue and sit here; the service lists a ruleset to the kinds it admits only.
+    pub audience: Audience,
 }
 
 /// What bounds an account's play, as it applies to the caller.

@@ -697,3 +697,30 @@ fn a_finished_matchs_artifact_goes_to_its_seats_in_chunks() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A ruleset for bots only is not listed to humans and refuses their queue joins.
+#[test]
+fn a_ruleset_for_bots_is_neither_listed_to_humans_nor_open_to_them() {
+    let mut arena = ruleset("arena", true, "team0", "0.3");
+    arena.audience = radovid::config::AudienceConfig::BotsOnly;
+    let env = start(vec![ruleset("solo", true, "team0", "0.3"), arena]);
+    let mut hana = env.human("hana");
+    let mut beta = env.bot("beta");
+    let ids = |list: Reply| match list {
+        Reply::Rulesets { list } => list.into_iter().map(|r| r.id.0).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(ids(hana.ask(ClientMsg::Rulesets).expect("list")), ["solo"]);
+    assert_eq!(
+        ids(beta.ask(ClientMsg::Rulesets).expect("list")),
+        ["solo", "arena"]
+    );
+    let arena = RulesetId("arena".to_owned());
+    assert_eq!(
+        hana.ask(ClientMsg::QueueJoin {
+            ruleset: arena.clone()
+        }),
+        Err(Error::AudienceMismatch)
+    );
+    assert!(beta.ask(ClientMsg::QueueJoin { ruleset: arena }).is_ok());
+}

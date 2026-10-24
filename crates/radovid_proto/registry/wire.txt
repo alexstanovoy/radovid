@@ -360,6 +360,7 @@ field RulesetInfo 4 teams: Vec<u8>
 field RulesetInfo 5 rated: bool
 field RulesetInfo 6 info: Vec<u8>
 field RulesetInfo 7 games_per_account: u8
+field RulesetInfo 8 audience: Audience
 field SeatInfo 0 slot: u8
 field SeatInfo 1 team: u8
 field SeatInfo 2 account: AccountId

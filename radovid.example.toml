@@ -17,6 +17,7 @@ game_fingerprint = "0123456789abcdef"      # what `bota_server --wire-fingerprin
 teams = [1, 1]
 rated = true
 info = "0100"                              # bota: the allowed heroes
+# audience = "everyone"                    # or "humans_only" / "bots_only"
 
 [ruleset.launcher]
 kind = "docker"

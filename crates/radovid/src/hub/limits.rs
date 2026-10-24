@@ -40,6 +40,9 @@ impl Hub {
             });
         }
         let account = self.accounts.get(&s.account).ok_or(Error::NotLoggedIn)?;
+        if !ruleset.admits(account.info.kind) {
+            return Err(Error::AudienceMismatch);
+        }
         let limit = ruleset.games_per_account(&self.config.limits, account.info.kind);
         if account.in_flight() >= usize::from(limit) {
             return Err(Error::TooManyGames { limit });

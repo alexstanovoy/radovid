@@ -132,6 +132,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
         info: vec![1, 2, 3],
         max_duration_secs: 600,
         games_per_account: None,
+        audience: Default::default(),
         launcher: LauncherConfig {
             kind: LauncherKind::Local,
             binary: Some(fake_game()),

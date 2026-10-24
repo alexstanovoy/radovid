@@ -180,7 +180,30 @@ pub struct RulesetConfig {
     pub max_duration_secs: u64,
     /// Overrides `[limits] games_per_account` for this ruleset.
     pub games_per_account: Option<PerKindOrBoth>,
+    /// Who may queue and sit in lobbies here; the others are not even told of the ruleset.
+    #[serde(default)]
+    pub audience: AudienceConfig,
     pub launcher: LauncherConfig,
+}
+
+/// A ruleset's audience as the configuration spells it.
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudienceConfig {
+    #[default]
+    Everyone,
+    HumansOnly,
+    BotsOnly,
+}
+
+impl From<AudienceConfig> for Audience {
+    fn from(audience: AudienceConfig) -> Audience {
+        match audience {
+            AudienceConfig::Everyone => Audience::Everyone,
+            AudienceConfig::HumansOnly => Audience::HumansOnly,
+            AudienceConfig::BotsOnly => Audience::BotsOnly,
+        }
+    }
 }
 
 fn default_max_duration() -> u64 {
@@ -314,7 +337,13 @@ impl RulesetConfig {
             rated: self.rated,
             info: self.info.clone(),
             games_per_account: self.games_per_account(limits, kind),
+            audience: self.audience.into(),
         }
+    }
+
+    /// Whether an account of `kind` may queue and sit in lobbies here.
+    pub fn admits(&self, kind: AccountKind) -> bool {
+        Audience::from(self.audience).admits(kind)
     }
 }
 
@@ -403,6 +432,7 @@ impl Config {
     pub fn ruleset_infos(&self, kind: AccountKind) -> Vec<RulesetInfo> {
         self.rulesets
             .iter()
+            .filter(|r| r.admits(kind))
             .map(|r| r.info(&self.limits, kind))
             .collect()
     }
