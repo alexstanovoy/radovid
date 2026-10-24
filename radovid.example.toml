@@ -28,9 +28,9 @@ version_probe = ["--wire-fingerprint"]
 args = ["--map", "2", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
         "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
         "--heroes", "1", "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300",
-        "--abandon-after-secs", "300"]
+        "--abandon-after-secs", "300", "--replay", "{artifact}"]
 env = { BOTA_SEATS = "{seats}" }           # tickets go into the environment only; each seat is ticket:team:name:kind (bot|human, the account's own)
 
-# A `local` launcher can keep each match's replay for its seats: `artifact = "/abs/replay-{match_id}.brp"`, the
-# same path as the game's own `--replay` (see the README). Docker containers are read-only with read-only
-# mounts, so a docker game cannot leave one yet.
+# The replay of each match, kept for its seats: radovid makes the file and mounts just that one writable at
+# /artifact in the container; the game writes it where `{artifact}` says.
+artifact = "/var/lib/radovid/replays/replay-{match_id}.brp"

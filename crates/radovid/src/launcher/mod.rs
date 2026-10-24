@@ -4,6 +4,7 @@
 
 mod lines;
 
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -19,6 +20,9 @@ pub use lines::{GameResult, Line, LineReader};
 const LABEL: &str = "radovid.match";
 /// How long a version probe may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Where a docker game sees its artifact file, and the most bytes it may write there.
+const ARTIFACT_IN_CONTAINER: &str = "/artifact";
+const MAX_ARTIFACT_BYTES: u64 = 64 << 20;
 /// Lines of a game server's stderr logged at most, and their length.
 const STDERR_LINES: usize = 200;
 const STDERR_LINE_LEN: usize = 300;
@@ -66,10 +70,22 @@ impl GameProcess {
 /// Starts the game server of one match.
 pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<GameProcess> {
     let launcher = &ruleset.launcher;
+    let host_artifact = match prepare_artifact(ruleset, spec) {
+        Ok(path) => path,
+        Err(error) => {
+            return Err(std::io::Error::other(format!("the artifact file: {error}")));
+        }
+    };
+    // What the game is told to write to: the file itself, or where a container sees it.
+    let seen_by_game = host_artifact.as_ref().map(|path| match launcher.kind {
+        LauncherKind::Local => path.to_string_lossy().into_owned(),
+        LauncherKind::Docker => ARTIFACT_IN_CONTAINER.to_owned(),
+    });
     let vars = Vars {
         match_id: spec.match_id,
         port: spec.port,
         seats: &spec.seats,
+        artifact: seen_by_game.as_deref(),
     };
     let args: Vec<String> = launcher
         .args
@@ -91,7 +107,13 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
             let name = format!("radovid-match-{}", spec.match_id.0);
             let docker = docker_binary(launcher);
             let mut command = Command::new(&docker);
-            command.args(docker_run_args(launcher, spec, &name, &args));
+            command.args(docker_run_args(
+                launcher,
+                spec,
+                &name,
+                &args,
+                host_artifact.as_deref(),
+            ));
             (command, Some((docker, name)))
         }
     };
@@ -118,6 +140,41 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
     })
 }
 
+/// Makes the match's artifact file empty before the game starts: a docker container is given
+/// this one file to write and nothing else, which the container's user must be able to open, so
+/// it is world-writable and the directory above it is the operator's to keep closed.
+fn prepare_artifact(
+    ruleset: &RulesetConfig,
+    spec: &LaunchSpec,
+) -> std::io::Result<Option<std::path::PathBuf>> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let Some(template) = ruleset
+        .launcher
+        .artifact
+        .as_deref()
+        .and_then(|t| crate::artifacts::Template::parse(t).ok())
+    else {
+        return Ok(None);
+    };
+    let path = template.path(spec.match_id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mode = if ruleset.launcher.kind == LauncherKind::Docker {
+        0o666
+    } else {
+        0o600
+    };
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(mode)
+        .open(&path)?
+        .set_permissions(std::fs::Permissions::from_mode(mode))?;
+    Ok(Some(path))
+}
+
 fn docker_binary(launcher: &LauncherConfig) -> String {
     launcher
         .docker
@@ -132,6 +189,7 @@ fn docker_run_args(
     spec: &LaunchSpec,
     name: &str,
     args: &[String],
+    artifact: Option<&Path>,
 ) -> Vec<String> {
     let publish = match launcher.publish_address {
         Some(std::net::IpAddr::V6(v6)) => format!("[{v6}]"),
@@ -170,6 +228,16 @@ fn docker_run_args(
     }
     for mount in &launcher.mounts {
         run.extend(["--volume".to_owned(), mount.clone()]);
+    }
+    // The one writable thing: this match's artifact file, bounded in size; the rest of the
+    // container stays read-only.
+    if let Some(file) = artifact {
+        run.extend([
+            "--volume".to_owned(),
+            format!("{}:{ARTIFACT_IN_CONTAINER}:rw", file.display()),
+            "--ulimit".to_owned(),
+            format!("fsize={MAX_ARTIFACT_BYTES}:{MAX_ARTIFACT_BYTES}"),
+        ]);
     }
     for name in launcher.env.keys() {
         run.extend(["--env".to_owned(), name.clone()]);

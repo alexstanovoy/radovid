@@ -482,14 +482,16 @@ loopback host, or set insecure_plaintext = true for a network you trust",
             launcher.public_url
         ));
     }
+    let artifact = launcher.artifact.is_some();
     for arg in &launcher.args {
-        template::check(arg, seats, false).map_err(|e| format!("args: {e}"))?;
+        template::check_with(arg, seats, false, artifact).map_err(|e| format!("args: {e}"))?;
     }
     for (name, value) in &launcher.env {
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             return Err(format!("env name {name:?} is not [A-Za-z0-9_]"));
         }
-        template::check(value, seats, true).map_err(|e| format!("env {name}: {e}"))?;
+        template::check_with(value, seats, true, artifact)
+            .map_err(|e| format!("env {name}: {e}"))?;
     }
     Ok(())
 }

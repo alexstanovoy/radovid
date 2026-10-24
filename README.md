@@ -152,9 +152,9 @@ version_probe = ["--wire-fingerprint"]
 args = ["--map", "2", "--match-id", "{match_id}", "--bind", "127.0.0.1", "--port", "0",
         "--ws-port", "{port}", "--heroes", "1", "--start-after-secs", "60",
         "--abandon-unjoined", "--empty-after-secs", "120", "--abandon-after-secs", "300",
-        "--replay", "/abs/dev/replays/replay-{match_id}.brp"]
+        "--replay", "{artifact}"]
 env = { BOTA_SEATS = "{seats}" }
-artifact = "/abs/dev/replays/replay-{match_id}.brp"    # the same file: seats fetch it after the match
+artifact = "/abs/dev/replays/replay-{match_id}.brp"    # the game writes it ({artifact}); seats fetch it after the match
 ```
 
 ```sh
@@ -218,7 +218,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `launcher.insecure_plaintext` | `false` | allow a non-`wss://` `public_url` to another host | a trusted network without TLS |
 | `launcher.args`, `launcher.env` | `[]`, `{}` | the game's command line and environment; tickets only in `env` | |
 | `launcher.version_probe` | `[]` | arguments that make the game print its wire fingerprint and exit; checked at start | always, when the game has one |
-| `launcher.artifact` | none | an absolute path whose file name holds `{match_id}`: the replay the game leaves for a match (a docker game's mounted directory); the seats of the finished match fetch it in chunks (`MatchArtifact`) | the game records matches |
+| `launcher.artifact` | none | an absolute path whose file name holds `{match_id}`: the replay the game leaves for a match. radovid creates the empty file before the game starts and passes its path as `{artifact}` (in `args` and `env` values); a docker container gets exactly that file, writable at `/artifact` (at most 64 MiB, `--ulimit fsize`), and the rest of it stays read-only. Keep the directory above it closed to other users: the file is world-writable so the container's user can open it. The seats of the finished match fetch it in chunks (`MatchArtifact`) | the game records matches |
 | `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the size cap, are deleted (hourly) | the disk is smaller or replays matter longer |
 | `launcher.start_timeout_secs` | `60` | from launch to the game's `READY` | slow-starting games |
 | `launcher.memory`, `cpus`, `pids_limit` | `512m`, `1`, `256` | docker limits per container | heavier games |

@@ -84,6 +84,7 @@ impl Hub {
             match_id,
             port,
             seats: &spec.seats,
+            artifact: None,
         };
         state.game_url = template::expand(&ruleset.launcher.public_url, &vars);
         state.phase = Phase::Starting;

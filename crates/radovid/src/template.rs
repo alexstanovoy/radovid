@@ -33,6 +33,8 @@ pub struct Vars<'a> {
     pub match_id: MatchId,
     pub port: u16,
     pub seats: &'a [SeatSpec],
+    /// Where the game writes its artifact, as the game sees the path.
+    pub artifact: Option<&'a str>,
 }
 
 enum Piece<'t> {
@@ -81,12 +83,24 @@ fn per_seat(name: &str) -> Option<(usize, bool)> {
 /// Refuses a template with an unknown placeholder, a slot past `seats`, or a
 /// ticket where `secrets_allowed` is false.
 pub fn check(template: &str, seats: usize, secrets_allowed: bool) -> Result<(), String> {
+    check_with(template, seats, secrets_allowed, false)
+}
+
+/// As [`check`], also allowing `{artifact}` (the file the game leaves for the match) when
+/// `artifact` is set.
+pub fn check_with(
+    template: &str,
+    seats: usize,
+    secrets_allowed: bool,
+    artifact: bool,
+) -> Result<(), String> {
     for piece in pieces(template)? {
         let Piece::Name(name) = piece else {
             continue;
         };
         let secret = match name {
             "match_id" | "port" => false,
+            "artifact" if artifact => false,
             "seats" => true,
             _ => match per_seat(name) {
                 Some((slot, _)) if slot >= seats => {
@@ -116,6 +130,7 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
             Piece::Text(text) => out.push_str(text),
             Piece::Name("match_id") => out.push_str(&vars.match_id.0.to_string()),
             Piece::Name("port") => out.push_str(&vars.port.to_string()),
+            Piece::Name("artifact") => out.push_str(vars.artifact.unwrap_or_default()),
             Piece::Name("seats") => {
                 let seats: Vec<String> = vars
                     .seats
