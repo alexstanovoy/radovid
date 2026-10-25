@@ -395,7 +395,7 @@ fn the_owner_leaving_closes_the_lobby_and_audiences_are_kept() {
 }
 
 /// A ruleset that lets a lobby start with fewer players than seats: its host starts alone, the
-/// match has one seat and the game's own arguments fill the rest; one that does not, still waits
+/// match has the one seat held and the others stay empty; one that does not, still waits
 /// for a full lobby.
 #[test]
 fn a_host_starts_a_lobby_alone_where_the_ruleset_allows_it() {
