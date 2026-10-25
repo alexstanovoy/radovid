@@ -393,3 +393,56 @@ fn the_owner_leaving_closes_the_lobby_and_audiences_are_kept() {
         .expect("login");
     assert_eq!(logged.activities, Activities::default());
 }
+
+/// A ruleset that lets a lobby start with fewer players than seats: its host starts alone, the
+/// match has one seat and the game's own arguments fill the rest; one that does not, still waits
+/// for a full lobby.
+#[test]
+fn a_host_starts_a_lobby_alone_where_the_ruleset_allows_it() {
+    let mut alone = ruleset("alone", false, "team0", "0.3");
+    alone.lobby_min_players = Some(1);
+    let env = start(vec![alone, ruleset("fun", false, "team0", "0.3")]);
+    let mut owner = env.human("olga");
+    let Ok(Reply::Rulesets { list }) = owner.ask(ClientMsg::Rulesets) else {
+        panic!("rulesets");
+    };
+    let minimum: Vec<_> = list
+        .iter()
+        .map(|r| (r.id.0.as_str(), r.lobby_min_players))
+        .collect();
+    assert_eq!(minimum, [("alone", 1), ("fun", 2)]);
+
+    let Ok(Reply::Lobby { state }) = owner.ask(ClientMsg::LobbyCreate {
+        ruleset: fun(),
+        name: "full only".to_owned(),
+        audience: Audience::Everyone,
+        password: None,
+    }) else {
+        panic!("lobby");
+    };
+    assert_eq!(
+        owner.ask(ClientMsg::LobbyReady {
+            lobby: state.id,
+            ready: true
+        }),
+        Err(Error::LobbyNotFull)
+    );
+    owner.expect_done(ClientMsg::LobbyLeave { lobby: state.id });
+
+    let Ok(Reply::Lobby { state }) = owner.ask(ClientMsg::LobbyCreate {
+        ruleset: RulesetId("alone".to_owned()),
+        name: "by myself".to_owned(),
+        audience: Audience::Everyone,
+        password: None,
+    }) else {
+        panic!("lobby");
+    };
+    owner.expect_done(ClientMsg::LobbyReady {
+        lobby: state.id,
+        ready: true,
+    });
+    let handoff = owner.wait_match_found();
+    assert_eq!(handoff.slot, 0);
+    let result = owner.wait_result();
+    assert_eq!(result.seats.len(), 1, "one seat held");
+}

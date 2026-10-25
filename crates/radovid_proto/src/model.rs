@@ -123,6 +123,9 @@ pub struct RulesetInfo {
     pub games_per_account: u8,
     /// Who may queue and sit here; the service lists a ruleset to the kinds it admits only.
     pub audience: Audience,
+    /// Players a lobby of it needs before its host may start it: the seats, unless the
+    /// service lets a lobby start with fewer (the game fills the rest as it knows how).
+    pub lobby_min_players: u8,
 }
 
 /// What bounds an account's play, as it applies to the caller.

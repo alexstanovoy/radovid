@@ -463,10 +463,15 @@ impl Hub {
     fn lobby_ready(&mut self, id: AccountId, lobby: LobbyId, ready: bool) -> Result<Reply, Error> {
         self.member_of(id, lobby)?;
         self.not_starting(lobby)?;
+        let needed = self
+            .lobbies
+            .get(&lobby)
+            .and_then(|l| self.config.ruleset(&l.ruleset))
+            .map_or(usize::MAX, |rules| usize::from(rules.lobby_min_players()));
         let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
         let starts = l.owner == id && ready;
         if starts {
-            if !l.is_full() {
+            if l.members.len() < needed {
                 return Err(Error::LobbyNotFull);
             }
             if l.members.iter().any(|m| m.account != id && !m.ready) {

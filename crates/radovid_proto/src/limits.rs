@@ -2,7 +2,7 @@
 
 /// The version of every wire type here. Bumped on every change of any of them;
 /// a server accepts exactly its own.
-pub const PROTO_VERSION: u16 = 4;
+pub const PROTO_VERSION: u16 = 5;
 
 /// Bytes of a match artifact (a game's replay) one `Reply::Artifact` carries at most: well under
 /// `MAX_SERVER_PAYLOAD_LEN`.

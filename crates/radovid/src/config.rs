@@ -183,6 +183,9 @@ pub struct RulesetConfig {
     /// Who may queue and sit in lobbies here; the others are not even told of the ruleset.
     #[serde(default)]
     pub audience: AudienceConfig,
+    /// Players a lobby needs before its host may start it; the seats when absent. Fewer lets a
+    /// host start alone: the game's own launcher arguments fill the empty seats.
+    pub lobby_min_players: Option<u8>,
     pub launcher: LauncherConfig,
 }
 
@@ -338,7 +341,14 @@ impl RulesetConfig {
             info: self.info.clone(),
             games_per_account: self.games_per_account(limits, kind),
             audience: self.audience.into(),
+            lobby_min_players: self.lobby_min_players(),
         }
+    }
+
+    /// Players a lobby of this ruleset needs before its host starts it.
+    pub fn lobby_min_players(&self) -> u8 {
+        self.lobby_min_players
+            .unwrap_or_else(|| u8::try_from(self.seats()).unwrap_or(u8::MAX))
     }
 
     /// Whether an account of `kind` may queue and sit in lobbies here.
@@ -455,6 +465,12 @@ fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {
         return Err(format!(
             "needs two or more teams of at least one, {MAX_SEATS} seats at most"
         ));
+    }
+    if ruleset
+        .lobby_min_players
+        .is_some_and(|n| n == 0 || usize::from(n) > ruleset.seats())
+    {
+        return Err("lobby_min_players is 1 to the number of seats".to_owned());
     }
     if ruleset.rated && ruleset.teams != [1, 1] {
         return Err("a rated ruleset is two teams of one: teams = [1, 1]".to_owned());
