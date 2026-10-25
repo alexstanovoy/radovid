@@ -93,6 +93,10 @@ pub enum Error {
     LobbyNameTaken,
     /// The match has no artifact: not finished, none made, already pruned, or not the caller's.
     NoArtifact,
+    /// The lobby's slot is taken by another member.
+    SlotTaken,
+    /// The lobby's ruleset has no such slot.
+    NoSuchSlot,
 }
 
 impl core::fmt::Display for Error {

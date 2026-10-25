@@ -56,14 +56,19 @@ impl Hub {
         ruleset: &RulesetConfig,
         lobby: bool,
         members: Vec<(AccountId, IpAddr)>,
+        teams: Option<Vec<u8>>,
     ) -> Result<MatchId, Error> {
+        // The seats are numbered in order; a lobby's members sit on the sides they chose.
         let seats: Vec<NewSeat> = members
             .iter()
             .enumerate()
             .map(|(slot, (account, _))| NewSeat {
                 account: *account,
                 slot: slot as u8,
-                team: ruleset.team_of(slot),
+                team: teams
+                    .as_ref()
+                    .and_then(|teams| teams.get(slot).copied())
+                    .unwrap_or_else(|| ruleset.team_of(slot)),
             })
             .collect();
         let rated = ruleset.rated && !lobby;

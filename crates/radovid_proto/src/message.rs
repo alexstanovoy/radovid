@@ -161,6 +161,22 @@ pub enum ClientMsg {
         match_id: MatchId,
         offset: u64,
     },
+    /// Moves a member of a lobby to a free slot, or to none ([`LOBBY_NO_SLOT`]: a spectator,
+    /// who is not part of the match). `account` absent is the caller; another member is the
+    /// owner's to move. Moving unreadies the member.
+    LobbySlot {
+        lobby: LobbyId,
+        account: Option<AccountId>,
+        slot: u8,
+    },
+    /// The owner changes a lobby's settings: its ruleset, who may sit in it, and its password
+    /// (none removes it). Everyone is unreadied; members whose slot the ruleset lacks lose it.
+    LobbyConfigure {
+        lobby: LobbyId,
+        ruleset: RulesetId,
+        audience: Audience,
+        password: Option<Secret>,
+    },
 }
 
 /// The answer to a request that succeeded.

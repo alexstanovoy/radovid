@@ -1,0 +1,19 @@
+### cargo fmt --all --check
+rc=0
+### cargo clippy --all-targets -- -D warnings
+    Checking radovid_proto v0.1.0 (/home/alexstanovoy/Workspace/bots/solo/radovid/crates/radovid_proto)
+    Checking radovid_client v0.1.0 (/home/alexstanovoy/Workspace/bots/solo/radovid/crates/radovid_client)
+    Checking radovid v0.1.0 (/home/alexstanovoy/Workspace/bots/solo/radovid/crates/radovid)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.80s
+rc=0
+### cargo test --release
+   Doc-tests radovid_proto
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rc=0
+### cargo deny check
+advisories ok, bans ok, licenses ok, sources ok
+rc=0

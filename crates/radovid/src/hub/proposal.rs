@@ -217,7 +217,7 @@ impl Hub {
             .iter()
             .filter_map(|e| self.entries.get(e).map(|e| (e.account, e.source)))
             .collect();
-        match self.form_match(rules, false, members).await {
+        match self.form_match(rules, false, members, None).await {
             Ok(_) => {
                 self.proposals.remove(&proposal);
                 for entry in entries {
