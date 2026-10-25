@@ -194,7 +194,7 @@ pub struct RulesetConfig {
     #[serde(default)]
     pub audience: AudienceConfig,
     /// Players a lobby needs before its host may start it; the seats when absent. Fewer lets a
-    /// host start alone: the game's own launcher arguments fill the empty seats.
+    /// host start alone: the match has the seats held, the others stay empty.
     pub lobby_min_players: Option<u8>,
     pub launcher: LauncherConfig,
 }

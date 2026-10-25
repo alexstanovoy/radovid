@@ -124,7 +124,7 @@ pub struct RulesetInfo {
     /// Who may queue and sit here; the service lists a ruleset to the kinds it admits only.
     pub audience: Audience,
     /// Players a lobby of it needs before its host may start it: the seats, unless the
-    /// service lets a lobby start with fewer (the game fills the rest as it knows how).
+    /// service lets a lobby start with fewer: the seats nobody holds stay empty.
     pub lobby_min_players: u8,
 }
 

@@ -20,7 +20,7 @@ game_fingerprint = "0123456789abcdef"      # what `bota_server --wire-fingerprin
 teams = [1, 1]
 rated = true
 info = "0100"                              # bota: the allowed heroes
-# lobby_min_players = 1                    # a lobby may start with its host alone (the game fills the seats)
+# lobby_min_players = 1                    # a lobby may start with its host alone (the empty seats stay empty)
 # audience = "everyone"                    # or "humans_only" / "bots_only"
 
 [ruleset.launcher]

@@ -212,7 +212,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `ruleset.info` | `""` | hex bytes shown to clients (the game's own meaning) | |
 | `ruleset.max_duration_secs` | `1800` | a match running longer is killed (a null) | longer games |
 | `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit, one number or per kind | |
-| `ruleset.lobby_min_players` | the seats | players a lobby needs before its host may start it (`LobbyReady`); fewer lets a host start alone, and the game's own launcher arguments fill the empty seats (a ruleset for it is a launcher that does) | |
+| `ruleset.lobby_min_players` | the seats | players a lobby needs before its host may start it (`LobbyReady`); fewer lets a host start alone, and the match has only the seats held (the game plays on with the sides it has) | |
 | `ruleset.audience` | `everyone` | `everyone`, `humans_only` or `bots_only`: who may queue and sit in lobbies here (`AudienceMismatch` otherwise); the others are not told the ruleset exists | |
 | `launcher.kind` | | `docker` (one container per match) or `local` (a child process, development) | |
 | `launcher.image`, `launcher.container_port` | | docker: the image, and the game's port inside it | |
