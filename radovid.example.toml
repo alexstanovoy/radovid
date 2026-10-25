@@ -19,7 +19,6 @@ game = "bota"
 game_fingerprint = "0123456789abcdef"      # what `bota_server --wire-fingerprint` prints
 teams = [1, 1]
 rated = true
-info = "0100"                              # bota: the allowed heroes
 # lobby_min_players = 1                    # a lobby may start with its host alone (the empty seats stay empty)
 # audience = "everyone"                    # or "humans_only" / "bots_only"
 
@@ -30,6 +29,7 @@ container_port = 4456
 public_url = "wss://game.example.org:{port}"
 mounts = ["/etc/radovid/game-cert:/certs:ro"]
 version_probe = ["--wire-fingerprint"]
+# --heroes 1: the pool is Shadow Fiend alone, a forced pick (each seat is given it, ready: nobody chooses)
 args = ["--map", "2", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
         "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
         "--heroes", "1", "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300",
