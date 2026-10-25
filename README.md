@@ -146,7 +146,6 @@ game = "bota"
 game_fingerprint = "<the digits above>"
 teams = [1, 1]
 rated = true
-info = "0100"
 
 [ruleset.launcher]
 kind = "local"
