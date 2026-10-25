@@ -45,8 +45,9 @@ impl Lobby {
         (0..self.teams.len() as u8).find(|slot| self.members.iter().all(|m| m.slot != *slot))
     }
 
+    /// No slot is free to sit in (spectators hold none).
     fn is_full(&self) -> bool {
-        self.members.len() >= self.teams.len()
+        self.lowest_free_slot().is_none()
     }
 
     fn holds(&self, id: AccountId) -> bool {
@@ -102,6 +103,17 @@ impl Hub {
             } => self.lobby_decide(id, lobby, account, allow).await,
             ClientMsg::LobbyKick { lobby, account } => self.lobby_kick(id, lobby, account),
             ClientMsg::LobbyReady { lobby, ready } => self.lobby_ready(id, lobby, ready),
+            ClientMsg::LobbySlot {
+                lobby,
+                account,
+                slot,
+            } => self.lobby_slot(id, lobby, account, slot),
+            ClientMsg::LobbyConfigure {
+                lobby,
+                ruleset,
+                audience,
+                password,
+            } => self.lobby_configure(id, lobby, ruleset, audience, password),
             ClientMsg::LobbyLeave { lobby } => {
                 self.member_of(id, lobby)?;
                 self.not_starting(lobby)?;
@@ -149,7 +161,11 @@ impl Hub {
                 .members
                 .iter()
                 .map(|m| {
-                    let team = lobby.teams.get(usize::from(m.slot)).copied().unwrap_or(0);
+                    let team = lobby
+                        .teams
+                        .get(usize::from(m.slot))
+                        .copied()
+                        .unwrap_or(if m.slot == LOBBY_NO_SLOT { m.slot } else { 0 });
                     self.member_view(m.account, m.slot, m.ready, m.rating, team)
                 })
                 .collect(),
@@ -460,6 +476,94 @@ impl Hub {
         Ok(Reply::Done)
     }
 
+    /// Moves a member to a free slot of the lobby, or to none; the owner moves the others.
+    fn lobby_slot(
+        &mut self,
+        id: AccountId,
+        lobby: LobbyId,
+        account: Option<AccountId>,
+        slot: u8,
+    ) -> Result<Reply, Error> {
+        self.member_of(id, lobby)?;
+        self.not_starting(lobby)?;
+        let target = account.unwrap_or(id);
+        if target != id {
+            self.owned_by(id, lobby)?;
+        }
+        let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
+        if !l.holds(target) {
+            return Err(Error::NoSuchMember);
+        }
+        if slot != LOBBY_NO_SLOT {
+            if usize::from(slot) >= l.teams.len() {
+                return Err(Error::NoSuchSlot);
+            }
+            if l.members
+                .iter()
+                .any(|m| m.slot == slot && m.account != target)
+            {
+                return Err(Error::SlotTaken);
+            }
+        }
+        if let Some(member) = l.members.iter_mut().find(|m| m.account == target) {
+            member.slot = slot;
+            member.ready = false;
+        }
+        l.members.sort_by_key(|m| m.slot);
+        self.broadcast_lobby(lobby, None);
+        Ok(Reply::Done)
+    }
+
+    /// The owner's settings of a lobby: the ruleset (its slots, its audience), who may sit, the
+    /// password. Everyone is unreadied, and a member whose slot the ruleset lacks loses it.
+    fn lobby_configure(
+        &mut self,
+        id: AccountId,
+        lobby: LobbyId,
+        ruleset: RulesetId,
+        audience: Audience,
+        password: Option<Secret>,
+    ) -> Result<Reply, Error> {
+        self.owned_by(id, lobby)?;
+        self.not_starting(lobby)?;
+        let config = Arc::clone(&self.config);
+        let rules = config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?;
+        if password
+            .as_ref()
+            .is_some_and(|p| !valid_lobby_password(&p.0))
+        {
+            return Err(Error::BadLobbyPassword);
+        }
+        let kinds: Vec<AccountKind> = self
+            .lobbies
+            .get(&lobby)
+            .ok_or(Error::UnknownLobby)?
+            .members
+            .iter()
+            .map(|m| self.kind_of(m.account))
+            .collect();
+        if kinds
+            .iter()
+            .any(|kind| !audience.admits(*kind) || !rules.admits(*kind))
+        {
+            return Err(Error::AudienceMismatch);
+        }
+        let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
+        l.ruleset = ruleset;
+        l.teams = (0..rules.seats()).map(|slot| rules.team_of(slot)).collect();
+        l.audience = audience;
+        l.password = password;
+        for member in &mut l.members {
+            member.ready = false;
+            if usize::from(member.slot) >= l.teams.len() {
+                member.slot = LOBBY_NO_SLOT;
+            }
+        }
+        l.members.sort_by_key(|m| m.slot);
+        self.broadcast_lobby(lobby, None);
+        Ok(Reply::Done)
+    }
+
     fn lobby_ready(&mut self, id: AccountId, lobby: LobbyId, ready: bool) -> Result<Reply, Error> {
         self.member_of(id, lobby)?;
         self.not_starting(lobby)?;
@@ -471,10 +575,16 @@ impl Hub {
         let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
         let starts = l.owner == id && ready;
         if starts {
-            if l.members.len() < needed {
+            // The match is the members who hold a slot; a spectator is no one's to wait for.
+            let seated = l.members.iter().filter(|m| m.slot != LOBBY_NO_SLOT);
+            if seated.clone().count() < needed
+                || l.members
+                    .iter()
+                    .any(|m| m.account == id && m.slot == LOBBY_NO_SLOT)
+            {
                 return Err(Error::LobbyNotFull);
             }
-            if l.members.iter().any(|m| m.account != id && !m.ready) {
+            if seated.into_iter().any(|m| m.account != id && !m.ready) {
                 return Err(Error::NotAllReady);
             }
         }
@@ -526,10 +636,28 @@ impl Hub {
             self.forget_if_idle(asker.account);
         }
         let config = Arc::clone(&self.config);
+        // The members who hold a slot play, in slot order and on the sides they chose; the
+        // spectators' lobby ends with the countdown.
+        let (seated, spectators): (Vec<&Member>, Vec<&Member>) =
+            l.members.iter().partition(|m| m.slot != LOBBY_NO_SLOT);
         let members: Vec<(AccountId, IpAddr)> =
-            l.members.iter().map(|m| (m.account, m.source)).collect();
+            seated.iter().map(|m| (m.account, m.source)).collect();
+        let teams: Vec<u8> = seated
+            .iter()
+            .map(|m| l.teams.get(usize::from(m.slot)).copied().unwrap_or(0))
+            .collect();
+        for spectator in &spectators {
+            if let Some(account) = self.accounts.get_mut(&spectator.account) {
+                account.lobbies.retain(|x| *x != lobby);
+            }
+            self.notify(spectator.account, Event::LobbyClosed { lobby });
+            self.forget_if_idle(spectator.account);
+        }
         let formed = match config.ruleset(&l.ruleset) {
-            Some(rules) => self.form_match(rules, true, members.clone()).await.is_ok(),
+            Some(rules) => self
+                .form_match(rules, true, members.clone(), Some(teams))
+                .await
+                .is_ok(),
             None => false,
         };
         for (member, _) in &members {

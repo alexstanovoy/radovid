@@ -446,3 +446,181 @@ fn a_host_starts_a_lobby_alone_where_the_ruleset_allows_it() {
     let result = owner.wait_result();
     assert_eq!(result.seats.len(), 1, "one seat held");
 }
+
+fn lobby_in(owner: &mut Account, ruleset: &str, name: &str) -> LobbyState {
+    match owner.ask(ClientMsg::LobbyCreate {
+        ruleset: RulesetId(ruleset.to_owned()),
+        name: name.to_owned(),
+        audience: Audience::Everyone,
+        password: None,
+    }) {
+        Ok(Reply::Lobby { state }) => state,
+        other => panic!("lobby: {other:?}"),
+    }
+}
+
+/// The first state of `lobby` the account is told that `holds`.
+fn state_until(
+    account: &mut Account,
+    lobby: LobbyId,
+    holds: impl Fn(&LobbyState) -> bool,
+) -> LobbyState {
+    account.wait_for(10, |event| match event {
+        Event::LobbyState { state } if state.id == lobby && holds(&state) => Some(state),
+        _ => None,
+    })
+}
+
+/// Members choose their slots: a free one at once, a taken one never, none at all as a spectator;
+/// the owner moves the others; a move unreadies; a spectator is left out of the match.
+#[test]
+fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
+    let mut big = ruleset("big", false, "team0", "0.3");
+    big.teams = vec![2, 2];
+    big.lobby_min_players = Some(2);
+    let env = start(vec![big]);
+    let (mut owner, mut guest, mut watcher) =
+        (env.human("olga"), env.bot("gus"), env.human("walt"));
+    let lobby = lobby_in(&mut owner, "big", "slots").id;
+    join(&mut owner, &mut guest, lobby);
+    join(&mut owner, &mut watcher, lobby);
+
+    // Slots 0 and 1 are Radiant's, 2 and 3 Dire's: the guest goes to Dire's second.
+    guest.expect_done(ClientMsg::LobbySlot {
+        lobby,
+        account: None,
+        slot: 3,
+    });
+    let state = state_until(&mut owner, lobby, |s| s.members.iter().any(|m| m.slot == 3));
+    let at = |state: &LobbyState, who: &Account| {
+        state
+            .members
+            .iter()
+            .find(|m| m.account == who.me.id)
+            .map(|m| (m.slot, m.team))
+            .expect("a member")
+    };
+    assert_eq!(at(&state, &guest), (3, 1));
+    // A taken slot, one the ruleset lacks, and the owner's say over another's.
+    assert_eq!(
+        watcher.ask(ClientMsg::LobbySlot {
+            lobby,
+            account: None,
+            slot: 3
+        }),
+        Err(Error::SlotTaken)
+    );
+    assert_eq!(
+        watcher.ask(ClientMsg::LobbySlot {
+            lobby,
+            account: None,
+            slot: 4
+        }),
+        Err(Error::NoSuchSlot)
+    );
+    assert_eq!(
+        watcher.ask(ClientMsg::LobbySlot {
+            lobby,
+            account: Some(guest.me.id),
+            slot: 1
+        }),
+        Err(Error::NotLobbyOwner)
+    );
+    owner.expect_done(ClientMsg::LobbySlot {
+        lobby,
+        account: Some(guest.me.id),
+        slot: 1,
+    });
+    let seen = state_until(&mut watcher, lobby, |s| {
+        s.members
+            .iter()
+            .any(|m| m.account == guest.me.id && m.slot == 1)
+    });
+    assert_eq!(at(&seen, &guest), (1, 0));
+    // A spectator holds no slot and no team.
+    watcher.expect_done(ClientMsg::LobbySlot {
+        lobby,
+        account: None,
+        slot: LOBBY_NO_SLOT,
+    });
+    let state = state_until(&mut owner, lobby, |s| {
+        s.members.iter().any(|m| m.slot == LOBBY_NO_SLOT)
+    });
+    assert_eq!(at(&state, &watcher), (LOBBY_NO_SLOT, LOBBY_NO_SLOT));
+
+    // Moving unreadies; the owner starts with the seated, the spectator is left out.
+    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    guest.expect_done(ClientMsg::LobbySlot {
+        lobby,
+        account: None,
+        slot: 3,
+    });
+    state_until(&mut owner, lobby, |s| {
+        s.members.iter().any(|m| m.slot == 3) && s.members.iter().all(|m| !m.ready)
+    });
+    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    owner.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    let handoff = guest.wait_match_found();
+    assert_eq!(handoff.slot, 1, "the seats are numbered in order");
+    watcher.wait_for(10, |event| {
+        matches!(event, Event::LobbyClosed { .. }).then_some(())
+    });
+    let result = owner.wait_result();
+    assert_eq!(result.seats.len(), 2, "the spectator played no seat");
+    let teams: Vec<u8> = result.seats.iter().map(|s| s.team).collect();
+    assert_eq!(teams, [0, 1], "each on the side chosen");
+}
+
+/// The owner changes the settings: the ruleset (members past its slots become spectators),
+/// the password and the audience; the others cannot, and everyone is unreadied.
+#[test]
+fn the_owner_changes_a_lobbys_settings_and_nobody_else() {
+    let mut big = ruleset("big", false, "team0", "0.3");
+    big.teams = vec![2, 2];
+    let env = start(vec![ruleset("fun", false, "team0", "0.3"), big]);
+    let (mut owner, mut guest) = (env.human("olga"), env.bot("gus"));
+    let lobby = lobby_in(&mut owner, "fun", "settings").id;
+    join(&mut owner, &mut guest, lobby);
+    let configure = |ruleset: &str, audience, password: Option<&str>| ClientMsg::LobbyConfigure {
+        lobby,
+        ruleset: RulesetId(ruleset.to_owned()),
+        audience,
+        password: password.map(Secret::new),
+    };
+    assert_eq!(
+        guest.ask(configure("big", Audience::Everyone, None)),
+        Err(Error::NotLobbyOwner)
+    );
+    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    assert_eq!(
+        owner.ask(configure("nowhere", Audience::Everyone, None)),
+        Err(Error::UnknownRuleset)
+    );
+    assert_eq!(
+        owner.ask(configure("big", Audience::BotsOnly, None)),
+        Err(Error::AudienceMismatch),
+        "the human owner sits in it"
+    );
+    owner.expect_done(configure("big", Audience::Everyone, Some("secret")));
+    let state = state_until(&mut guest, lobby, |s| s.ruleset.0 == "big");
+    assert_eq!(
+        (state.ruleset.0.as_str(), state.locked, state.members.len()),
+        ("big", true, 2)
+    );
+    assert!(state.members.iter().all(|m| !m.ready), "settings unready");
+    // Back to two slots: the member on a slot the ruleset lacks becomes a spectator.
+    owner.expect_done(ClientMsg::LobbySlot {
+        lobby,
+        account: Some(guest.me.id),
+        slot: 3,
+    });
+    owner.expect_done(configure("fun", Audience::Everyone, None));
+    let state = state_until(&mut guest, lobby, |s| s.ruleset.0 == "fun");
+    assert!(!state.locked);
+    let theirs = state
+        .members
+        .iter()
+        .find(|m| m.account == guest.me.id)
+        .expect("a member");
+    assert_eq!(theirs.slot, LOBBY_NO_SLOT);
+}

@@ -2,7 +2,7 @@
 
 /// The version of every wire type here. Bumped on every change of any of them;
 /// a server accepts exactly its own.
-pub const PROTO_VERSION: u16 = 5;
+pub const PROTO_VERSION: u16 = 6;
 
 /// Bytes of a match artifact (a game's replay) one `Reply::Artifact` carries at most: well under
 /// `MAX_SERVER_PAYLOAD_LEN`.
@@ -74,6 +74,8 @@ pub const MAX_RULESET_INFO_LEN: usize = 4 * 1024;
 
 /// Milliseconds of the lobby countdown. Nobody can cancel it.
 pub const LOBBY_COUNTDOWN_MS: u32 = 5000;
+/// The slot of a lobby member that holds none: a spectator, not part of the match.
+pub const LOBBY_NO_SLOT: u8 = 255;
 
 /// Milliseconds between two `QueueStatus` events of one queue entry at least.
 pub const QUEUE_STATUS_INTERVAL_MS: u32 = 5000;

@@ -113,6 +113,15 @@ field ClientMsg::AdminStopMatch 0 match_id: MatchId
 variant ClientMsg 32 MatchArtifact {}
 field ClientMsg::MatchArtifact 0 match_id: MatchId
 field ClientMsg::MatchArtifact 1 offset: u64
+variant ClientMsg 33 LobbySlot {}
+field ClientMsg::LobbySlot 0 lobby: LobbyId
+field ClientMsg::LobbySlot 1 account: Option<AccountId>
+field ClientMsg::LobbySlot 2 slot: u8
+variant ClientMsg 34 LobbyConfigure {}
+field ClientMsg::LobbyConfigure 0 lobby: LobbyId
+field ClientMsg::LobbyConfigure 1 ruleset: RulesetId
+field ClientMsg::LobbyConfigure 2 audience: Audience
+field ClientMsg::LobbyConfigure 3 password: Option<Secret>
 variant EndReason 0 Decided
 variant EndReason 1 Draw
 variant EndReason 2 Abandoned
@@ -177,6 +186,8 @@ variant Error 43 ProposalExpired
 variant Error 44 BadLobbyPassword
 variant Error 45 LobbyNameTaken
 variant Error 46 NoArtifact
+variant Error 47 SlotTaken
+variant Error 48 NoSuchSlot
 variant Event 0 QueueStatus {}
 field Event::QueueStatus 0 entry: QueueEntry
 variant Event 1 MatchProposed {}

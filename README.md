@@ -41,6 +41,10 @@ radovid         the service (library + binary)
 - **Lobbies.** Unrated games with an owner and a unique name. Ask the owner, or give the lobby's
   password and be in at once; press ready; the owner's ready starts a 5 s countdown nobody can
   cancel; the match then waits for a slot like any other. The owner leaving closes the lobby.
+  Slots are the ruleset's seats numbered team by team: a member chooses a free slot at once (`LobbySlot`),
+  the owner moves others, a member may hold none (a spectator, who stays out of the match), and a move
+  unreadies. The owner changes the ruleset, the audience and the password (`LobbyConfigure`); the others
+  read the settings in the lobby's state.
 - **Ratings.** Glicko-2 (1500, 350, 0.06, tau 0.5), one rating period per game, the deviation
   grown for idle days first; a draw is half a win; a null changes nothing.
 - **Admin.** Ban (with reason and expiry), unban, change an account's kind, stop a match (a null).
