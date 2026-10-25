@@ -2,6 +2,7 @@
 //! accounts to talk to it.
 #![allow(dead_code)]
 
+use rustls::pki_types::pem::PemObject;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -28,11 +29,42 @@ pub struct Env {
     pub url: String,
     pub tls: TlsConfig,
     pub dir: PathBuf,
+    pub cert_pem: String,
 }
 
 impl Env {
     pub fn db_path(&self) -> PathBuf {
         self.dir.join("radovid.db")
+    }
+
+    /// One raw HTTPS request on the service's port (`request` is the whole head and what follows),
+    /// and everything the service sent back until it closed.
+    pub fn https(&self, request: &[u8]) -> Vec<u8> {
+        use std::io::{BufReader, Read, Write};
+        use std::sync::Arc;
+        let addr = self.url.trim_start_matches("wss://");
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in rustls::pki_types::CertificateDer::pem_reader_iter(&mut BufReader::new(
+            self.cert_pem.as_bytes(),
+        )) {
+            roots.add(cert.expect("a certificate")).expect("a root");
+        }
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("versions")
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("localhost").expect("a name");
+        let connection = rustls::ClientConnection::new(Arc::new(config), name).expect("tls");
+        let tcp = std::net::TcpStream::connect(addr).expect("connect");
+        tcp.set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("timeout");
+        let mut stream = rustls::StreamOwned::new(connection, tcp);
+        let _ = stream.write_all(request);
+        let mut out = Vec::new();
+        let _ = stream.read_to_end(&mut out);
+        out
     }
 
     pub fn connect(&self) -> Client {
@@ -212,6 +244,7 @@ pub fn try_start(
     let dir = test_dir();
     let identity = self_signed();
     let mut config = Config {
+        web: None,
         listen: "127.0.0.1:0".parse().expect("address"),
         database: dir.join("radovid.db"),
         tls_cert: PathBuf::new(),
@@ -246,6 +279,7 @@ pub fn try_start(
     Ok(Env {
         url: format!("wss://127.0.0.1:{}", service.addr.port()),
         tls: TlsConfig::trust_pem(&identity.cert_pem).expect("trust"),
+        cert_pem: identity.cert_pem.clone(),
         runtime,
         service: Some(service),
         dir,

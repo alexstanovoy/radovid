@@ -7,6 +7,9 @@ tls_cert = "/etc/radovid/play-cert/fullchain.pem"
 tls_key = "/etc/radovid/play-cert/privkey.pem"   # refused if every user may read it
 game_ports = "20000-20100"                 # one host port per running match
 
+# [web]
+# static_dir = "/srv/radovid/page"          # a web client served on this origin, beside /control
+
 # bota's solo mid, one docker container per match. Its server speaks wss:// on 4456 inside the
 # container; plain TCP stays on the container's loopback.
 [[ruleset]]

@@ -3,10 +3,13 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use radovid_proto::*;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, watch};
 use tokio_rustls::TlsAcceptor;
@@ -21,13 +24,57 @@ use crate::db::Db;
 use crate::hub::HubHandle;
 use crate::password::Passwords;
 use crate::throttle::{LoginThrottle, Windowed, source};
+use crate::web;
 
 /// Seconds a peer has for the TLS and WebSocket handshakes.
 const HANDSHAKE_SECS: u64 = 10;
 /// Registrations per source address per hour at most.
 const REGISTRATIONS_PER_HOUR: u32 = 20;
 
-pub type Socket = WebSocketStream<TlsStream<TcpStream>>;
+/// What a connection speaks over: the TLS stream, with the bytes of the request head that were
+/// read first (to tell a page from the control socket) given back before the rest.
+pub struct Replayed {
+    head: Vec<u8>,
+    at: usize,
+    inner: TlsStream<TcpStream>,
+}
+
+impl AsyncRead for Replayed {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = &mut *self;
+        if this.at < this.head.len() {
+            let n = (this.head.len() - this.at).min(buf.remaining());
+            buf.put_slice(&this.head[this.at..this.at + n]);
+            this.at += n;
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut this.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Replayed {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, data)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+pub type Socket = WebSocketStream<Replayed>;
 
 /// The TLS configuration new connections get; a reload replaces it, and
 /// connections already up keep theirs.
@@ -187,8 +234,34 @@ async fn handle(
 ) {
     let _ = stream.set_nodelay(true);
     let deadline = Duration::from_secs(HANDSHAKE_SECS);
-    let Ok(Ok(tls)) = tokio::time::timeout(deadline, acceptor.accept(stream)).await else {
+    let Ok(Ok(mut tls)) = tokio::time::timeout(deadline, acceptor.accept(stream)).await else {
         return;
+    };
+    // With a directory of files to serve, the request head says whether this is the control socket
+    // or a page; without one every request is the socket's.
+    let mut head = Vec::new();
+    let mut guard = guard;
+    if let Some(web) = &shared.config.web {
+        let Ok(Ok(())) = tokio::time::timeout(deadline, read_head(&mut tls, &mut head)).await
+        else {
+            return;
+        };
+        match web::parse(&head) {
+            Some(request) if !request.upgrade => {
+                // A page is no login attempt: its place is free again at once.
+                guard.release();
+                let _ = web::serve(&mut tls, &web.static_dir, &request).await;
+                let _ = tls.shutdown().await;
+                return;
+            }
+            Some(_) => {}
+            None => return,
+        }
+    }
+    let tls = Replayed {
+        head,
+        at: 0,
+        inner: tls,
     };
     #[allow(clippy::result_large_err)] // the type tungstenite's callback fixes
     let callback = |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
@@ -214,4 +287,20 @@ async fn handle(
         return;
     };
     crate::control::run(ws, source, shared, guard).await;
+}
+
+/// Reads until the request head is complete (its blank line) or too long.
+async fn read_head(tls: &mut TlsStream<TcpStream>, head: &mut Vec<u8>) -> std::io::Result<()> {
+    let mut chunk = [0u8; 1024];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        if head.len() >= web::MAX_HEAD_LEN {
+            return Err(std::io::Error::other("a request head too long"));
+        }
+        let n = tls.read(&mut chunk).await?;
+        if n == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        head.extend_from_slice(&chunk[..n]);
+    }
+    Ok(())
 }

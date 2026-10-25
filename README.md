@@ -192,6 +192,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `database` | | the SQLite file (WAL; created `0600`) | |
 | `tls_cert`, `tls_key` | | PEM chain and key, reread on SIGHUP | a renewal |
 | `game_ports` | | `"first-last"` host ports, one per running match; at least `game_capacity` | |
+| `web.static_dir` | none | a directory of static files served read-only on the listener's own origin (`GET`/`HEAD`, no listings, nothing outside the directory, `index.html` at `/`, a `.br` or `.gz` sibling for clients that take it), so a page and the service share one URL | a client is a web page |
 | `max_connections` | `2048` | connections at once, logged in or not | the host has fewer file descriptors or more memory |
 | `server_name` | `radovid` | the name in `Welcome` | |
 | `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes (stored hashes keep theirs) | lower only for tests |
