@@ -34,8 +34,18 @@ pub struct Config {
     pub password: PasswordCost,
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// Files served on the listener's own origin, beside `/control`.
+    pub web: Option<WebConfig>,
     #[serde(rename = "ruleset")]
     pub rulesets: Vec<RulesetConfig>,
+}
+
+/// A directory of static files served read-only over the listener's TLS: a page and the service it
+/// talks to then share one URL.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct WebConfig {
+    pub static_dir: PathBuf,
 }
 
 fn default_max_connections() -> usize {
@@ -373,6 +383,14 @@ impl Config {
         }
         if self.max_connections == 0 {
             return Err("max_connections must be at least 1".to_owned());
+        }
+        if let Some(web) = &self.web
+            && !web.static_dir.is_dir()
+        {
+            return Err(format!(
+                "web.static_dir {} is no directory",
+                web.static_dir.display()
+            ));
         }
         self.validate_limits()?;
         for (i, ruleset) in self.rulesets.iter().enumerate() {

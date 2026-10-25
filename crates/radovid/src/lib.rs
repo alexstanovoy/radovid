@@ -16,3 +16,4 @@ mod supervisor;
 pub mod template;
 pub mod throttle;
 pub mod tls;
+mod web;
