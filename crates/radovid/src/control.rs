@@ -274,7 +274,7 @@ impl Conn {
         else {
             return self.bye(Error::Malformed).await;
         };
-        if proto != PROTO_VERSION {
+        if !(MIN_PROTO_VERSION..=PROTO_VERSION).contains(&proto) {
             self.send(&ServerMsg::Refused {
                 seq,
                 error: Error::ProtoMismatch {
@@ -289,8 +289,9 @@ impl Conn {
         }
         self.hello = Some(game_fingerprint);
         let config = &self.shared.config;
+        // The client is answered in its own version, which it checks.
         let welcome = Reply::Welcome {
-            proto: PROTO_VERSION,
+            proto,
             server: config.server_name.clone(),
             rulesets: config.ruleset_infos(AccountKind::Human),
         };

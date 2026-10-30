@@ -41,10 +41,13 @@ radovid         the service (library + binary)
 - **Lobbies.** Unrated games with an owner and a unique name. Ask the owner, or give the lobby's
   password and be in at once; press ready; the owner's ready starts a 5 s countdown nobody can
   cancel; the match then waits for a slot like any other. The owner leaving closes the lobby.
-  Slots are the ruleset's seats numbered team by team: a member chooses a free slot at once (`LobbySlot`),
-  the owner moves others, a member may hold none (a spectator, who stays out of the match), and a move
-  unreadies. The owner changes the ruleset, the audience and the password (`LobbyConfigure`); the others
-  read the settings in the lobby's state.
+  Slots are the service's `lobby_teams` numbered team by team (two teams of five unless set), the same for
+  every ruleset: a member chooses a free slot at once (`LobbySlot`), the owner moves others, a member may
+  hold none (a spectator, who stays out of the match), and a move unreadies. The owner changes the
+  ruleset, the audience and the password (`LobbyConfigure`); choosing a ruleset changes the rules and never
+  the slots. The match has exactly the members who hold a slot, none is added to fill the others; a ruleset
+  that takes fewer players on a team than are seated refuses the start (`TeamTooLarge`). The others read
+  the settings in the lobby's state.
 - **Ratings.** Glicko-2 (1500, 350, 0.06, tau 0.5), one rating period per game, the deviation
   grown for idle days first; a draw is half a win; a null changes nothing.
 - **Admin.** Ban (with reason and expiry), unban, change an account's kind, stop a match (a null).
@@ -215,7 +218,9 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `ruleset.info` | `""` | hex bytes shown to clients (the game's own meaning) | |
 | `ruleset.max_duration_secs` | `1800` | a match running longer is killed (a null) | longer games |
 | `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit, one number or per kind | |
-| `ruleset.lobby_min_players` | the seats | players a lobby needs before its host may start it (`LobbyReady`); fewer lets a host start alone, and the match has only the seats held (the game plays on with the sides it has) | |
+| `lobby_teams` | `[5, 5]` | the slots of every lobby: team sizes, numbered team by team, at most 10 seats | |
+| `ruleset.lobby_min_players` | `1` | players a lobby needs before its host may start it (`LobbyReady`); the match has only the seats held (the game plays on with the sides it has) | |
+| `ruleset.lobby_max_per_team` | the largest of `teams` | most players one team may seat when a lobby of the ruleset starts (`TeamTooLarge` past it) | |
 | `ruleset.audience` | `everyone` | `everyone`, `humans_only` or `bots_only`: who may queue and sit in lobbies here (`AudienceMismatch` otherwise); the others are not told the ruleset exists | |
 | `launcher.kind` | | `docker` (one container per match) or `local` (a child process, development) | |
 | `launcher.image`, `launcher.container_port` | | docker: the image, and the game's port inside it | |
@@ -244,8 +249,9 @@ Docker containers always run `--read-only`, `--cap-drop ALL`, `no-new-privileges
 `/control` speaks `radovid_proto`. One binary WebSocket message is one frame
 (`u32 LE length | postcard payload`): at most 64 KiB from a client, 4 MiB from the service.
 
-- The first message is `Hello { proto, game_fingerprint, client }`. The protocol version must match
-  exactly (`Error::ProtoMismatch`); the answer `Welcome` carries the ruleset catalog.
+- The first message is `Hello { proto, game_fingerprint, client }`. The protocol version must lie in
+  `MIN_PROTO_VERSION..=PROTO_VERSION` (else `Error::ProtoMismatch`; the older ones are served while changes are
+  appended fields and variants only); the answer `Welcome` carries the version asked and the ruleset catalog.
 - Every client frame has a `seq`; the service answers it with exactly one `Reply` or `Refused`, and
   sends `Event`s on its own. `Rulesets` and `Limits` are answered before login too.
 - A queue entry leads to `MatchProposed` (answer `MatchAccept` or `MatchDecline`),

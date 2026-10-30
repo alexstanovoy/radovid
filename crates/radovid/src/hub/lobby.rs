@@ -41,8 +41,19 @@ pub(super) struct Lobby {
 }
 
 impl Lobby {
+    /// The slot a newcomer takes: the lowest free one of the team with the fewest seated, the
+    /// lower team on a tie, so two players meet across the sides.
     fn lowest_free_slot(&self) -> Option<u8> {
-        (0..self.teams.len() as u8).find(|slot| self.members.iter().all(|m| m.slot != *slot))
+        let free = |slot: &u8| self.members.iter().all(|m| m.slot != *slot);
+        let seated = |team: u8| {
+            self.members
+                .iter()
+                .filter(|m| self.teams.get(usize::from(m.slot)) == Some(&team))
+                .count()
+        };
+        (0..self.teams.len() as u8)
+            .filter(free)
+            .min_by_key(|slot| (seated(self.teams[usize::from(*slot)]), *slot))
     }
 
     /// No slot is free to sit in (spectators hold none).
@@ -175,6 +186,7 @@ impl Hub {
                 .map(|a| self.member_view(a.account, 0, false, None, 0))
                 .collect(),
             starting_in_ms: lobby.starting.map(millis_until),
+            teams: self.config.lobby_teams.clone(),
         }
     }
 
@@ -244,7 +256,7 @@ impl Hub {
         let lobby = Lobby {
             id: lobby_id,
             name,
-            teams: (0..rules.seats()).map(|slot| rules.team_of(slot)).collect(),
+            teams: config.lobby_layout(),
             ruleset,
             owner: id,
             audience,
@@ -514,8 +526,8 @@ impl Hub {
         Ok(Reply::Done)
     }
 
-    /// The owner's settings of a lobby: the ruleset (its slots, its audience), who may sit, the
-    /// password. Everyone is unreadied, and a member whose slot the ruleset lacks loses it.
+    /// The owner's settings of a lobby: the ruleset (the rules only: the slots stay as they are),
+    /// who may sit, the password. Everyone is unreadied.
     fn lobby_configure(
         &mut self,
         id: AccountId,
@@ -550,16 +562,11 @@ impl Hub {
         }
         let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
         l.ruleset = ruleset;
-        l.teams = (0..rules.seats()).map(|slot| rules.team_of(slot)).collect();
         l.audience = audience;
         l.password = password;
         for member in &mut l.members {
             member.ready = false;
-            if usize::from(member.slot) >= l.teams.len() {
-                member.slot = LOBBY_NO_SLOT;
-            }
         }
-        l.members.sort_by_key(|m| m.slot);
         self.broadcast_lobby(lobby, None);
         Ok(Reply::Done)
     }
@@ -567,11 +574,12 @@ impl Hub {
     fn lobby_ready(&mut self, id: AccountId, lobby: LobbyId, ready: bool) -> Result<Reply, Error> {
         self.member_of(id, lobby)?;
         self.not_starting(lobby)?;
-        let needed = self
+        let rules = self
             .lobbies
             .get(&lobby)
-            .and_then(|l| self.config.ruleset(&l.ruleset))
-            .map_or(usize::MAX, |rules| usize::from(rules.lobby_min_players()));
+            .and_then(|l| self.config.ruleset(&l.ruleset));
+        let needed = rules.map_or(usize::MAX, |rules| usize::from(rules.lobby_min_players()));
+        let per_team = rules.map_or(0, |rules| usize::from(rules.lobby_max_per_team()));
         let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
         let starts = l.owner == id && ready;
         if starts {
@@ -583,6 +591,17 @@ impl Hub {
                     .any(|m| m.account == id && m.slot == LOBBY_NO_SLOT)
             {
                 return Err(Error::LobbyNotFull);
+            }
+            // The slots do not follow the ruleset, so the rules say how many a team may seat.
+            let mut on_team =
+                vec![0_usize; l.teams.iter().max().map_or(0, |t| usize::from(*t) + 1)];
+            for member in seated.clone() {
+                if let Some(team) = l.teams.get(usize::from(member.slot)) {
+                    on_team[usize::from(*team)] += 1;
+                }
+            }
+            if on_team.iter().any(|n| *n > per_team) {
+                return Err(Error::TeamTooLarge);
             }
             if seated.into_iter().any(|m| m.account != id && !m.ready) {
                 return Err(Error::NotAllReady);

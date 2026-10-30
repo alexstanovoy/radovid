@@ -96,10 +96,12 @@ pub enum Error {
     NoArtifact,
     /// The lobby's slot is taken by another member.
     SlotTaken,
-    /// The lobby's ruleset has no such slot.
+    /// The lobby's slot does not exist.
     NoSuchSlot,
     /// This service keeps no artifact of any match (`[artifacts] save_replays` is off).
     ArtifactsNotKept,
+    /// The lobby's ruleset takes fewer players on one team than are seated there.
+    TeamTooLarge,
 }
 
 impl core::fmt::Display for Error {

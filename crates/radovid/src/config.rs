@@ -36,6 +36,10 @@ pub struct Config {
     pub limits: LimitsConfig,
     #[serde(default)]
     pub artifacts: ArtifactsConfig,
+    /// The slots of every lobby, whatever its ruleset: team sizes, numbered team by team. A ruleset
+    /// chosen for a lobby changes the rules and never this layout.
+    #[serde(default = "default_lobby_teams")]
+    pub lobby_teams: Vec<u8>,
     /// Files served on the listener's own origin, beside `/control`.
     pub web: Option<WebConfig>,
     #[serde(rename = "ruleset")]
@@ -58,6 +62,10 @@ pub struct ArtifactsConfig {
 #[serde(deny_unknown_fields)]
 pub struct WebConfig {
     pub static_dir: PathBuf,
+}
+
+fn default_lobby_teams() -> Vec<u8> {
+    vec![5, 5]
 }
 
 fn default_max_connections() -> usize {
@@ -209,12 +217,16 @@ pub struct RulesetConfig {
     /// Who may queue and sit in lobbies here; the others are not even told of the ruleset.
     #[serde(default)]
     pub audience: AudienceConfig,
-    /// Players a lobby needs before its host may start it; the seats when absent. Fewer lets a
-    /// host start alone: the match has the seats held, the others stay empty.
+    /// Players a lobby needs before its host may start it; one when absent. The match has
+    /// exactly the seats held: the others stay empty, nothing fills them.
     pub lobby_min_players: Option<u8>,
     /// Who may fetch a finished match's artifact (its replay).
     #[serde(default)]
     pub artifact_access: ArtifactAccess,
+    /// Most players one team may seat when a lobby of this ruleset starts; the largest of `teams`
+    /// when absent. The lobby's slots do not depend on the ruleset, so a game that plays more per
+    /// side than its queue pairs says so here.
+    pub lobby_max_per_team: Option<u8>,
     pub launcher: LauncherConfig,
 }
 
@@ -393,8 +405,13 @@ impl RulesetConfig {
 
     /// Players a lobby of this ruleset needs before its host starts it.
     pub fn lobby_min_players(&self) -> u8 {
-        self.lobby_min_players
-            .unwrap_or_else(|| u8::try_from(self.seats()).unwrap_or(u8::MAX))
+        self.lobby_min_players.unwrap_or(1)
+    }
+
+    /// Most players one team may seat when a lobby of this ruleset starts.
+    pub fn lobby_max_per_team(&self) -> u8 {
+        self.lobby_max_per_team
+            .unwrap_or_else(|| self.teams.iter().copied().max().unwrap_or(1))
     }
 
     /// Whether an account of `kind` may queue and sit in lobbies here.
@@ -429,11 +446,37 @@ impl Config {
             ));
         }
         self.validate_limits()?;
+        self.validate_lobby()?;
         for (i, ruleset) in self.rulesets.iter().enumerate() {
             if self.rulesets[..i].iter().any(|r| r.id == ruleset.id) {
                 return Err(format!("ruleset {} is configured twice", ruleset.id));
             }
             validate_ruleset(ruleset).map_err(|e| format!("ruleset {}: {e}", ruleset.id))?;
+        }
+        Ok(())
+    }
+
+    /// The lobby's layout, and what each ruleset asks of it.
+    fn validate_lobby(&self) -> Result<(), String> {
+        let seats: usize = self.lobby_teams.iter().map(|&n| usize::from(n)).sum();
+        if self.lobby_teams.len() < 2 || self.lobby_teams.contains(&0) || seats > MAX_SEATS {
+            return Err(format!(
+                "lobby_teams needs two or more teams of at least one, {MAX_SEATS} seats at most"
+            ));
+        }
+        for ruleset in &self.rulesets {
+            let asks = [
+                ("lobby_min_players", ruleset.lobby_min_players),
+                ("lobby_max_per_team", ruleset.lobby_max_per_team),
+            ];
+            for (key, value) in asks {
+                if value.is_some_and(|n| usize::from(n) > seats) {
+                    return Err(format!(
+                        "ruleset {}: {key} is at most the lobby's {seats} seats",
+                        ruleset.id
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -478,6 +521,15 @@ impl Config {
             ));
         }
         Ok(())
+    }
+
+    /// The team of each slot of a lobby.
+    pub fn lobby_layout(&self) -> Vec<u8> {
+        self.lobby_teams
+            .iter()
+            .enumerate()
+            .flat_map(|(team, &size)| std::iter::repeat_n(team as u8, usize::from(size)))
+            .collect()
     }
 
     pub fn ruleset(&self, id: &RulesetId) -> Option<&RulesetConfig> {
@@ -527,11 +579,8 @@ fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {
             "needs two or more teams of at least one, {MAX_SEATS} seats at most"
         ));
     }
-    if ruleset
-        .lobby_min_players
-        .is_some_and(|n| n == 0 || usize::from(n) > ruleset.seats())
-    {
-        return Err("lobby_min_players is 1 to the number of seats".to_owned());
+    if ruleset.lobby_min_players == Some(0) || ruleset.lobby_max_per_team == Some(0) {
+        return Err("lobby_min_players and lobby_max_per_team are at least 1".to_owned());
     }
     if ruleset.rated && ruleset.teams != [1, 1] {
         return Err("a rated ruleset is two teams of one: teams = [1, 1]".to_owned());

@@ -286,6 +286,9 @@ pub struct LobbyState {
     /// Join requests awaiting the owner; slot, team and ready mean nothing there.
     pub pending: Vec<LobbyMember>,
     pub starting_in_ms: Option<u32>,
+    /// The lobby's slots: the size of each team, slots numbered team by team. The service's, the
+    /// same for every ruleset.
+    pub teams: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

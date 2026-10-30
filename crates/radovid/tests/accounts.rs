@@ -324,6 +324,16 @@ fn connections_past_the_limit_are_closed_and_their_places_come_back() {
 #[test]
 fn another_protocol_version_is_refused_and_another_game_wire_cannot_play() {
     let env = start(rules());
+    // The previous version is still served, the one before it is not.
+    Client::connect_as(&env.url, &env.tls, MIN_PROTO_VERSION, FINGERPRINT)
+        .expect("the oldest version served");
+    let error = refused(Client::connect_as(
+        &env.url,
+        &env.tls,
+        MIN_PROTO_VERSION - 1,
+        FINGERPRINT,
+    ));
+    assert!(matches!(error, Error::ProtoMismatch { .. }), "{error:?}");
     let error = refused(Client::connect_as(
         &env.url,
         &env.tls,

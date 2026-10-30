@@ -273,6 +273,7 @@ field LobbyState 6 locked: bool
 field LobbyState 7 members: Vec<LobbyMember>
 field LobbyState 8 pending: Vec<LobbyMember>
 field LobbyState 9 starting_in_ms: Option<u32>
+field LobbyState 10 teams: Vec<u8>
 field LobbySummary 0 id: LobbyId
 field LobbySummary 1 name: String
 field LobbySummary 2 ruleset: RulesetId
@@ -399,3 +400,4 @@ newtype SessionToken [u8; 32]
 newtype Ticket [u8; 32]
 newtype UnixMs u64
 variant Error 49 ArtifactsNotKept
+variant Error 50 TeamTooLarge
