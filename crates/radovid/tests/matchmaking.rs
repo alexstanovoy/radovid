@@ -423,6 +423,8 @@ fn draws_count_half_and_a_crash_or_a_match_nobody_came_to_counts_nothing() {
     for (behaviour, reason) in [
         ("crash", EndReason::Crashed),
         ("badteam", EndReason::Crashed),
+        // A version of the line this radovid does not know is refused, not guessed at.
+        ("futureversion", EndReason::Crashed),
         ("abandon", EndReason::Abandoned),
     ] {
         let env = start(rules(behaviour));
@@ -696,6 +698,17 @@ fn a_finished_matchs_artifact_goes_to_its_seats_in_chunks() {
         Err(Error::NoArtifact)
     ));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A game of a newer contract that only adds fields to its `RESULT` line is still read.
+#[test]
+fn a_result_line_with_fields_of_a_newer_game_is_read() {
+    let env = start(rules("future"));
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = b.wait_result();
+    assert_eq!(result.outcome, Outcome::Winner { team: 1 });
+    assert_eq!(result.reason, EndReason::Decided);
 }
 
 /// The artifact is served once the game process has exited and its files are closed, not when

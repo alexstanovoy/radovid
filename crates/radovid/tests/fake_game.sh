@@ -37,6 +37,8 @@ case $behaviour in
     leave0) echo "RESULT winner=1 duration_ms=1234 report=$report left=0" ;;
     badleave) echo "RESULT winner=0 duration_ms=1234 report=$report left=0" ;;
     draw) echo "RESULT winner=draw duration_ms=1234 report=$report" ;;
+    future) echo "RESULT winner=1 duration_ms=1234 report=$report replay=truncated later=a_field_of_a_newer_game" ;;
+    futureversion) echo "RESULT winner=1 duration_ms=1234 report=$report v=2" ;;
     badteam) echo "RESULT winner=5 duration_ms=1234 report=$report" ;;
     noisy)
         printf 'a line that is no UTF-8: \377\376\n' >&2
