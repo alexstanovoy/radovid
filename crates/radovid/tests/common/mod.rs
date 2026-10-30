@@ -169,6 +169,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
         lobby_min_players: None,
         artifact_access: Default::default(),
         lobby_max_per_team: None,
+        instant_solo: false,
         launcher: LauncherConfig {
             kind: LauncherKind::Local,
             binary: Some(fake_game()),

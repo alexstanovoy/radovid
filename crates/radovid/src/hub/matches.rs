@@ -4,11 +4,12 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use radovid_proto::*;
 use tokio::sync::oneshot;
 
-use super::{Hub, internal};
+use super::{Hub, SessionId, internal};
 use crate::config::RulesetConfig;
 use crate::db::{Finish, NewSeat, now_ms};
 use crate::supervisor::End;
@@ -49,6 +50,32 @@ pub(super) struct MatchState {
 }
 
 impl Hub {
+    /// Starts a match of an `instant_solo` ruleset for one account alone: the same limits as a
+    /// lobby game, and it counts among the lobby games, but no lobby, no readiness and no
+    /// countdown. The match waits for a game slot like any other.
+    pub(super) async fn start_solo(
+        &mut self,
+        session: SessionId,
+        id: AccountId,
+        ruleset: RulesetId,
+    ) -> Result<Reply, Error> {
+        let config = Arc::clone(&self.config);
+        let rules = config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?;
+        if !rules.instant_solo {
+            return Err(Error::NoSoloStart);
+        }
+        self.admit_game(session, rules)?;
+        let source = self
+            .sessions
+            .get(&session)
+            .map(|s| s.source)
+            .ok_or(Error::NotLoggedIn)?;
+        self.form_match(rules, true, vec![(id, source)], None)
+            .await?;
+        self.try_launch();
+        Ok(Reply::Done)
+    }
+
     /// Records a match with its seats in slot order and puts it at the end of
     /// the slot queue; the caller then calls `try_launch`.
     pub(super) async fn form_match(

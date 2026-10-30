@@ -102,6 +102,8 @@ pub enum Error {
     ArtifactsNotKept,
     /// The lobby's ruleset takes fewer players on one team than are seated there.
     TeamTooLarge,
+    /// The ruleset does not start for one account alone (`instant_solo` in its configuration).
+    NoSoloStart,
 }
 
 impl core::fmt::Display for Error {

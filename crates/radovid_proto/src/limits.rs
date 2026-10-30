@@ -1,7 +1,7 @@
 //! Limits both sides hold.
 
 /// The version of every wire type here. Bumped on every change of any of them.
-pub const PROTO_VERSION: u16 = 8;
+pub const PROTO_VERSION: u16 = 9;
 
 /// The oldest version a server still serves: a client of it keeps working while the changes since
 /// are only appended fields and variants (postcard leaves trailing bytes of a message unread).

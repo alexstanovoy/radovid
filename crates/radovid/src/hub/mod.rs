@@ -511,6 +511,7 @@ impl Hub {
                 self.admin_set_kind(id, account, kind).await
             }
             ClientMsg::AdminStopMatch { match_id } => self.admin_stop(id, match_id).await,
+            ClientMsg::StartSolo { ruleset } => self.start_solo(session, id, ruleset).await,
             lobby => self.lobby_request(session, id, lobby).await,
         }
     }
