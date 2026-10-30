@@ -166,6 +166,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
         games_per_account: None,
         audience: Default::default(),
         lobby_min_players: None,
+        artifact_access: Default::default(),
         launcher: LauncherConfig {
             kind: LauncherKind::Local,
             binary: Some(fake_game()),
@@ -187,6 +188,8 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
             env: [("GAME_SEATS".to_owned(), "{seats}".to_owned())].into(),
             start_timeout_secs: 30,
             artifact: None,
+            artifact_args: Vec::new(),
+            artifact_env: Default::default(),
         },
     }
 }
@@ -204,6 +207,7 @@ pub fn test_limits() -> LimitsConfig {
         queue_capacity: 256,
         artifact_retention_days: 14,
         artifact_cap_mib: 2048,
+        artifact_max_mib: 64,
     }
 }
 
@@ -261,6 +265,7 @@ pub fn try_start(
             ..PasswordCost::default()
         },
         limits: test_limits(),
+        artifacts: Default::default(),
         rulesets,
     };
     adjust(&mut config);

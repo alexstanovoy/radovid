@@ -34,10 +34,22 @@ pub struct Config {
     pub password: PasswordCost,
     #[serde(default)]
     pub limits: LimitsConfig,
+    #[serde(default)]
+    pub artifacts: ArtifactsConfig,
     /// Files served on the listener's own origin, beside `/control`.
     pub web: Option<WebConfig>,
     #[serde(rename = "ruleset")]
     pub rulesets: Vec<RulesetConfig>,
+}
+
+/// What the service keeps of the matches it hosts besides their results.
+#[derive(Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct ArtifactsConfig {
+    /// Whether a match's artifact (the file its game leaves, a replay) is kept and served. Off,
+    /// the game is not asked to write one (the launcher's `artifact_args` and `artifact_env`
+    /// are left out) and a fetch is answered `ArtifactsNotKept`.
+    pub save_replays: bool,
 }
 
 /// A directory of static files served read-only over the listener's TLS: a page and the service it
@@ -148,6 +160,9 @@ pub struct LimitsConfig {
     /// take: older and then the oldest go first.
     pub artifact_retention_days: u32,
     pub artifact_cap_mib: u32,
+    /// The most bytes (MiB) one artifact may have: a larger file is never served, and a docker
+    /// game cannot write more.
+    pub artifact_max_mib: u32,
 }
 
 impl Default for LimitsConfig {
@@ -162,6 +177,7 @@ impl Default for LimitsConfig {
             queue_capacity: 256,
             artifact_retention_days: 14,
             artifact_cap_mib: 2048,
+            artifact_max_mib: 64,
         }
     }
 }
@@ -196,7 +212,21 @@ pub struct RulesetConfig {
     /// Players a lobby needs before its host may start it; the seats when absent. Fewer lets a
     /// host start alone: the match has the seats held, the others stay empty.
     pub lobby_min_players: Option<u8>,
+    /// Who may fetch a finished match's artifact (its replay).
+    #[serde(default)]
+    pub artifact_access: ArtifactAccess,
     pub launcher: LauncherConfig,
+}
+
+/// Who may fetch the artifact of a finished match.
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactAccess {
+    /// The accounts that sat in the match.
+    #[default]
+    Seats,
+    /// Every account the ruleset's audience admits, as Dota lets anyone watch a match by its id.
+    Audience,
 }
 
 /// A ruleset's audience as the configuration spells it.
@@ -270,6 +300,12 @@ pub struct LauncherConfig {
     /// Where the game leaves the match's replay, as seen by radovid: an absolute path whose file
     /// name holds `{match_id}` (a docker game's mounted directory). Seats of the match fetch it.
     pub artifact: Option<String>,
+    /// Arguments added to `args` only when artifacts are kept: where `{artifact}` is allowed.
+    #[serde(default)]
+    pub artifact_args: Vec<String>,
+    /// Environment added to `env` only when artifacts are kept: where `{artifact}` is allowed.
+    #[serde(default)]
+    pub artifact_env: BTreeMap<String, String>,
 }
 
 fn default_start_timeout() -> u64 {
@@ -427,6 +463,13 @@ impl Config {
                     .to_owned(),
             );
         }
+        if !(1..=1024).contains(&limits.artifact_max_mib)
+            || limits.artifact_max_mib > limits.artifact_cap_mib
+        {
+            return Err(
+                "limits.artifact_max_mib must be 1 to 1024 and at most artifact_cap_mib".to_owned(),
+            );
+        }
         if self.game_ports.count() < limits.game_capacity as usize {
             return Err(format!(
                 "game_ports holds {} ports for a game_capacity of {}",
@@ -547,15 +590,35 @@ loopback host, or set insecure_plaintext = true for a network you trust",
         ));
     }
     let artifact = launcher.artifact.is_some();
-    for arg in &launcher.args {
-        template::check_with(arg, seats, false, artifact).map_err(|e| format!("args: {e}"))?;
+    if !artifact && (!launcher.artifact_args.is_empty() || !launcher.artifact_env.is_empty()) {
+        return Err("artifact_args and artifact_env need launcher.artifact".to_owned());
     }
-    for (name, value) in &launcher.env {
-        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            return Err(format!("env name {name:?} is not [A-Za-z0-9_]"));
+    let hint = |e: String| {
+        if e.contains("{artifact}") {
+            format!(
+                "{e} (artifact_args and artifact_env carry it: they are left out when artifacts are not kept)"
+            )
+        } else {
+            e
         }
-        template::check_with(value, seats, true, artifact)
-            .map_err(|e| format!("env {name}: {e}"))?;
+    };
+    for arg in &launcher.args {
+        template::check(arg, seats, false).map_err(|e| format!("args: {}", hint(e)))?;
+    }
+    for arg in &launcher.artifact_args {
+        template::check_with(arg, seats, false, true).map_err(|e| format!("artifact_args: {e}"))?;
+    }
+    for (group, vars, artifact_ok) in [
+        ("env", &launcher.env, false),
+        ("artifact_env", &launcher.artifact_env, true),
+    ] {
+        for (name, value) in vars {
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                return Err(format!("{group} name {name:?} is not [A-Za-z0-9_]"));
+            }
+            template::check_with(value, seats, true, artifact_ok)
+                .map_err(|e| format!("{group} {name}: {}", hint(e)))?;
+        }
     }
     Ok(())
 }

@@ -20,9 +20,8 @@ pub use lines::{GameResult, Line, LineReader};
 const LABEL: &str = "radovid.match";
 /// How long a version probe may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
-/// Where a docker game sees its artifact file, and the most bytes it may write there.
+/// Where a docker game sees its artifact file.
 const ARTIFACT_IN_CONTAINER: &str = "/artifact";
-const MAX_ARTIFACT_BYTES: u64 = 64 << 20;
 /// Lines of a game server's stderr logged at most, and their length.
 const STDERR_LINES: usize = 200;
 const STDERR_LINE_LEN: usize = 300;
@@ -32,6 +31,8 @@ pub struct LaunchSpec {
     pub match_id: MatchId,
     pub port: u16,
     pub seats: Vec<SeatSpec>,
+    /// The most bytes a game may leave as its artifact; none when artifacts are not kept.
+    pub artifact_max: Option<u64>,
 }
 
 /// A running game server.
@@ -87,14 +88,18 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
         seats: &spec.seats,
         artifact: seen_by_game.as_deref(),
     };
+    // What only a kept artifact needs the game to be told is left out when none is kept.
+    let kept = host_artifact.is_some();
     let args: Vec<String> = launcher
         .args
         .iter()
+        .chain(launcher.artifact_args.iter().filter(|_| kept))
         .map(|a| template::expand(a, &vars))
         .collect();
     let env: Vec<(&String, String)> = launcher
         .env
         .iter()
+        .chain(launcher.artifact_env.iter().filter(|_| kept))
         .map(|(name, value)| (name, template::expand(value, &vars)))
         .collect();
     let (mut command, container) = match launcher.kind {
@@ -148,6 +153,9 @@ fn prepare_artifact(
     spec: &LaunchSpec,
 ) -> std::io::Result<Option<std::path::PathBuf>> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    if spec.artifact_max.is_none() {
+        return Ok(None);
+    }
     let Some(template) = ruleset
         .launcher
         .artifact
@@ -236,10 +244,11 @@ fn docker_run_args(
             "--volume".to_owned(),
             format!("{}:{ARTIFACT_IN_CONTAINER}:rw", file.display()),
             "--ulimit".to_owned(),
-            format!("fsize={MAX_ARTIFACT_BYTES}:{MAX_ARTIFACT_BYTES}"),
+            format!("fsize={0}:{0}", spec.artifact_max.unwrap_or_default()),
         ]);
     }
-    for name in launcher.env.keys() {
+    let artifact_env = launcher.artifact_env.keys().filter(|_| artifact.is_some());
+    for name in launcher.env.keys().chain(artifact_env) {
         run.extend(["--env".to_owned(), name.clone()]);
     }
     run.push(launcher.image.clone().unwrap_or_default());

@@ -4,6 +4,7 @@ use radovid_proto::*;
 
 use super::matches::Phase;
 use super::{Hub, internal};
+use crate::config::ArtifactAccess;
 use crate::db::{Ban, now_ms};
 use crate::supervisor::End;
 
@@ -54,28 +55,38 @@ impl Hub {
         Ok(Reply::Matches { list })
     }
 
-    /// A piece of the replay a finished match left, for an account that sat in it.
+    /// A piece of the replay a finished match left, for an account that sat in it (or, where the
+    /// ruleset says so, any account its audience admits).
     pub(super) async fn match_artifact(
         &mut self,
         id: AccountId,
         match_id: MatchId,
         offset: u64,
     ) -> Result<Reply, Error> {
+        if !self.config.artifacts.save_replays {
+            return Err(Error::ArtifactsNotKept);
+        }
         let (ruleset, accounts) = self
             .db
             .finished_match_seats(match_id)
             .await
             .map_err(internal)?
             .ok_or(Error::NoArtifact)?;
-        let template = self
-            .config
-            .ruleset(&ruleset)
-            .and_then(|r| r.launcher.artifact.as_deref())
+        let kind = self.accounts.get(&id).map(|a| a.info.kind);
+        let config = self.config.ruleset(&ruleset).ok_or(Error::NoArtifact)?;
+        let allowed = accounts.contains(&id)
+            || (config.artifact_access == ArtifactAccess::Audience
+                && kind.is_some_and(|kind| config.admits(kind)));
+        let template = config
+            .launcher
+            .artifact
+            .as_deref()
             .and_then(|t| crate::artifacts::Template::parse(t).ok())
-            .filter(|_| accounts.contains(&id))
+            .filter(|_| allowed)
             .ok_or(Error::NoArtifact)?;
+        let max_len = u64::from(self.config.limits.artifact_max_mib) << 20;
         let (total, data) = tokio::task::spawn_blocking(move || {
-            crate::artifacts::read_chunk(&template, match_id, offset)
+            crate::artifacts::read_chunk(&template, match_id, offset, max_len)
         })
         .await
         .map_err(internal)?

@@ -398,3 +398,4 @@ variant ServerMsg 2 Event(Event)
 newtype SessionToken [u8; 32]
 newtype Ticket [u8; 32]
 newtype UnixMs u64
+variant Error 49 ArtifactsNotKept

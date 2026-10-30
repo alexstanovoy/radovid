@@ -79,6 +79,11 @@ impl Hub {
             match_id,
             port,
             seats,
+            artifact_max: self
+                .config
+                .artifacts
+                .save_replays
+                .then(|| u64::from(self.config.limits.artifact_max_mib) << 20),
         };
         let vars = Vars {
             match_id,

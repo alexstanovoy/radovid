@@ -91,12 +91,15 @@ pub enum Error {
     ProposalExpired,
     BadLobbyPassword,
     LobbyNameTaken,
-    /// The match has no artifact: not finished, none made, already pruned, or not the caller's.
+    /// The match has no artifact: not finished, none made, already pruned, too large, or not the
+    /// caller's.
     NoArtifact,
     /// The lobby's slot is taken by another member.
     SlotTaken,
     /// The lobby's ruleset has no such slot.
     NoSuchSlot,
+    /// This service keeps no artifact of any match (`[artifacts] save_replays` is off).
+    ArtifactsNotKept,
 }
 
 impl core::fmt::Display for Error {

@@ -19,6 +19,10 @@ esac
 echo "an ignored line"
 echo READY
 sleep "$delay"
+# A game told where to leave its replay does.
+if [ -n "${GAME_ARTIFACT:-}" ]; then
+    printf 'replay of %s' "$match_id" > "$GAME_ARTIFACT"
+fi
 case $behaviour in
     team0) echo "RESULT winner=0 duration_ms=1234 report=$report" ;;
     team1) echo "RESULT winner=1 duration_ms=1234 report=$report" ;;
