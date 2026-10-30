@@ -1,11 +1,22 @@
 //! What a game server says on stdout: `READY`, then one
-//! `RESULT winner=<team>|draw duration_ms=<n> report=<hex> [left=<slot>]`. Every other line
+//! `RESULT winner=<team>|draw duration_ms=<n> report=<hex> [<key>=<value>]...`. Every other line
 //! is ignored; a line longer than any `RESULT` can be is skipped whole.
+//!
+//! The first three fields are fixed and in this order. The rest are `key=value` fields in any
+//! order, each key once: `left=<slot>`, `replay=truncated`, `v=<n>`. A key radovid does not know
+//! is skipped, so a game may add facts without breaking the radovid that reads it; a game that
+//! changes what a field means says so with `v=<n>` (absent: 1), and a radovid that knows only
+//! older versions refuses the line (README "Launcher contract").
 
 use radovid_proto::MAX_GAME_REPORT_LEN;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::config::decode_hex;
+
+/// The newest `RESULT` version this radovid reads.
+const RESULT_VERSION: u16 = 1;
+/// The most fields after the report: a line cannot make the parser do unbounded work.
+const MAX_EXTRA_FIELDS: usize = 16;
 
 /// The longest line read: a `RESULT` with the largest report.
 const MAX_LINE: usize = 2 * MAX_GAME_REPORT_LEN + 128;
@@ -28,6 +39,8 @@ pub struct GameResult {
     pub report: Vec<u8>,
     /// The slot of a player who left the match for good: the other team won by it.
     pub left: Option<u8>,
+    /// The game says its artifact was closed short of the match's end (a size limit).
+    pub artifact_truncated: bool,
 }
 
 /// Reads lines of bounded length.
@@ -105,17 +118,65 @@ fn parse_result(rest: &str) -> Option<GameResult> {
     };
     let duration_ms = fields.next()?.strip_prefix("duration_ms=")?.parse().ok()?;
     let report = decode_hex(fields.next()?.strip_prefix("report=")?)?;
-    let left = match fields.next() {
-        None => None,
-        Some(field) => Some(field.strip_prefix("left=")?.parse().ok()?),
-    };
-    if fields.next().is_some() || report.len() > MAX_GAME_REPORT_LEN {
+    if report.len() > MAX_GAME_REPORT_LEN {
         return None;
     }
-    Some(GameResult {
+    let mut result = GameResult {
         winner,
         duration_ms,
         report,
-        left,
-    })
+        left: None,
+        artifact_truncated: false,
+    };
+    let mut seen = Vec::new();
+    for (count, field) in fields.enumerate() {
+        let (key, value) = field.split_once('=').filter(|(key, _)| !key.is_empty())?;
+        if count >= MAX_EXTRA_FIELDS || seen.contains(&key) {
+            return None;
+        }
+        seen.push(key);
+        match key {
+            "left" => result.left = Some(value.parse().ok()?),
+            "replay" => result.artifact_truncated = value == "truncated",
+            "v" if value.parse::<u16>().ok()? > RESULT_VERSION => return None,
+            _ => {}
+        }
+    }
+    Some(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(extra: &str) -> Option<GameResult> {
+        parse_result(&format!("winner=1 duration_ms=5 report=0aff{extra}"))
+    }
+
+    /// The contract in README "Launcher contract": old lines parse, new fields are skipped,
+    /// a newer version or a damaged field is refused.
+    #[test]
+    fn a_result_line_reads_old_and_future_games_and_refuses_what_it_cannot_know() {
+        let old = parsed("").expect("a line of the first games");
+        assert_eq!(
+            (old.winner, old.report, old.left),
+            (Some(1), vec![10, 255], None)
+        );
+        assert_eq!(parsed(" left=1").expect("left").left, Some(1));
+        let newer = parsed(" replay=truncated future=whatever left=0 v=1").expect("skipped");
+        assert!(newer.artifact_truncated && newer.left == Some(0));
+        for bad in [
+            " v=2",
+            " left",
+            " =x",
+            " left=0 left=1",
+            " left=x",
+            " v=x",
+            "  ",
+        ] {
+            assert!(parsed(bad).is_none(), "{bad:?} is refused");
+        }
+        let many = (0..=MAX_EXTRA_FIELDS).fold(String::new(), |s, i| format!("{s} k{i}=1"));
+        assert!(parsed(&many).is_none(), "an endless tail is refused");
+    }
 }

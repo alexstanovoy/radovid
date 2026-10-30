@@ -104,6 +104,12 @@ impl Supervisor {
                     .is_none_or(|team| usize::from(team) < self.ruleset.teams.len())
                     && self.leaver_lost(&result) =>
             {
+                if result.artifact_truncated {
+                    eprintln!(
+                        "radovid: match {} left a truncated artifact (the game closed it short)",
+                        self.match_id.0
+                    );
+                }
                 End::Result(result)
             }
             Line::Result(result) => End::Crashed(format!(

@@ -74,10 +74,18 @@ Any game can be launched that honours this, a shell script included:
 2. The game prints a line `READY` once players may connect. Until then radovid tells them nothing;
    no `READY` within `start_timeout_secs` is a crash.
 3. When the match is over the game prints one line
-   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex> [left=<slot>]` and exits 0. `report` is up to
-   64 KiB of the game's own bytes, stored and forwarded to clients untouched. `left=<slot>` names a
-   player who left the match for good (the game's own rule): `winner` must then be another team's;
-   the match is rated, ends as `Left`, and nothing else is held against the leaver.
+   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex> [<key>=<value>]...` and exits 0, within
+   10 seconds (it is killed after that; the match counts as the line says). `report` is up to
+   64 KiB of the game's own bytes, stored and forwarded to clients untouched. The first three fields are
+   fixed, in this order; the others are `key=value` fields in any order, each key at most once, at most 16:
+   - `left=<slot>` names a player who left the match for good (the game's own rule): `winner` must then be
+     another team's; the match is rated, ends as `Left`, and nothing else is held against the leaver.
+   - `replay=truncated`: the game closed its artifact short of the match's end (a size limit); radovid logs it.
+   - `v=<n>`: the version of the line, absent for 1. A game that only adds fields leaves it alone, since
+     radovid skips keys it does not know; a game that changes what a field means raises it, and a radovid
+     that knows only older versions treats the line as malformed (a crash). Lines of older games parse as before.
+   radovid tells the hub (the seats, the rating) and serves the match's artifact only after the game process
+   has exited, so a game may finish writing its files after printing `RESULT`.
 4. Exit code 3 without `RESULT` means abandoned (nobody came, or everybody left); any other exit
    without `RESULT`, or a malformed one, means crashed. Both are null: nothing is rated. A match
    running past `max_duration_secs`, or stopped by an admin or the shutdown, is killed: stopped,
