@@ -48,6 +48,7 @@ teams = [1, 1]
 rated = true
 lobby_max_per_team = 5                     # a lobby of it may seat five a side: the slots are the service's, not the ruleset's
 # lobby_min_players = 1                    # a lobby starts with its host alone by default (the empty seats stay empty)
+max_duration_secs = 1800                   # a match running longer is killed (a null); absent: 7200, room for a long one of any game
 # audience = "everyone"                    # or "humans_only" / "bots_only"
 
 [ruleset.launcher]
@@ -70,3 +71,17 @@ env = { BOTA_SEATS = "{seats}" }           # tickets go into the environment onl
 # `ArtifactsNotKept`.
 artifact = "/var/lib/radovid/replays/replay-{match_id}.brp"
 artifact_args = ["--replay", "{artifact}"]
+
+# A full-map team game (5v5) runs 60 to 90 minutes and more, and its replay is large (about 80 MB at the hour): the
+# ruleset sets its own time limit and artifact size, and bota_server keeps its replay under that size (it reads the
+# container's file size limit, so the replay is closed whole before the limit).
+# [[ruleset]]
+# id = "full_5v5"
+# name = "5x5"
+# game = "bota"
+# game_fingerprint = "0123456789abcdef"
+# teams = [5, 5]
+# rated = false
+# max_duration_secs = 10800                # three hours
+# artifact_max_mib = 256                   # the most one replay may have; the container's `--ulimit fsize`
+# [ruleset.launcher]                       # the same as solo_mid's, with the full map: args without "--map", "2" and "--heroes"

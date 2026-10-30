@@ -828,17 +828,16 @@ fn the_artifact_placeholder_belongs_to_the_arguments_that_are_left_out_when_not_
     assert!(error.contains("artifact_args"), "{error}");
 }
 
-/// A file past `limits.artifact_max_mib` is never served, one at the cap is, and a link in
+/// A file past the ruleset's `artifact_max_mib` is never served, one at the cap is, and a link in
 /// the file's place is no file.
 #[test]
 fn an_artifact_past_the_size_cap_or_a_link_is_not_served() {
     let dir = artifact_dir("artifact-cap");
     let mut rules = rules("team0");
     rules[0].launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
-    let env = start_configured(rules, |config| {
-        config.artifacts.save_replays = true;
-        config.limits.artifact_max_mib = 1;
-    });
+    // The ruleset's own cap rules, not the service-wide one (64 MiB here).
+    rules[0].artifact_max_mib = Some(1);
+    let env = keeping(rules);
     let (mut a, _b, match_id, file) = finished_match(&env, &dir, |env, name| env.bot(name));
     let cap = 1 << 20;
     std::fs::write(&file, vec![7u8; cap + 1]).expect("replay");

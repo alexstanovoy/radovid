@@ -84,7 +84,7 @@ impl Hub {
             .and_then(|t| crate::artifacts::Template::parse(t).ok())
             .filter(|_| allowed)
             .ok_or(Error::NoArtifact)?;
-        let max_len = u64::from(self.config.limits.artifact_max_mib) << 20;
+        let max_len = config.artifact_max_bytes(&self.config.limits);
         let (total, data) = tokio::task::spawn_blocking(move || {
             crate::artifacts::read_chunk(&template, match_id, offset, max_len)
         })
