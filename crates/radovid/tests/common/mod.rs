@@ -163,6 +163,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
         rated,
         info: vec![1, 2, 3],
         max_duration_secs: 600,
+        artifact_max_mib: None,
         games_per_account: None,
         audience: Default::default(),
         lobby_min_players: None,

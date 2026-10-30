@@ -209,9 +209,13 @@ pub struct RulesetConfig {
     /// Hex bytes shown to clients as `RulesetInfo.info`.
     #[serde(default, deserialize_with = "hex_bytes")]
     pub info: Vec<u8>,
-    /// A match still running after this long is stopped (a null).
+    /// A match still running after this long is stopped (a null). Absent: [`DEFAULT_MAX_DURATION_SECS`],
+    /// room for a long match of any game; a ruleset of short matches sets its own.
     #[serde(default = "default_max_duration")]
     pub max_duration_secs: u64,
+    /// The most MiB one artifact of this ruleset may have; absent: `limits.artifact_max_mib`.
+    /// A docker game cannot write more (`--ulimit fsize`), a longer file is never served.
+    pub artifact_max_mib: Option<u32>,
     /// Overrides `[limits] games_per_account` for this ruleset.
     pub games_per_account: Option<PerKindOrBoth>,
     /// Who may queue and sit in lobbies here; the others are not even told of the ruleset.
@@ -261,8 +265,11 @@ impl From<AudienceConfig> for Audience {
     }
 }
 
+/// Two hours: a long match of any game fits, while a stuck game still frees its port.
+pub const DEFAULT_MAX_DURATION_SECS: u64 = 7200;
+
 fn default_max_duration() -> u64 {
-    1800
+    DEFAULT_MAX_DURATION_SECS
 }
 
 /// How a ruleset's game servers are started: a local process or a docker
@@ -366,6 +373,11 @@ impl RulesetConfig {
         RulesetId(self.id.clone())
     }
 
+    /// The most bytes one artifact of this ruleset may have.
+    pub fn artifact_max_bytes(&self, limits: &LimitsConfig) -> u64 {
+        u64::from(self.artifact_max_mib.unwrap_or(limits.artifact_max_mib)) << 20
+    }
+
     pub fn seats(&self) -> usize {
         self.teams.iter().map(|&n| usize::from(n)).sum()
     }
@@ -452,6 +464,14 @@ impl Config {
                 return Err(format!("ruleset {} is configured twice", ruleset.id));
             }
             validate_ruleset(ruleset).map_err(|e| format!("ruleset {}: {e}", ruleset.id))?;
+            if ruleset.artifact_max_bytes(&self.limits)
+                > u64::from(self.limits.artifact_cap_mib) << 20
+            {
+                return Err(format!(
+                    "ruleset {}: artifact_max_mib is over limits.artifact_cap_mib",
+                    ruleset.id
+                ));
+            }
         }
         Ok(())
     }
@@ -588,6 +608,12 @@ fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {
     if ruleset.info.len() > MAX_RULESET_INFO_LEN {
         return Err(format!("info is over {MAX_RULESET_INFO_LEN} bytes"));
     }
+    if ruleset
+        .artifact_max_mib
+        .is_some_and(|mib| !(1..=1024).contains(&mib))
+    {
+        return Err("artifact_max_mib must be 1 to 1024".to_owned());
+    }
     if ruleset.max_duration_secs == 0 {
         return Err("max_duration_secs must be at least 1".to_owned());
     }
@@ -699,5 +725,27 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../radovid.example.toml");
         let config = Config::load(&path).expect("radovid.example.toml");
         assert_eq!(config.limits, LimitsConfig::default());
+    }
+
+    /// A ruleset that does not say how long its matches may last is given room for a long one
+    /// (Dota's run 60 to 90 minutes and more), not a half-hour cut.
+    #[test]
+    fn a_ruleset_without_a_time_limit_gets_room_for_a_long_match() {
+        let ruleset: RulesetConfig = toml::from_str(
+            r#"id = "x"
+name = "X"
+game = "g"
+game_fingerprint = "0123456789abcdef"
+teams = [1, 1]
+rated = false
+[launcher]
+kind = "local"
+binary = "/bin/true"
+public_url = "wss://x.example:{port}"
+"#,
+        )
+        .expect("a ruleset");
+        assert_eq!(ruleset.max_duration_secs, DEFAULT_MAX_DURATION_SECS);
+        assert!(ruleset.max_duration_secs >= 2 * 60 * 60);
     }
 }

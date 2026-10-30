@@ -83,7 +83,7 @@ impl Hub {
                 .config
                 .artifacts
                 .save_replays
-                .then(|| u64::from(self.config.limits.artifact_max_mib) << 20),
+                .then(|| ruleset.artifact_max_bytes(&self.config.limits)),
         };
         let vars = Vars {
             match_id,
