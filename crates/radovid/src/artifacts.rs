@@ -56,14 +56,30 @@ impl Template {
 }
 
 /// Up to `MAX_ARTIFACT_CHUNK` bytes of the match's file from `offset`, and the file's length;
-/// `None` when there is no such regular file.
-pub fn read_chunk(template: &Template, match_id: MatchId, offset: u64) -> Option<(u64, Vec<u8>)> {
-    let mut file = std::fs::File::open(template.path(match_id)).ok()?;
+/// `None` when there is no such regular file (a link is none: the game that writes the file
+/// could otherwise point it at any file radovid may read) or when it is longer than `max_len`.
+pub fn read_chunk(
+    template: &Template,
+    match_id: MatchId,
+    offset: u64,
+    max_len: u64,
+) -> Option<(u64, Vec<u8>)> {
+    use std::os::unix::fs::MetadataExt;
+    let path = template.path(match_id);
+    let linked = std::fs::symlink_metadata(&path).ok()?;
+    let mut file = std::fs::File::open(&path).ok()?;
     let meta = file.metadata().ok()?;
-    if !meta.is_file() {
+    // The file opened is the one inspected: a link swapped in between is another inode.
+    if !linked.is_file()
+        || !meta.is_file()
+        || (linked.dev(), linked.ino()) != (meta.dev(), meta.ino())
+    {
         return None;
     }
     let total = meta.len();
+    if total > max_len {
+        return None;
+    }
     let mut data = Vec::new();
     if offset < total {
         file.seek(SeekFrom::Start(offset)).ok()?;

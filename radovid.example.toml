@@ -7,6 +7,9 @@ tls_cert = "/etc/radovid/play-cert/fullchain.pem"
 tls_key = "/etc/radovid/play-cert/privkey.pem"   # refused if every user may read it
 game_ports = "20000-20100"                 # one host port per running match
 
+# [artifacts]
+# save_replays = false                     # keep and serve each match's artifact (its replay); off by default
+
 # [web]
 # static_dir = "/srv/radovid/page"          # a web client served on this origin, beside /control
 
@@ -32,10 +35,13 @@ version_probe = ["--wire-fingerprint"]
 # --heroes 1: the pool is Shadow Fiend alone, a forced pick (each seat is given it, ready: nobody chooses)
 args = ["--map", "2", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
         "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
-        "--heroes", "1", "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300",
-        "--replay", "{artifact}"]
+        "--heroes", "1", "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300"]
 env = { BOTA_SEATS = "{seats}" }           # tickets go into the environment only; each seat is ticket:team:name:kind (bot|human, the account's own)
 
-# The replay of each match, kept for its seats: radovid makes the file and mounts just that one writable at
-# /artifact in the container; the game writes it where `{artifact}` says.
+# The replay of each match, kept for its seats when `[artifacts] save_replays = true` (off unless set): radovid
+# makes the file and mounts just that one writable at /artifact in the container, and adds `artifact_args` and
+# `artifact_env` (the only places `{artifact}` is allowed) to the game's command line and environment so that the
+# game writes it where `{artifact}` says. With saving off the game is not told, and a fetch is answered
+# `ArtifactsNotKept`.
 artifact = "/var/lib/radovid/replays/replay-{match_id}.brp"
+artifact_args = ["--replay", "{artifact}"]

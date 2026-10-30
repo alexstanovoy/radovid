@@ -37,11 +37,10 @@ echo "RESULT winner=0 duration_ms=1 report=$report"
     launcher.container_port = Some(4456);
     launcher.mounts = vec![format!("{}:/game.sh:ro", script.display())];
     launcher.env.clear();
-    launcher.args = ["/bin/sh", "/game.sh", "{artifact}"]
-        .map(str::to_owned)
-        .to_vec();
+    launcher.args = ["/bin/sh", "/game.sh"].map(str::to_owned).to_vec();
+    launcher.artifact_args = vec!["{artifact}".to_owned()];
     launcher.artifact = Some(format!("{}/replays/replay-{{match_id}}.brp", dir.display()));
-    let env = start(rules);
+    let env = start_configured(rules, |config| config.artifacts.save_replays = true);
     let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
     pair_up(&mut a, &mut b, &solo());
     let result = a.wait_result();

@@ -154,10 +154,10 @@ public_url = "ws://127.0.0.1:{port}"
 version_probe = ["--wire-fingerprint"]
 args = ["--map", "2", "--match-id", "{match_id}", "--bind", "127.0.0.1", "--port", "0",
         "--ws-port", "{port}", "--heroes", "1", "--start-after-secs", "60",
-        "--abandon-unjoined", "--empty-after-secs", "120",
-        "--replay", "{artifact}"]
+        "--abandon-unjoined", "--empty-after-secs", "120"]
 env = { BOTA_SEATS = "{seats}" }
 artifact = "/abs/dev/replays/replay-{match_id}.brp"    # the game writes it ({artifact}); seats fetch it after the match
+artifact_args = ["--replay", "{artifact}"]             # added to args only with [artifacts] save_replays = true
 ```
 
 ```sh
@@ -224,8 +224,11 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `launcher.insecure_plaintext` | `false` | allow a non-`wss://` `public_url` to another host | a trusted network without TLS |
 | `launcher.args`, `launcher.env` | `[]`, `{}` | the game's command line and environment; tickets only in `env` | |
 | `launcher.version_probe` | `[]` | arguments that make the game print its wire fingerprint and exit; checked at start | always, when the game has one |
-| `launcher.artifact` | none | an absolute path whose file name holds `{match_id}`: the replay the game leaves for a match. radovid creates the empty file before the game starts and passes its path as `{artifact}` (in `args` and `env` values); a docker container gets exactly that file, writable at `/artifact` (at most 64 MiB, `--ulimit fsize`), and the rest of it stays read-only. Keep the directory above it closed to other users: the file is world-writable so the container's user can open it. The seats of the finished match fetch it in chunks (`MatchArtifact`) | the game records matches |
+| `launcher.artifact` | none | an absolute path whose file name holds `{match_id}`: the replay the game leaves for a match. radovid creates the empty file before the game starts and passes its path as `{artifact}` (in `args` and `env` values); a docker container gets exactly that file, writable at `/artifact` (at most `limits.artifact_max_mib`, `--ulimit fsize`), and the rest of it stays read-only. Keep the directory above it closed to other users: the file is world-writable so the container's user can open it. `{artifact}` is allowed only in `artifact_args` and `artifact_env`, which are added to `args` and `env` when `artifacts.save_replays` is on and left out when it is off. The seats of the finished match fetch it in chunks (`MatchArtifact`; of any match that ended, lost, left or abandoned ones included, once the game wrote a file); a file that is a link, or longer than `limits.artifact_max_mib`, is never served | the game records matches |
+| `ruleset.artifact_access` | `seats` | `seats`: only the accounts that sat in the match fetch its artifact; `audience`: also every account the ruleset's `audience` admits (a replay anyone may watch by the match's id) | public replays |
+| `artifacts.save_replays` | `false` | whether matches' artifacts are kept and served at all. Off, no game is asked to write one (`artifact_args` and `artifact_env` are left out, no file is made) and `MatchArtifact` is answered `ArtifactsNotKept`; on, the behaviour of `launcher.artifact` above | a deployment that keeps replays |
 | `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the size cap, are deleted (hourly) | the disk is smaller or replays matter longer |
+| `limits.artifact_max_mib` | `64` | the most one artifact may have: a docker game cannot write more, and a longer file is not served (`NoArtifact`); at most `artifact_cap_mib` | longer matches |
 | `launcher.start_timeout_secs` | `60` | from launch to the game's `READY` | slow-starting games |
 | `launcher.memory`, `cpus`, `pids_limit` | `512m`, `1`, `256` | docker limits per container | heavier games |
 | `launcher.network` | docker's bridge | the container's network | a network without egress |

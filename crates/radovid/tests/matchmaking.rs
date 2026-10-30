@@ -660,7 +660,7 @@ fn a_finished_matchs_artifact_goes_to_its_seats_in_chunks() {
     std::fs::create_dir_all(&dir).expect("dir");
     let mut rules = rules("team0");
     rules[0].launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
-    let env = start(rules);
+    let env = keeping(rules);
     let (mut a, mut b, mut c) = (env.bot("alpha"), env.bot("beta"), env.bot("gamma"));
     pair_up(&mut a, &mut b, &solo());
     let result = a.wait_result();
@@ -695,6 +695,161 @@ fn a_finished_matchs_artifact_goes_to_its_seats_in_chunks() {
         }),
         Err(Error::NoArtifact)
     ));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Plays a match of `rules[0]` between two accounts made by `make`, and gives the folder its
+/// replay goes to and the match's id.
+fn finished_match(
+    env: &Env,
+    dir: &std::path::Path,
+    make: impl Fn(&Env, &str) -> Account,
+) -> (Account, Account, MatchId, std::path::PathBuf) {
+    let (mut a, mut b) = (make(env, "alpha"), make(env, "beta"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = a.wait_result();
+    let file = dir.join(format!("replay-{}.brp", result.match_id.0));
+    (a, b, result.match_id, file)
+}
+
+/// A service that keeps the artifacts of its matches.
+fn keeping(rules: Vec<radovid::config::RulesetConfig>) -> Env {
+    start_configured(rules, |config| config.artifacts.save_replays = true)
+}
+
+fn artifact_dir(what: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("radovid-{what}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("dir");
+    dir
+}
+
+fn fetch_artifact(who: &mut Account, match_id: MatchId) -> Result<Reply, Error> {
+    who.ask(ClientMsg::MatchArtifact {
+        match_id,
+        offset: 0,
+    })
+}
+
+/// A match that crashed, was abandoned or was left keeps its replay for its seats as well: the
+/// game wrote what it had.
+#[test]
+fn the_replay_of_a_lost_abandoned_or_left_match_is_served_too() {
+    let dir = artifact_dir("artifact-lost");
+    for behaviour in ["crash", "abandon", "leave0"] {
+        let mut rules = rules(behaviour);
+        rules[0].launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+        let env = keeping(rules);
+        let (mut a, _b, match_id, file) = finished_match(&env, &dir, |env, name| env.bot(name));
+        std::fs::write(&file, behaviour).expect("replay");
+        let Ok(Reply::Artifact { data, .. }) = fetch_artifact(&mut a, match_id) else {
+            panic!("{behaviour}: the replay is served");
+        };
+        assert_eq!(data, behaviour.as_bytes());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `[artifacts] save_replays` decides whether a game is asked to leave a replay at all: on, it
+/// is told where (`artifact_args`, `artifact_env`) and its seats fetch what it wrote; off
+/// (the default), it is told nothing, no file is made, and a fetch is answered "not kept".
+#[test]
+fn replays_are_asked_for_kept_and_served_only_when_the_service_saves_them() {
+    for saving in [true, false] {
+        let dir = artifact_dir(if saving { "save-on" } else { "save-off" });
+        let mut rules = rules("team0");
+        let launcher = &mut rules[0].launcher;
+        launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+        launcher
+            .artifact_env
+            .insert("GAME_ARTIFACT".to_owned(), "{artifact}".to_owned());
+        launcher.artifact_args = vec!["{artifact}".to_owned()];
+        let env = start_configured(rules, |config| config.artifacts.save_replays = saving);
+        let (mut a, _b, match_id, file) = finished_match(&env, &dir, |env, name| env.bot(name));
+        let fetched = fetch_artifact(&mut a, match_id);
+        if saving {
+            let Ok(Reply::Artifact { data, .. }) = fetched else {
+                panic!("a kept replay is served: {fetched:?}");
+            };
+            assert_eq!(data, format!("replay of {}", match_id.0).as_bytes());
+        } else {
+            assert_eq!(fetched.err(), Some(Error::ArtifactsNotKept));
+            assert!(!file.exists(), "the game was not asked to write one");
+            assert_eq!(std::fs::read_dir(&dir).expect("dir").count(), 0);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A launcher that names `{artifact}` among the arguments every launch gets would be started
+/// with an empty one when replays are not kept: the configuration is refused.
+#[test]
+fn the_artifact_placeholder_belongs_to_the_arguments_that_are_left_out_when_not_kept() {
+    let mut rules = rules("team0");
+    rules[0].launcher.artifact = Some("/tmp/replay-{match_id}.brp".to_owned());
+    rules[0].launcher.args.push("{artifact}".to_owned());
+    let error = try_start(rules, |_| {}).err().expect("refused");
+    assert!(error.contains("artifact_args"), "{error}");
+}
+
+/// A file past `limits.artifact_max_mib` is never served, one at the cap is, and a link in
+/// the file's place is no file.
+#[test]
+fn an_artifact_past_the_size_cap_or_a_link_is_not_served() {
+    let dir = artifact_dir("artifact-cap");
+    let mut rules = rules("team0");
+    rules[0].launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+    let env = start_configured(rules, |config| {
+        config.artifacts.save_replays = true;
+        config.limits.artifact_max_mib = 1;
+    });
+    let (mut a, _b, match_id, file) = finished_match(&env, &dir, |env, name| env.bot(name));
+    let cap = 1 << 20;
+    std::fs::write(&file, vec![7u8; cap + 1]).expect("replay");
+    assert_eq!(
+        fetch_artifact(&mut a, match_id).err(),
+        Some(Error::NoArtifact),
+        "one byte over the cap"
+    );
+    std::fs::write(&file, vec![7u8; cap]).expect("replay");
+    let Ok(Reply::Artifact { total, data, .. }) = fetch_artifact(&mut a, match_id) else {
+        panic!("a file at the cap is served");
+    };
+    assert_eq!((total, data.len()), (cap as u64, cap));
+    let secret = dir.join("secret.txt");
+    std::fs::write(&secret, "not a replay").expect("secret");
+    std::fs::remove_file(&file).expect("remove");
+    std::os::unix::fs::symlink(&secret, &file).expect("link");
+    assert_eq!(
+        fetch_artifact(&mut a, match_id).err(),
+        Some(Error::NoArtifact),
+        "a link is no replay"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A ruleset that opens its replays to its audience serves any account the audience admits, and
+/// still not one it does not.
+#[test]
+fn a_ruleset_can_open_its_replays_to_its_audience() {
+    let dir = artifact_dir("artifact-audience");
+    let mut rules = rules("team0");
+    rules[0].launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+    rules[0].artifact_access = radovid::config::ArtifactAccess::Audience;
+    rules[0].audience = radovid::config::AudienceConfig::HumansOnly;
+    let env = keeping(rules);
+    let (_a, _b, match_id, file) = finished_match(&env, &dir, |env, name| env.human(name));
+    std::fs::write(&file, b"replay").expect("replay");
+    let mut onlooker = env.human("gamma");
+    let Ok(Reply::Artifact { data, .. }) = fetch_artifact(&mut onlooker, match_id) else {
+        panic!("a human is in the audience");
+    };
+    assert_eq!(data, b"replay");
+    let mut bot = env.bot("delta");
+    assert_eq!(
+        fetch_artifact(&mut bot, match_id).err(),
+        Some(Error::NoArtifact),
+        "a bot is outside the audience"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
