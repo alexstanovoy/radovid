@@ -20,6 +20,14 @@ echo "an ignored line"
 echo READY
 sleep "$delay"
 # A game told where to leave its replay does.
+if [ "$behaviour" = slowfile ]; then
+    # The result first, then the replay in two parts with a pause between, then the exit.
+    printf 'replay of %s' "$match_id" > "$GAME_ARTIFACT"
+    echo "RESULT winner=0 duration_ms=1234 report=$report"
+    sleep 2
+    printf ' and its end' >> "$GAME_ARTIFACT"
+    exit 0
+fi
 if [ -n "${GAME_ARTIFACT:-}" ]; then
     printf 'replay of %s' "$match_id" > "$GAME_ARTIFACT"
 fi
