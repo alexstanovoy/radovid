@@ -12,7 +12,7 @@ use crate::hub::Cmd;
 use crate::launcher::{self, GameProcess, GameResult, LaunchSpec, Line};
 
 /// How long a game server has to exit after its result, or after its stdout
-/// closed, before it is killed.
+/// closed, before it is killed. The result is told, and the artifact served, after the exit.
 const EXIT_GRACE: Duration = Duration::from_secs(10);
 /// The exit code of a game nobody played: nobody came, or everybody left.
 const EXIT_ABANDONED: i32 = 3;
@@ -47,11 +47,11 @@ impl Supervisor {
             }
             Ok(mut game) => {
                 let end = self.attend(&mut game, &mut stop).await;
-                let over = matches!(end, End::Result(_));
-                if !over {
+                if !matches!(end, End::Result(_)) {
                     game.kill().await;
                 }
-                let _ = self.hub.send(Cmd::MatchEnded { match_id, end }).await;
+                // The hub hears of the end, and the seats may fetch the artifact, only once the
+                // process is gone and so its files are closed.
                 if tokio::time::timeout(EXIT_GRACE, game.exited())
                     .await
                     .is_err()
@@ -59,6 +59,7 @@ impl Supervisor {
                     game.kill().await;
                     game.exited().await;
                 }
+                let _ = self.hub.send(Cmd::MatchEnded { match_id, end }).await;
             }
         }
         // The port is free only once the game server is gone.

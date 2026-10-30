@@ -698,6 +698,30 @@ fn a_finished_matchs_artifact_goes_to_its_seats_in_chunks() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The artifact is served once the game process has exited and its files are closed, not when
+/// its `RESULT` line is read: a game that goes on writing after the line has the whole file
+/// served, never a part of it.
+#[test]
+fn an_artifact_is_served_only_after_the_game_has_exited() {
+    let dir = artifact_dir("artifact-slow");
+    let mut rules = rules("slowfile");
+    let launcher = &mut rules[0].launcher;
+    launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+    launcher
+        .artifact_env
+        .insert("GAME_ARTIFACT".to_owned(), "{artifact}".to_owned());
+    let env = keeping(rules);
+    let (mut a, _b, match_id, _) = finished_match(&env, &dir, |env, name| env.bot(name));
+    let Ok(Reply::Artifact { data, .. }) = fetch_artifact(&mut a, match_id) else {
+        panic!("the artifact is served");
+    };
+    assert_eq!(
+        data,
+        format!("replay of {} and its end", match_id.0).as_bytes()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Plays a match of `rules[0]` between two accounts made by `make`, and gives the folder its
 /// replay goes to and the match's id.
 fn finished_match(
