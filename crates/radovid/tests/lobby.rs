@@ -451,6 +451,27 @@ fn a_host_starts_a_lobby_alone_unless_the_ruleset_asks_for_more() {
     assert_eq!(result.seats.len(), 1, "one seat held");
 }
 
+/// A ruleset that starts for one account alone: StartSolo makes the match at once, with no lobby
+/// and no countdown, and the one seat held; a ruleset that does not start so refuses it.
+#[test]
+fn an_instant_solo_ruleset_starts_for_one_account_at_once() {
+    let mut demo = ruleset("demo", false, "team0", "0.3");
+    demo.instant_solo = true;
+    let env = start(vec![demo, ruleset("fun", false, "team0", "0.3")]);
+    let mut player = env.human("olga");
+    assert_eq!(
+        player.ask(ClientMsg::StartSolo { ruleset: fun() }),
+        Err(Error::NoSoloStart)
+    );
+    player.expect_done(ClientMsg::StartSolo {
+        ruleset: RulesetId("demo".to_owned()),
+    });
+    let handoff = player.wait_match_found();
+    assert_eq!((handoff.slot, handoff.seats.len()), (0, 1));
+    let result = player.wait_result();
+    assert!(!result.rated, "a solo start is unrated");
+}
+
 fn lobby_in(owner: &mut Account, ruleset: &str, name: &str) -> LobbyState {
     match owner.ask(ClientMsg::LobbyCreate {
         ruleset: RulesetId(ruleset.to_owned()),

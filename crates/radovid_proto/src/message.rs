@@ -177,6 +177,12 @@ pub enum ClientMsg {
         audience: Audience,
         password: Option<Secret>,
     },
+    /// Starts a match of a ruleset that lets one account play alone (`instant_solo` in its configuration) at
+    /// once: no queue, no lobby, no countdown. The answer is `Done`; the match then comes as it
+    /// does from a lobby (`MatchQueued` while it waits for a game slot, `MatchFound`).
+    StartSolo {
+        ruleset: RulesetId,
+    },
 }
 
 /// The answer to a request that succeeded.

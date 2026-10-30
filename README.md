@@ -233,6 +233,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `lobby_teams` | `[5, 5]` | the slots of every lobby: team sizes, numbered team by team, at most 10 seats | |
 | `ruleset.lobby_min_players` | `1` | players a lobby needs before its host may start it (`LobbyReady`); the match has only the seats held (the game plays on with the sides it has) | |
 | `ruleset.lobby_max_per_team` | the largest of `teams` | most players one team may seat when a lobby of the ruleset starts (`TeamTooLarge` past it) | |
+| `ruleset.instant_solo` | `false` | one account may start a match alone at once (`StartSolo`): no queue, lobby or countdown; unrated only | a demo or practice ruleset |
 | `ruleset.audience` | `everyone` | `everyone`, `humans_only` or `bots_only`: who may queue and sit in lobbies here (`AudienceMismatch` otherwise); the others are not told the ruleset exists | |
 | `launcher.kind` | | `docker` (one container per match) or `local` (a child process, development) | |
 | `launcher.image`, `launcher.container_port` | | docker: the image, and the game's port inside it | |
@@ -255,6 +256,16 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 
 Docker containers always run `--read-only`, `--cap-drop ALL`, `no-new-privileges`, labelled
 `radovid.match`, environment passed by name only (`--env NAME`).
+
+### A ruleset for one player (a demo or practice game)
+
+`instant_solo = true` lets one account start a match of the ruleset alone, at once: `StartSolo` makes the match with no
+queue, no lobby and no countdown (the ruleset is unrated; the one seat is slot 0 and the game server is told only
+that seat). The match then waits for a game slot like any other and comes as `MatchQueued` and `MatchFound`.
+`radovid.example.toml` has such a `demo` ruleset: `audience = "humans_only"`, cheats on in the game's own arguments, no
+replay. What tells a client it is a demo is the game's business, put in `info` (here bota's one flag byte, which radovid
+does not read). Such a match counts among the lobby games (`lobby_games_max`) and, while it runs, among `game_capacity`,
+so a service that offers one sizes both for it.
 
 ## Protocol
 

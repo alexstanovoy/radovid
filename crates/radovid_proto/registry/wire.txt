@@ -122,6 +122,8 @@ field ClientMsg::LobbyConfigure 0 lobby: LobbyId
 field ClientMsg::LobbyConfigure 1 ruleset: RulesetId
 field ClientMsg::LobbyConfigure 2 audience: Audience
 field ClientMsg::LobbyConfigure 3 password: Option<Secret>
+variant ClientMsg 35 StartSolo {}
+field ClientMsg::StartSolo 0 ruleset: RulesetId
 variant EndReason 0 Decided
 variant EndReason 1 Draw
 variant EndReason 2 Abandoned
@@ -401,3 +403,4 @@ newtype Ticket [u8; 32]
 newtype UnixMs u64
 variant Error 49 ArtifactsNotKept
 variant Error 50 TeamTooLarge
+variant Error 51 NoSoloStart

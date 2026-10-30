@@ -231,6 +231,10 @@ pub struct RulesetConfig {
     /// when absent. The lobby's slots do not depend on the ruleset, so a game that plays more per
     /// side than its queue pairs says so here.
     pub lobby_max_per_team: Option<u8>,
+    /// One account may start a match of it alone at once (`StartSolo`): no queue, no lobby, no
+    /// countdown. For a demo or practice ruleset: unrated, and the game server is told one seat.
+    #[serde(default)]
+    pub instant_solo: bool,
     pub launcher: LauncherConfig,
 }
 
@@ -601,6 +605,9 @@ fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {
     }
     if ruleset.lobby_min_players == Some(0) || ruleset.lobby_max_per_team == Some(0) {
         return Err("lobby_min_players and lobby_max_per_team are at least 1".to_owned());
+    }
+    if ruleset.instant_solo && ruleset.rated {
+        return Err("an instant_solo ruleset is unrated".to_owned());
     }
     if ruleset.rated && ruleset.teams != [1, 1] {
         return Err("a rated ruleset is two teams of one: teams = [1, 1]".to_owned());
