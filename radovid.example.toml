@@ -13,6 +13,30 @@ game_ports = "20000-20100"                 # one host port per running match
 # [web]
 # static_dir = "/srv/radovid/page"          # a web client served on this origin, beside /control
 
+# bota's full game: the first ruleset is the default of a lobby. Ten slots, five a side, for
+# lobbies only (not rated, no queue); a lobby starts with the players it has.
+[[ruleset]]
+id = "full"
+name = "Full rules"
+game = "bota"
+game_fingerprint = "0123456789abcdef"
+teams = [5, 5]
+rated = false
+
+[ruleset.launcher]
+kind = "docker"
+image = "bota_server:7f6489e"
+container_port = 4456
+public_url = "wss://game.example.org:{port}"
+mounts = ["/etc/radovid/game-cert:/certs:ro"]
+version_probe = ["--wire-fingerprint"]
+args = ["--map", "0", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
+        "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
+        "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300"]
+env = { BOTA_SEATS = "{seats}" }
+artifact = "/var/lib/radovid/replays/replay-{match_id}.brp"
+artifact_args = ["--replay", "{artifact}"]
+
 # bota's solo mid, one docker container per match. Its server speaks wss:// on 4456 inside the
 # container; plain TCP stays on the container's loopback.
 [[ruleset]]
@@ -22,7 +46,8 @@ game = "bota"
 game_fingerprint = "0123456789abcdef"      # what `bota_server --wire-fingerprint` prints
 teams = [1, 1]
 rated = true
-# lobby_min_players = 1                    # a lobby may start with its host alone (the empty seats stay empty)
+lobby_max_per_team = 5                     # a lobby of it may seat five a side: the slots are the service's, not the ruleset's
+# lobby_min_players = 1                    # a lobby starts with its host alone by default (the empty seats stay empty)
 # audience = "everyone"                    # or "humans_only" / "bots_only"
 
 [ruleset.launcher]

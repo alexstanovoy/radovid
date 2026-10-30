@@ -167,6 +167,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
         audience: Default::default(),
         lobby_min_players: None,
         artifact_access: Default::default(),
+        lobby_max_per_team: None,
         launcher: LauncherConfig {
             kind: LauncherKind::Local,
             binary: Some(fake_game()),
@@ -266,6 +267,7 @@ pub fn try_start(
         },
         limits: test_limits(),
         artifacts: Default::default(),
+        lobby_teams: vec![5, 5],
         rulesets,
     };
     adjust(&mut config);

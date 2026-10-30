@@ -10,10 +10,14 @@ use common::*;
 use radovid_client::proto::*;
 
 fn rules() -> Vec<radovid::config::RulesetConfig> {
-    vec![
-        ruleset("solo", true, "team1", "0.3"),
-        ruleset("fun", false, "team0", "0.3"),
-    ]
+    let mut fun = ruleset("fun", false, "team0", "0.3");
+    fun.lobby_min_players = Some(2);
+    vec![ruleset("solo", true, "team1", "0.3"), fun]
+}
+
+/// A service whose lobbies have two slots, one for each side, so that they fill up.
+fn start_small() -> Env {
+    start_configured(rules(), |config| config.lobby_teams = vec![1, 1])
 }
 
 fn fun() -> RulesetId {
@@ -83,7 +87,7 @@ fn a_lobby_fills_kicks_counts_down_and_starts_an_unrated_match() {
             list[0].members,
             list[0].seats
         ),
-        (1, "olga", 1, 2)
+        (1, "olga", 1, 10)
     );
     assert_eq!(
         guest.ask(ClientMsg::LobbyAsk {
@@ -203,7 +207,7 @@ fn a_lobby_fills_kicks_counts_down_and_starts_an_unrated_match() {
 
 #[test]
 fn a_password_lets_in_at_once_and_names_are_unique() {
-    let env = start(rules());
+    let env = start_small();
     let mut owner = env.account("olga", AccountKind::Human);
     let mut friend = env.account("fritz", AccountKind::Human);
     let mut stranger = env.account("sam", AccountKind::Human);
@@ -302,7 +306,7 @@ fn a_member_who_drops_during_the_countdown_is_still_in_the_match() {
 
 #[test]
 fn the_owner_leaving_closes_the_lobby_and_audiences_are_kept() {
-    let env = start(rules());
+    let env = start_small();
     let mut owner = env.account("olga", AccountKind::Human);
     let mut bot = env.bot("gus");
     let mut human = env.account("hugo", AccountKind::Human);
@@ -394,14 +398,14 @@ fn the_owner_leaving_closes_the_lobby_and_audiences_are_kept() {
     assert_eq!(logged.activities, Activities::default());
 }
 
-/// A ruleset that lets a lobby start with fewer players than seats: its host starts alone, the
-/// match has the one seat held and the others stay empty; one that does not, still waits
-/// for a full lobby.
+/// A lobby starts with the players it has unless its ruleset asks for more: its host starts
+/// alone, the match has the one seat held and the others stay empty, nothing fills them.
 #[test]
-fn a_host_starts_a_lobby_alone_where_the_ruleset_allows_it() {
-    let mut alone = ruleset("alone", false, "team0", "0.3");
-    alone.lobby_min_players = Some(1);
-    let env = start(vec![alone, ruleset("fun", false, "team0", "0.3")]);
+fn a_host_starts_a_lobby_alone_unless_the_ruleset_asks_for_more() {
+    let alone = ruleset("alone", false, "team0", "0.3");
+    let mut crowd = ruleset("fun", false, "team0", "0.3");
+    crowd.lobby_min_players = Some(2);
+    let env = start(vec![alone, crowd]);
     let mut owner = env.human("olga");
     let Ok(Reply::Rulesets { list }) = owner.ask(ClientMsg::Rulesets) else {
         panic!("rulesets");
@@ -485,13 +489,14 @@ fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
     join(&mut owner, &mut guest, lobby);
     join(&mut owner, &mut watcher, lobby);
 
-    // Slots 0 and 1 are Radiant's, 2 and 3 Dire's: the guest goes to Dire's second.
+    // Slots 0 to 4 are Radiant's, 5 to 9 Dire's, whatever the ruleset: the guest, who came
+    // to Dire's first slot, goes to its second.
     guest.expect_done(ClientMsg::LobbySlot {
         lobby,
         account: None,
-        slot: 3,
+        slot: 6,
     });
-    let state = state_until(&mut owner, lobby, |s| s.members.iter().any(|m| m.slot == 3));
+    let state = state_until(&mut owner, lobby, |s| s.members.iter().any(|m| m.slot == 6));
     let at = |state: &LobbyState, who: &Account| {
         state
             .members
@@ -500,13 +505,13 @@ fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
             .map(|m| (m.slot, m.team))
             .expect("a member")
     };
-    assert_eq!(at(&state, &guest), (3, 1));
+    assert_eq!(at(&state, &guest), (6, 1));
     // A taken slot, one the ruleset lacks, and the owner's say over another's.
     assert_eq!(
         watcher.ask(ClientMsg::LobbySlot {
             lobby,
             account: None,
-            slot: 3
+            slot: 6
         }),
         Err(Error::SlotTaken)
     );
@@ -514,7 +519,7 @@ fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
         watcher.ask(ClientMsg::LobbySlot {
             lobby,
             account: None,
-            slot: 4
+            slot: 10
         }),
         Err(Error::NoSuchSlot)
     );
@@ -529,14 +534,14 @@ fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
     owner.expect_done(ClientMsg::LobbySlot {
         lobby,
         account: Some(guest.me.id),
-        slot: 1,
+        slot: 2,
     });
     let seen = state_until(&mut watcher, lobby, |s| {
         s.members
             .iter()
-            .any(|m| m.account == guest.me.id && m.slot == 1)
+            .any(|m| m.account == guest.me.id && m.slot == 2)
     });
-    assert_eq!(at(&seen, &guest), (1, 0));
+    assert_eq!(at(&seen, &guest), (2, 0));
     // A spectator holds no slot and no team.
     watcher.expect_done(ClientMsg::LobbySlot {
         lobby,
@@ -553,10 +558,10 @@ fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
     guest.expect_done(ClientMsg::LobbySlot {
         lobby,
         account: None,
-        slot: 3,
+        slot: 6,
     });
     state_until(&mut owner, lobby, |s| {
-        s.members.iter().any(|m| m.slot == 3) && s.members.iter().all(|m| !m.ready)
+        s.members.iter().any(|m| m.slot == 6) && s.members.iter().all(|m| !m.ready)
     });
     guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
     owner.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
@@ -571,7 +576,7 @@ fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
     assert_eq!(teams, [0, 1], "each on the side chosen");
 }
 
-/// The owner changes the settings: the ruleset (members past its slots become spectators),
+/// The owner changes the settings: the ruleset (the rules only: every member keeps the slot),
 /// the password and the audience; the others cannot, and everyone is unreadied.
 #[test]
 fn the_owner_changes_a_lobbys_settings_and_nobody_else() {
@@ -608,7 +613,7 @@ fn the_owner_changes_a_lobbys_settings_and_nobody_else() {
         ("big", true, 2)
     );
     assert!(state.members.iter().all(|m| !m.ready), "settings unready");
-    // Back to two slots: the member on a slot the ruleset lacks becomes a spectator.
+    // Back to the smaller ruleset: the slots stay, the member keeps hers.
     owner.expect_done(ClientMsg::LobbySlot {
         lobby,
         account: Some(guest.me.id),
@@ -617,10 +622,70 @@ fn the_owner_changes_a_lobbys_settings_and_nobody_else() {
     owner.expect_done(configure("fun", Audience::Everyone, None));
     let state = state_until(&mut guest, lobby, |s| s.ruleset.0 == "fun");
     assert!(!state.locked);
+    assert_eq!(state.teams, [5, 5], "the slots are the service's");
     let theirs = state
         .members
         .iter()
         .find(|m| m.account == guest.me.id)
         .expect("a member");
-    assert_eq!(theirs.slot, LOBBY_NO_SLOT);
+    assert_eq!(theirs.slot, 3);
+}
+
+/// Every lobby has the service's ten slots, whatever its ruleset: a ruleset chosen later changes
+/// the rules and nothing else, and one that takes fewer players on a team than are seated there
+/// refuses the start (`TeamTooLarge`) where one that takes more starts, with the seated alone.
+#[test]
+fn a_lobby_keeps_its_ten_slots_under_any_ruleset() {
+    let mut full = ruleset("full", false, "team0", "0.3");
+    full.teams = vec![5, 5];
+    let duel = ruleset("duel", false, "team0", "0.3");
+    let mut mid = ruleset("mid", false, "team0", "0.3");
+    mid.lobby_max_per_team = Some(5);
+    let env = start(vec![full, duel, mid]);
+    let (mut owner, mut guest) = (env.human("olga"), env.bot("gus"));
+
+    let state = lobby_in(&mut owner, "full", "ten");
+    let lobby = state.id;
+    assert_eq!(state.teams, [5, 5], "the default lobby is five a side");
+    join(&mut owner, &mut guest, lobby);
+    let joined = state_until(&mut owner, lobby, |s| s.members.len() == 2);
+    let teams: Vec<u8> = joined.members.iter().map(|m| m.team).collect();
+    assert_eq!(teams, [0, 1], "two players meet across the sides");
+
+    // Choosing the duel changes the rules: the slots stay, and so does everybody's.
+    let configure = |ruleset: &str| ClientMsg::LobbyConfigure {
+        lobby,
+        ruleset: RulesetId(ruleset.to_owned()),
+        audience: Audience::Everyone,
+        password: None,
+    };
+    owner.expect_done(configure("duel"));
+    let state = state_until(&mut guest, lobby, |s| s.ruleset.0 == "duel");
+    assert_eq!(state.teams, [5, 5]);
+    let slots: Vec<u8> = state.members.iter().map(|m| m.slot).collect();
+    assert_eq!(slots, [0, 5]);
+
+    // Two on one team: past what the duel takes. Nothing was added to fill the other slots.
+    guest.expect_done(ClientMsg::LobbySlot {
+        lobby,
+        account: None,
+        slot: 1,
+    });
+    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    assert_eq!(
+        owner.ask(ClientMsg::LobbyReady { lobby, ready: true }),
+        Err(Error::TeamTooLarge)
+    );
+    // A ruleset that plays more a side takes them.
+    owner.expect_done(configure("mid"));
+    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    owner.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    owner.wait_match_found();
+    let result = owner.wait_result();
+    let teams: Vec<u8> = result.seats.iter().map(|s| s.team).collect();
+    assert_eq!(
+        teams,
+        [0, 0],
+        "exactly the two seated, both on the first side"
+    );
 }
