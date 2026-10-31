@@ -72,7 +72,14 @@ fn ruleset(id: &str, rated: bool, teams: Vec<u8>, behaviour: &str, max_secs: u64
         rated,
         info: vec![1],
         max_duration_secs: max_secs,
+        artifact_max_mib: None,
         games_per_account: None,
+        audience: Default::default(),
+        lobby_min_players: None,
+        artifact_access: Default::default(),
+        lobby_max_per_team: None,
+        instant_solo: false,
+        artifacts: Default::default(),
         launcher: LauncherConfig {
             kind: LauncherKind::Local,
             binary: Some(fake_game()),
@@ -93,6 +100,9 @@ fn ruleset(id: &str, rated: bool, teams: Vec<u8>, behaviour: &str, max_secs: u64
                 .to_vec(),
             env: [("GAME_SEATS".to_owned(), "{seats}".to_owned())].into(),
             start_timeout_secs: 5,
+            artifact: None,
+            artifact_args: Vec::new(),
+            artifact_env: Default::default(),
         },
     }
 }
@@ -114,6 +124,9 @@ fn config(dir: &std::path::Path) -> Config {
             iterations: 1,
             ..PasswordCost::default()
         },
+        artifacts: Default::default(),
+        lobby_teams: vec![5, 5],
+        web: None,
         limits: LimitsConfig {
             games_per_account: PerKind { human: 2, bot: 4 },
             games_per_source: 200,
@@ -122,6 +135,7 @@ fn config(dir: &std::path::Path) -> Config {
             game_capacity: 4,
             lobby_games_max: 3,
             queue_capacity: 32,
+            ..LimitsConfig::default()
         },
         rulesets: vec![
             ruleset("solo", true, vec![1, 1], "team0", 30),
@@ -209,7 +223,10 @@ impl Harness {
         let login = format!("fuzz_{}", self.created);
         let hash = self
             .runtime
-            .block_on(self.passwords.hash(std::net::Ipv4Addr::LOCALHOST.into(), PASSWORD.to_owned()))
+            .block_on(
+                self.passwords
+                    .hash(std::net::Ipv4Addr::LOCALHOST.into(), PASSWORD.to_owned()),
+            )
             .expect("hash");
         let id = self
             .runtime

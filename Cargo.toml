@@ -25,3 +25,14 @@ unwrap_used = "warn"
 # dependency even in the dev profile.
 [profile.dev.package."*"]
 opt-level = 3
+
+# What the tests are built with: release's optimisation (a debug build is too slow to test with) and the checks a debug build
+# has, overflow checks and debug assertions, in the crates of this repository. The dependencies stay as release builds them.
+[profile.test-release]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+
+[profile.test-release.package."*"]
+debug-assertions = false
+overflow-checks = false
