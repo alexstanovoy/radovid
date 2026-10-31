@@ -3,7 +3,7 @@
 //! is ignored; a line longer than any `RESULT` can be is skipped whole.
 //!
 //! The first three fields are fixed and in this order. The rest are `key=value` fields in any
-//! order, each key once: `left=<slot>`, `replay=truncated`, `v=<n>`. A key radovid does not know
+//! order, each key once: `left=<slot>`, `replay=truncated` (version 2), `v=<n>`. A key radovid does not know
 //! is skipped, so a game may add facts without breaking the radovid that reads it; a game that
 //! changes what a field means says so with `v=<n>` (absent: 1), and a radovid that knows only
 //! older versions refuses the line (README "Launcher contract").
@@ -13,8 +13,12 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
 use crate::config::decode_hex;
 
-/// The newest `RESULT` version this radovid reads.
-const RESULT_VERSION: u16 = 1;
+/// The newest `RESULT` version this radovid reads: 1 is the line of the first games, 2 adds
+/// `replay=truncated`. Every game is told it (`RADOVID_RESULT_VERSION`), and prints the fields
+/// of newer versions only when it is.
+pub const RESULT_VERSION: u16 = 2;
+/// The variable that tells a game [`RESULT_VERSION`].
+pub const RESULT_VERSION_VAR: &str = "RADOVID_RESULT_VERSION";
 /// The most fields after the report: a line cannot make the parser do unbounded work.
 const MAX_EXTRA_FIELDS: usize = 16;
 
@@ -163,10 +167,10 @@ mod tests {
             (Some(1), vec![10, 255], None)
         );
         assert_eq!(parsed(" left=1").expect("left").left, Some(1));
-        let newer = parsed(" replay=truncated future=whatever left=0 v=1").expect("skipped");
+        let newer = parsed(" replay=truncated future=whatever left=0 v=2").expect("skipped");
         assert!(newer.artifact_truncated && newer.left == Some(0));
         for bad in [
-            " v=2",
+            " v=3",
             " left",
             " =x",
             " left=0 left=1",

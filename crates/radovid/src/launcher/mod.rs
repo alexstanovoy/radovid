@@ -15,6 +15,7 @@ use crate::config::{LauncherConfig, LauncherKind, RulesetConfig, parse_fingerpri
 use crate::template::{self, SeatSpec, Vars};
 
 pub use lines::{GameResult, Line, LineReader};
+use lines::{RESULT_VERSION, RESULT_VERSION_VAR};
 
 /// The label every container carries, for cleaning up after a crashed service.
 const LABEL: &str = "radovid.match";
@@ -96,11 +97,13 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
         .chain(launcher.artifact_args.iter().filter(|_| kept))
         .map(|a| template::expand(a, &vars))
         .collect();
-    let env: Vec<(&String, String)> = launcher
+    // Last, so a ruleset's own variable cannot overrule what this radovid reads.
+    let env: Vec<(String, String)> = launcher
         .env
         .iter()
         .chain(launcher.artifact_env.iter().filter(|_| kept))
-        .map(|(name, value)| (name, template::expand(value, &vars)))
+        .map(|(name, value)| (name.clone(), template::expand(value, &vars)))
+        .chain([(RESULT_VERSION_VAR.to_owned(), RESULT_VERSION.to_string())])
         .collect();
     let (mut command, container) = match launcher.kind {
         LauncherKind::Local => {
@@ -251,6 +254,7 @@ fn docker_run_args(
     for name in launcher.env.keys().chain(artifact_env) {
         run.extend(["--env".to_owned(), name.clone()]);
     }
+    run.extend(["--env".to_owned(), RESULT_VERSION_VAR.to_owned()]);
     run.push(launcher.image.clone().unwrap_or_default());
     run.extend(args.iter().cloned());
     run

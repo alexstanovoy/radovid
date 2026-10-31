@@ -80,10 +80,13 @@ Any game can be launched that honours this, a shell script included:
    fixed, in this order; the others are `key=value` fields in any order, each key at most once, at most 16:
    - `left=<slot>` names a player who left the match for good (the game's own rule): `winner` must then be
      another team's; the match is rated, ends as `Left`, and nothing else is held against the leaver.
-   - `replay=truncated`: the game closed its artifact short of the match's end (a size limit); radovid logs it.
+   - `replay=truncated` (version 2): the game closed its artifact short of the match's end (a size limit); radovid logs it.
    - `v=<n>`: the version of the line, absent for 1. A game that only adds fields leaves it alone, since
      radovid skips keys it does not know; a game that changes what a field means raises it, and a radovid
      that knows only older versions treats the line as malformed (a crash). Lines of older games parse as before.
+   radovid sets `RADOVID_RESULT_VERSION` (now 2) in every game's environment: the newest line version it reads. A game prints
+   the fields of a version only when the variable says that much (absent: 1), so a new game and an old radovid, or the
+   other way round, work together whatever order they are updated in.
    radovid tells the hub (the seats, the rating) and serves the match's artifact only after the game process
    has exited, so a game may finish writing its files after printing `RESULT`.
 4. Exit code 3 without `RESULT` means abandoned (nobody came, or everybody left); any other exit

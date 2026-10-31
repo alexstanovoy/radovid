@@ -711,6 +711,16 @@ fn a_result_line_with_fields_of_a_newer_game_is_read() {
     assert_eq!(result.reason, EndReason::Decided);
 }
 
+/// Every game is told the newest RESULT version this radovid reads, so a game may print the
+/// fields of a newer line to it and the old line to an older radovid.
+#[test]
+fn a_game_is_told_the_result_version_radovid_reads() {
+    let env = start(rules("versioned"));
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    pair_up(&mut a, &mut b, &solo());
+    assert_eq!(b.wait_result().outcome, Outcome::Winner { team: 0 });
+}
+
 /// The artifact is served once the game process has exited and its files are closed, not when
 /// its `RESULT` line is read: a game that goes on writing after the line has the whole file
 /// served, never a part of it.
