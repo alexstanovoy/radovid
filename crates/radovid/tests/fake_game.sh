@@ -38,7 +38,9 @@ case $behaviour in
     badleave) echo "RESULT winner=0 duration_ms=1234 report=$report left=0" ;;
     draw) echo "RESULT winner=draw duration_ms=1234 report=$report" ;;
     future) echo "RESULT winner=1 duration_ms=1234 report=$report replay=truncated later=a_field_of_a_newer_game" ;;
-    futureversion) echo "RESULT winner=1 duration_ms=1234 report=$report v=2" ;;
+    futureversion) echo "RESULT winner=1 duration_ms=1234 report=$report v=3" ;;
+    # A game prints the fields of a newer line only when told that radovid reads them.
+    versioned) [ "${RADOVID_RESULT_VERSION:-1}" -ge 2 ] && echo "RESULT winner=0 duration_ms=1234 report=$report replay=truncated" || echo "RESULT winner=1 duration_ms=1234 report=$report" ;;
     badteam) echo "RESULT winner=5 duration_ms=1234 report=$report" ;;
     noisy)
         printf 'a line that is no UTF-8: \377\376\n' >&2
