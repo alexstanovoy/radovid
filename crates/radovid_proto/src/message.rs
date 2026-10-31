@@ -183,6 +183,15 @@ pub enum ClientMsg {
     StartSolo {
         ruleset: RulesetId,
     },
+    /// A piece of one of a finished match's named artifacts (the files its game leaves, which the
+    /// ruleset names: `replay`, `meta`, …), from `offset`, for an account the artifact's access
+    /// admits. `MatchArtifact` asks for the one named `replay`.
+    MatchArtifactNamed {
+        match_id: MatchId,
+        /// `[a-z0-9_]`, at most `MAX_ARTIFACT_NAME_LEN`; anything else is no artifact.
+        name: String,
+        offset: u64,
+    },
 }
 
 /// The answer to a request that succeeded.
@@ -234,6 +243,16 @@ pub enum Reply {
     /// `data` at the end.
     Artifact {
         match_id: MatchId,
+        offset: u64,
+        total: u64,
+        data: Vec<u8>,
+    },
+    /// Up to `MAX_ARTIFACT_CHUNK` bytes of the named artifact from `offset`, and its whole length;
+    /// empty `data` at the end. The bytes say what they are and which version wrote them; the
+    /// service never looks into them.
+    ArtifactNamed {
+        match_id: MatchId,
+        name: String,
         offset: u64,
         total: u64,
         data: Vec<u8>,

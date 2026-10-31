@@ -236,6 +236,62 @@ pub struct RulesetConfig {
     #[serde(default)]
     pub instant_solo: bool,
     pub launcher: LauncherConfig,
+    /// The files this ruleset's game leaves for a match, besides the replay the `launcher.artifact`
+    /// keys name (which is the artifact called `replay`): `[rulesets.artifacts.<name>]`.
+    #[serde(default)]
+    pub artifacts: BTreeMap<String, ArtifactConfig>,
+}
+
+/// The name of the artifact the launcher's `artifact` keys describe.
+pub const REPLAY_ARTIFACT: &str = "replay";
+
+/// One named file a ruleset's game leaves for a match. radovid never reads it: it hands the bytes
+/// to the accounts `access` admits, in chunks, and prunes it by its own age and size.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactConfig {
+    /// Where the game leaves it, as seen by radovid: an absolute path whose file name holds
+    /// `{match_id}`.
+    pub path: String,
+    /// Arguments added to the launcher's `args` while the artifact is kept: `{artifact}` is its
+    /// path as the game sees it.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Environment added to the launcher's `env` while the artifact is kept; `{artifact}` as in
+    /// `args`.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// The most KiB or MiB the file may have (one of the two); absent: `limits.artifact_max_mib`.
+    pub max_kib: Option<u32>,
+    pub max_mib: Option<u32>,
+    #[serde(default)]
+    pub access: ArtifactAccess,
+    /// Days it is kept; absent: `limits.artifact_retention_days`.
+    pub retention_days: Option<u32>,
+    /// MiB all the files of this name may take; absent: `limits.artifact_cap_mib`.
+    pub cap_mib: Option<u32>,
+    /// Whether the game is asked for it and it is served; on unless said off.
+    #[serde(default = "yes")]
+    pub kept: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// An artifact of a ruleset as it applies: the named ones and the legacy replay, each with what
+/// it falls back to filled in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Artifact {
+    pub name: String,
+    pub path: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub max_bytes: u64,
+    pub access: ArtifactAccess,
+    pub retention_days: u32,
+    pub cap_bytes: u64,
+    pub kept: bool,
 }
 
 /// Who may fetch the artifact of a finished match.
@@ -468,6 +524,8 @@ impl Config {
                 return Err(format!("ruleset {} is configured twice", ruleset.id));
             }
             validate_ruleset(ruleset).map_err(|e| format!("ruleset {}: {e}", ruleset.id))?;
+            self.validate_artifacts(ruleset)
+                .map_err(|e| format!("ruleset {}: {e}", ruleset.id))?;
             if ruleset.artifact_max_bytes(&self.limits)
                 > u64::from(self.limits.artifact_cap_mib) << 20
             {
@@ -476,6 +534,68 @@ impl Config {
                     ruleset.id
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// The named artifacts of a ruleset: their names, paths, limits and the placeholders of what
+    /// the game is told.
+    fn validate_artifacts(&self, ruleset: &RulesetConfig) -> Result<(), String> {
+        if ruleset.artifacts.contains_key(REPLAY_ARTIFACT) && ruleset.launcher.artifact.is_some() {
+            return Err(format!(
+                "the artifact {REPLAY_ARTIFACT} is spelled twice: by launcher.artifact and by artifacts.{REPLAY_ARTIFACT}"
+            ));
+        }
+        let seats = ruleset.seats();
+        let list = self.artifacts_of(ruleset);
+        for (at, artifact) in list.iter().enumerate() {
+            let name = &artifact.name;
+            if !valid_artifact_name(name) {
+                return Err(format!("artifact {name:?} is not 1 to 32 of [a-z0-9_]"));
+            }
+            let template = crate::artifacts::Template::parse(&artifact.path)
+                .map_err(|e| format!("artifact {name}: {e}"))?;
+            if list[..at].iter().any(|other| {
+                crate::artifacts::Template::parse(&other.path).is_ok_and(|t| t == template)
+            }) {
+                return Err(format!("artifact {name} names a path another one does"));
+            }
+            if !(1..=1024 << 20).contains(&artifact.max_bytes)
+                || artifact.max_bytes > artifact.cap_bytes
+            {
+                return Err(format!(
+                    "artifact {name}: its size must be at least 1 byte, at most 1024 MiB and at most its cap"
+                ));
+            }
+            if !(1..=365).contains(&artifact.retention_days) || artifact.cap_bytes == 0 {
+                return Err(format!(
+                    "artifact {name}: retention_days must be 1 to 365 and cap_mib at least 1"
+                ));
+            }
+            if name != REPLAY_ARTIFACT {
+                self.validate_artifact_words(artifact, seats)
+                    .map_err(|e| format!("artifact {name}: {e}"))?;
+            }
+        }
+        for (name, def) in &ruleset.artifacts {
+            if def.max_kib.is_some() && def.max_mib.is_some() {
+                return Err(format!("artifact {name}: max_kib or max_mib, not both"));
+            }
+        }
+        Ok(())
+    }
+
+    /// What a named artifact tells the game: `{artifact}` only here, never a ticket in `args`.
+    fn validate_artifact_words(&self, artifact: &Artifact, seats: usize) -> Result<(), String> {
+        for arg in &artifact.args {
+            template::check_with(arg, seats, false, true).map_err(|e| format!("args: {e}"))?;
+        }
+        for (name, value) in &artifact.env {
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                return Err(format!("env name {name:?} is not [A-Za-z0-9_]"));
+            }
+            template::check_with(value, seats, true, true)
+                .map_err(|e| format!("env {name}: {e}"))?;
         }
         Ok(())
     }
@@ -554,6 +674,45 @@ impl Config {
             .enumerate()
             .flat_map(|(team, &size)| std::iter::repeat_n(team as u8, usize::from(size)))
             .collect()
+    }
+
+    /// The artifacts a ruleset's game leaves, the replay of the launcher's keys first, then the
+    /// named ones by name.
+    pub fn artifacts_of(&self, ruleset: &RulesetConfig) -> Vec<Artifact> {
+        let limits = &self.limits;
+        let mut list = Vec::new();
+        if let Some(path) = &ruleset.launcher.artifact {
+            list.push(Artifact {
+                name: REPLAY_ARTIFACT.to_owned(),
+                path: path.clone(),
+                args: ruleset.launcher.artifact_args.clone(),
+                env: ruleset.launcher.artifact_env.clone(),
+                max_bytes: ruleset.artifact_max_bytes(limits),
+                access: ruleset.artifact_access,
+                retention_days: limits.artifact_retention_days,
+                cap_bytes: u64::from(limits.artifact_cap_mib) << 20,
+                kept: self.artifacts.save_replays,
+            });
+        }
+        for (name, def) in &ruleset.artifacts {
+            let max_bytes = match (def.max_kib, def.max_mib) {
+                (Some(kib), _) => u64::from(kib) << 10,
+                (None, Some(mib)) => u64::from(mib) << 20,
+                (None, None) => u64::from(limits.artifact_max_mib) << 20,
+            };
+            list.push(Artifact {
+                name: name.clone(),
+                path: def.path.clone(),
+                args: def.args.clone(),
+                env: def.env.clone(),
+                max_bytes,
+                access: def.access,
+                retention_days: def.retention_days.unwrap_or(limits.artifact_retention_days),
+                cap_bytes: u64::from(def.cap_mib.unwrap_or(limits.artifact_cap_mib)) << 20,
+                kept: def.kept,
+            });
+        }
+        list
     }
 
     pub fn ruleset(&self, id: &RulesetId) -> Option<&RulesetConfig> {

@@ -72,6 +72,16 @@ env = { BOTA_SEATS = "{seats}" }           # tickets go into the environment onl
 artifact = "/var/lib/radovid/replays/replay-{match_id}.brp"
 artifact_args = ["--replay", "{artifact}"]
 
+# A further file the game leaves for every match, kept whether or not replays are (radovid never reads it): here
+# the match metadata file, a few KiB, kept a year and open to everyone the ruleset's audience admits. It sits in
+# the ruleset's own table, after the `[ruleset.launcher]` keys of the ruleset it belongs to:
+# [ruleset.artifacts.meta]
+# path = "/var/lib/radovid/meta/meta-{match_id}.meta"
+# args = ["--meta", "{artifact}"]
+# max_kib = 1024
+# access = "audience"
+# retention_days = 365
+
 # A full-map team game (5v5) runs 60 to 90 minutes and more, and its replay is large (about 80 MB at the hour): the
 # ruleset sets its own time limit and artifact size, and bota_server keeps its replay under that size (it reads the
 # container's file size limit, so the replay is closed whole before the limit).

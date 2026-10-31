@@ -164,22 +164,18 @@ fn prune_artifacts(config: &Arc<Config>) {
             hourly.tick().await;
             let config = Arc::clone(&config);
             let _ = tokio::task::spawn_blocking(move || {
-                let age =
-                    Duration::from_secs(u64::from(config.limits.artifact_retention_days) * 86_400);
-                let cap = u64::from(config.limits.artifact_cap_mib) << 20;
                 let mut seen = Vec::new();
                 for ruleset in &config.rulesets {
-                    let Some(template) = ruleset
-                        .launcher
-                        .artifact
-                        .as_deref()
-                        .and_then(|t| crate::artifacts::Template::parse(t).ok())
-                    else {
-                        continue;
-                    };
-                    if !seen.contains(&template) {
-                        crate::artifacts::prune(&template, age, cap);
-                        seen.push(template);
+                    for artifact in config.artifacts_of(ruleset) {
+                        let Ok(template) = crate::artifacts::Template::parse(&artifact.path) else {
+                            continue;
+                        };
+                        if !seen.contains(&template) {
+                            let age =
+                                Duration::from_secs(u64::from(artifact.retention_days) * 86_400);
+                            crate::artifacts::prune(&template, age, artifact.cap_bytes);
+                            seen.push(template);
+                        }
                     }
                 }
             })
@@ -493,6 +489,11 @@ impl Hub {
             ClientMsg::MatchArtifact { match_id, offset } => {
                 self.match_artifact(id, match_id, offset).await
             }
+            ClientMsg::MatchArtifactNamed {
+                match_id,
+                name,
+                offset,
+            } => self.match_artifact_named(id, match_id, name, offset).await,
             ClientMsg::RecentMatches { account, limit } => {
                 self.recent_matches(account, limit).await
             }

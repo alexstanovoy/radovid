@@ -404,3 +404,13 @@ newtype UnixMs u64
 variant Error 49 ArtifactsNotKept
 variant Error 50 TeamTooLarge
 variant Error 51 NoSoloStart
+variant ClientMsg 36 MatchArtifactNamed {}
+field ClientMsg::MatchArtifactNamed 0 match_id: MatchId
+field ClientMsg::MatchArtifactNamed 1 name: String
+field ClientMsg::MatchArtifactNamed 2 offset: u64
+variant Reply 14 ArtifactNamed {}
+field Reply::ArtifactNamed 0 match_id: MatchId
+field Reply::ArtifactNamed 1 name: String
+field Reply::ArtifactNamed 2 offset: u64
+field Reply::ArtifactNamed 3 total: u64
+field Reply::ArtifactNamed 4 data: Vec<u8>

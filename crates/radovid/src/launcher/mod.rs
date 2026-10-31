@@ -4,14 +4,13 @@
 
 mod lines;
 
-use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use radovid_proto::MatchId;
 use tokio::process::{Child, ChildStdout, Command};
 
-use crate::config::{LauncherConfig, LauncherKind, RulesetConfig, parse_fingerprint};
+use crate::config::{Artifact, LauncherConfig, LauncherKind, RulesetConfig, parse_fingerprint};
 use crate::template::{self, SeatSpec, Vars};
 
 pub use lines::{GameResult, Line, LineReader};
@@ -21,8 +20,10 @@ use lines::{RESULT_VERSION, RESULT_VERSION_VAR};
 const LABEL: &str = "radovid.match";
 /// How long a version probe may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
-/// Where a docker game sees its artifact file.
-const ARTIFACT_IN_CONTAINER: &str = "/artifact";
+/// Where a docker game sees the artifact called `replay`; the others are under
+/// [`ARTIFACTS_IN_CONTAINER`] by name.
+const REPLAY_IN_CONTAINER: &str = "/artifact";
+const ARTIFACTS_IN_CONTAINER: &str = "/artifacts";
 /// Lines of a game server's stderr logged at most, and their length.
 const STDERR_LINES: usize = 200;
 const STDERR_LINE_LEN: usize = 300;
@@ -32,8 +33,17 @@ pub struct LaunchSpec {
     pub match_id: MatchId,
     pub port: u16,
     pub seats: Vec<SeatSpec>,
-    /// The most bytes a game may leave as its artifact; none when artifacts are not kept.
-    pub artifact_max: Option<u64>,
+    /// The artifacts the game is asked to leave: those of its ruleset that are kept.
+    pub artifacts: Vec<Artifact>,
+}
+
+/// An artifact file made ready for a game.
+struct Placed {
+    /// The file as radovid sees it.
+    host: std::path::PathBuf,
+    /// The path the game is told: the file itself, or where a container sees it.
+    seen: String,
+    max_bytes: u64,
 }
 
 /// A running game server.
@@ -72,39 +82,53 @@ impl GameProcess {
 /// Starts the game server of one match.
 pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<GameProcess> {
     let launcher = &ruleset.launcher;
-    let host_artifact = match prepare_artifact(ruleset, spec) {
-        Ok(path) => path,
-        Err(error) => {
-            return Err(std::io::Error::other(format!("the artifact file: {error}")));
+    let mut placed = Vec::new();
+    for artifact in &spec.artifacts {
+        let host = prepare_file(launcher.kind, artifact, spec.match_id).map_err(|error| {
+            std::io::Error::other(format!("the artifact {}: {error}", artifact.name))
+        })?;
+        let seen = match launcher.kind {
+            LauncherKind::Local => host.to_string_lossy().into_owned(),
+            LauncherKind::Docker => inside(&artifact.name),
+        };
+        placed.push(Placed {
+            host,
+            seen,
+            max_bytes: artifact.max_bytes,
+        });
+    }
+    fn vars<'a>(spec: &'a LaunchSpec, artifact: Option<&'a str>) -> Vars<'a> {
+        Vars {
+            match_id: spec.match_id,
+            port: spec.port,
+            seats: &spec.seats,
+            artifact,
         }
-    };
-    // What the game is told to write to: the file itself, or where a container sees it.
-    let seen_by_game = host_artifact.as_ref().map(|path| match launcher.kind {
-        LauncherKind::Local => path.to_string_lossy().into_owned(),
-        LauncherKind::Docker => ARTIFACT_IN_CONTAINER.to_owned(),
-    });
-    let vars = Vars {
-        match_id: spec.match_id,
-        port: spec.port,
-        seats: &spec.seats,
-        artifact: seen_by_game.as_deref(),
-    };
-    // What only a kept artifact needs the game to be told is left out when none is kept.
-    let kept = host_artifact.is_some();
-    let args: Vec<String> = launcher
+    }
+    // What an artifact needs the game to be told is added only while it is kept, each told its
+    // own path.
+    let mut args: Vec<String> = launcher
         .args
         .iter()
-        .chain(launcher.artifact_args.iter().filter(|_| kept))
-        .map(|a| template::expand(a, &vars))
+        .map(|a| template::expand(a, &vars(spec, None)))
         .collect();
-    // Last, so a ruleset's own variable cannot overrule what this radovid reads.
-    let env: Vec<(String, String)> = launcher
+    let mut env: Vec<(String, String)> = launcher
         .env
         .iter()
-        .chain(launcher.artifact_env.iter().filter(|_| kept))
-        .map(|(name, value)| (name.clone(), template::expand(value, &vars)))
-        .chain([(RESULT_VERSION_VAR.to_owned(), RESULT_VERSION.to_string())])
+        .map(|(name, value)| (name.clone(), template::expand(value, &vars(spec, None))))
         .collect();
+    for (artifact, placed) in spec.artifacts.iter().zip(&placed) {
+        let vars = vars(spec, Some(&placed.seen));
+        args.extend(artifact.args.iter().map(|a| template::expand(a, &vars)));
+        env.extend(
+            artifact
+                .env
+                .iter()
+                .map(|(name, value)| (name.clone(), template::expand(value, &vars))),
+        );
+    }
+    // Last, so a ruleset's own variable cannot overrule what this radovid reads.
+    env.push((RESULT_VERSION_VAR.to_owned(), RESULT_VERSION.to_string()));
     let (mut command, container) = match launcher.kind {
         LauncherKind::Local => {
             let mut command = Command::new(launcher.binary.as_deref().unwrap_or("".as_ref()));
@@ -115,13 +139,7 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
             let name = format!("radovid-match-{}", spec.match_id.0);
             let docker = docker_binary(launcher);
             let mut command = Command::new(&docker);
-            command.args(docker_run_args(
-                launcher,
-                spec,
-                &name,
-                &args,
-                host_artifact.as_deref(),
-            ));
+            command.args(docker_run_args(launcher, spec, &name, &args, &placed, &env));
             (command, Some((docker, name)))
         }
     };
@@ -148,30 +166,31 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
     })
 }
 
-/// Makes the match's artifact file empty before the game starts: a docker container is given
-/// this one file to write and nothing else, which the container's user must be able to open, so
-/// it is world-writable and the directory above it is the operator's to keep closed.
-fn prepare_artifact(
-    ruleset: &RulesetConfig,
-    spec: &LaunchSpec,
-) -> std::io::Result<Option<std::path::PathBuf>> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    if spec.artifact_max.is_none() {
-        return Ok(None);
+/// Where a docker game sees an artifact.
+fn inside(name: &str) -> String {
+    if name == crate::config::REPLAY_ARTIFACT {
+        REPLAY_IN_CONTAINER.to_owned()
+    } else {
+        format!("{ARTIFACTS_IN_CONTAINER}/{name}")
     }
-    let Some(template) = ruleset
-        .launcher
-        .artifact
-        .as_deref()
-        .and_then(|t| crate::artifacts::Template::parse(t).ok())
-    else {
-        return Ok(None);
-    };
-    let path = template.path(spec.match_id);
+}
+
+/// Makes an artifact's file for the match empty before the game starts: a docker container is
+/// given this one file to write and nothing else, which the container's user must be able to
+/// open, so it is world-writable and the directory above it is the operator's to keep closed.
+fn prepare_file(
+    kind: LauncherKind,
+    artifact: &Artifact,
+    match_id: MatchId,
+) -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let template =
+        crate::artifacts::Template::parse(&artifact.path).map_err(std::io::Error::other)?;
+    let path = template.path(match_id);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let mode = if ruleset.launcher.kind == LauncherKind::Docker {
+    let mode = if kind == LauncherKind::Docker {
         0o666
     } else {
         0o600
@@ -183,7 +202,7 @@ fn prepare_artifact(
         .mode(mode)
         .open(&path)?
         .set_permissions(std::fs::Permissions::from_mode(mode))?;
-    Ok(Some(path))
+    Ok(path)
 }
 
 fn docker_binary(launcher: &LauncherConfig) -> String {
@@ -200,7 +219,8 @@ fn docker_run_args(
     spec: &LaunchSpec,
     name: &str,
     args: &[String],
-    artifact: Option<&Path>,
+    placed: &[Placed],
+    env: &[(String, String)],
 ) -> Vec<String> {
     let publish = match launcher.publish_address {
         Some(std::net::IpAddr::V6(v6)) => format!("[{v6}]"),
@@ -240,21 +260,20 @@ fn docker_run_args(
     for mount in &launcher.mounts {
         run.extend(["--volume".to_owned(), mount.clone()]);
     }
-    // The one writable thing: this match's artifact file, bounded in size; the rest of the
-    // container stays read-only.
-    if let Some(file) = artifact {
+    // The only writable things: this match's artifact files, bounded in size (a process has one
+    // limit, the largest); the rest of the container stays read-only.
+    for file in placed {
         run.extend([
             "--volume".to_owned(),
-            format!("{}:{ARTIFACT_IN_CONTAINER}:rw", file.display()),
-            "--ulimit".to_owned(),
-            format!("fsize={0}:{0}", spec.artifact_max.unwrap_or_default()),
+            format!("{}:{}:rw", file.host.display(), file.seen),
         ]);
     }
-    let artifact_env = launcher.artifact_env.keys().filter(|_| artifact.is_some());
-    for name in launcher.env.keys().chain(artifact_env) {
+    if let Some(largest) = placed.iter().map(|file| file.max_bytes).max() {
+        run.extend(["--ulimit".to_owned(), format!("fsize={largest}:{largest}")]);
+    }
+    for (name, _) in env {
         run.extend(["--env".to_owned(), name.clone()]);
     }
-    run.extend(["--env".to_owned(), RESULT_VERSION_VAR.to_owned()]);
     run.push(launcher.image.clone().unwrap_or_default());
     run.extend(args.iter().cloned());
     run
