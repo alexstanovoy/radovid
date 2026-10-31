@@ -42,6 +42,14 @@ pub fn valid_ruleset_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// The name of a match artifact: 1 to 32 bytes of `[a-z0-9_]`.
+pub fn valid_artifact_name(name: &str) -> bool {
+    (1..=MAX_ARTIFACT_NAME_LEN).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
 /// A bot version label: 1 to 32 bytes without control characters.
 pub fn valid_bot_version(version: &str) -> bool {
     (1..=MAX_BOT_VERSION_LEN).contains(&version.len()) && !version.chars().any(char::is_control)

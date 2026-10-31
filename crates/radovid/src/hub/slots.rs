@@ -79,11 +79,12 @@ impl Hub {
             match_id,
             port,
             seats,
-            artifact_max: self
+            artifacts: self
                 .config
-                .artifacts
-                .save_replays
-                .then(|| ruleset.artifact_max_bytes(&self.config.limits)),
+                .artifacts_of(ruleset)
+                .into_iter()
+                .filter(|artifact| artifact.kept)
+                .collect(),
         };
         let vars = Vars {
             match_id,

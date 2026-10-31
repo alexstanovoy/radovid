@@ -28,6 +28,10 @@ if [ "$behaviour" = slowfile ]; then
     printf ' and its end' >> "$GAME_ARTIFACT"
     exit 0
 fi
+if [ -n "${GAME_META:-}" ]; then
+    # Bytes the service has no way to understand.
+    printf '\377\000meta of %s' "$match_id" > "$GAME_META"
+fi
 if [ -n "${GAME_ARTIFACT:-}" ]; then
     printf 'replay of %s' "$match_id" > "$GAME_ARTIFACT"
 fi

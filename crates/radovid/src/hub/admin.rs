@@ -63,7 +63,48 @@ impl Hub {
         match_id: MatchId,
         offset: u64,
     ) -> Result<Reply, Error> {
-        if !self.config.artifacts.save_replays {
+        let (total, data) = self
+            .read_artifact(id, match_id, crate::config::REPLAY_ARTIFACT, offset)
+            .await?;
+        Ok(Reply::Artifact {
+            match_id,
+            offset,
+            total,
+            data,
+        })
+    }
+
+    /// A piece of one of the files a finished match's game left, by name, for an account the
+    /// artifact's access admits.
+    pub(super) async fn match_artifact_named(
+        &mut self,
+        id: AccountId,
+        match_id: MatchId,
+        name: String,
+        offset: u64,
+    ) -> Result<Reply, Error> {
+        if !valid_artifact_name(&name) {
+            return Err(Error::NoArtifact);
+        }
+        let (total, data) = self.read_artifact(id, match_id, &name, offset).await?;
+        Ok(Reply::ArtifactNamed {
+            match_id,
+            name,
+            offset,
+            total,
+            data,
+        })
+    }
+
+    async fn read_artifact(
+        &mut self,
+        id: AccountId,
+        match_id: MatchId,
+        name: &str,
+        offset: u64,
+    ) -> Result<(u64, Vec<u8>), Error> {
+        // The replay is a matter of its own switch, whatever match is asked for.
+        if name == crate::config::REPLAY_ARTIFACT && !self.config.artifacts.save_replays {
             return Err(Error::ArtifactsNotKept);
         }
         let (ruleset, accounts) = self
@@ -74,29 +115,29 @@ impl Hub {
             .ok_or(Error::NoArtifact)?;
         let kind = self.accounts.get(&id).map(|a| a.info.kind);
         let config = self.config.ruleset(&ruleset).ok_or(Error::NoArtifact)?;
+        let artifact = self
+            .config
+            .artifacts_of(config)
+            .into_iter()
+            .find(|artifact| artifact.name == name)
+            .ok_or(Error::NoArtifact)?;
+        if !artifact.kept {
+            return Err(Error::ArtifactsNotKept);
+        }
         let allowed = accounts.contains(&id)
-            || (config.artifact_access == ArtifactAccess::Audience
+            || (artifact.access == ArtifactAccess::Audience
                 && kind.is_some_and(|kind| config.admits(kind)));
-        let template = config
-            .launcher
-            .artifact
-            .as_deref()
-            .and_then(|t| crate::artifacts::Template::parse(t).ok())
+        let template = crate::artifacts::Template::parse(&artifact.path)
+            .ok()
             .filter(|_| allowed)
             .ok_or(Error::NoArtifact)?;
-        let max_len = config.artifact_max_bytes(&self.config.limits);
-        let (total, data) = tokio::task::spawn_blocking(move || {
+        let max_len = artifact.max_bytes;
+        tokio::task::spawn_blocking(move || {
             crate::artifacts::read_chunk(&template, match_id, offset, max_len)
         })
         .await
         .map_err(internal)?
-        .ok_or(Error::NoArtifact)?;
-        Ok(Reply::Artifact {
-            match_id,
-            offset,
-            total,
-            data,
-        })
+        .ok_or(Error::NoArtifact)
     }
 
     pub(super) async fn ladder(

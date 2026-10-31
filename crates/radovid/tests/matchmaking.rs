@@ -4,6 +4,7 @@
 mod common;
 
 use common::*;
+use radovid_client::Client;
 use radovid_client::proto::*;
 
 fn rules(behaviour: &str) -> Vec<radovid::config::RulesetConfig> {
@@ -924,4 +925,221 @@ fn a_ruleset_for_bots_is_neither_listed_to_humans_nor_open_to_them() {
         Err(Error::AudienceMismatch)
     );
     assert!(beta.ask(ClientMsg::QueueJoin { ruleset: arena }).is_ok());
+}
+
+fn named(
+    dir: &std::path::Path,
+    access: radovid::config::ArtifactAccess,
+) -> radovid::config::ArtifactConfig {
+    radovid::config::ArtifactConfig {
+        path: format!("{}/meta-{{match_id}}.meta", dir.display()),
+        args: Vec::new(),
+        env: [("GAME_META".to_owned(), "{artifact}".to_owned())].into(),
+        max_kib: Some(4),
+        max_mib: None,
+        access,
+        retention_days: Some(365),
+        cap_mib: Some(64),
+        kept: true,
+    }
+}
+
+fn fetch_named(
+    who: &mut Account,
+    match_id: MatchId,
+    name: &str,
+    offset: u64,
+) -> Result<Reply, Error> {
+    who.ask(ClientMsg::MatchArtifactNamed {
+        match_id,
+        name: name.to_owned(),
+        offset,
+    })
+}
+
+/// A ruleset names files besides the replay, each with its own switch, size and access: the
+/// `meta` file here is served, as bytes the service cannot read, to the ruleset's audience
+/// while the replay, which the service does not keep, is not; an unknown or malformed name is
+/// no artifact.
+#[test]
+fn a_named_artifact_has_its_own_access_and_switch_and_the_replay_keeps_its_own() {
+    use radovid::config::ArtifactAccess;
+    let dir = artifact_dir("named");
+    let mut rules = rules("team0");
+    rules[0].launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+    rules[0]
+        .launcher
+        .artifact_env
+        .insert("GAME_ARTIFACT".to_owned(), "{artifact}".to_owned());
+    rules[0]
+        .artifacts
+        .insert("meta".to_owned(), named(&dir, ArtifactAccess::Audience));
+    let env = start_configured(rules, |config| assert!(!config.artifacts.save_replays));
+    let (mut a, _b, match_id, _) = finished_match(&env, &dir, |env, name| env.bot(name));
+    let mut onlooker = env.bot("gamma");
+    let expected = [
+        &[0xff, 0x00][..],
+        format!("meta of {}", match_id.0).as_bytes(),
+    ]
+    .concat();
+    let Ok(Reply::ArtifactNamed {
+        name, total, data, ..
+    }) = fetch_named(&mut a, match_id, "meta", 0)
+    else {
+        panic!("the meta is served");
+    };
+    assert_eq!(
+        (name.as_str(), total, data),
+        ("meta", expected.len() as u64, expected.clone())
+    );
+    let Ok(Reply::ArtifactNamed { data, .. }) = fetch_named(&mut a, match_id, "meta", 3) else {
+        panic!("a later chunk");
+    };
+    assert_eq!(data, expected[3..]);
+    assert!(
+        matches!(
+            fetch_named(&mut onlooker, match_id, "meta", 0),
+            Ok(Reply::ArtifactNamed { .. })
+        ),
+        "the audience may fetch it"
+    );
+    assert_eq!(
+        fetch_named(&mut a, match_id, "replay", 0).err(),
+        Some(Error::ArtifactsNotKept)
+    );
+    assert_eq!(
+        fetch_artifact(&mut a, match_id).err(),
+        Some(Error::ArtifactsNotKept)
+    );
+    for name in ["nothing", "Not Valid", "", &"x".repeat(33)] {
+        assert_eq!(
+            fetch_named(&mut a, match_id, name, 0).err(),
+            Some(Error::NoArtifact),
+            "{name:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An artifact whose access is the seats' is the seats' alone, one switched off is not asked of
+/// the game and answered "not kept", and a file past its own size is not served.
+#[test]
+fn a_named_artifact_is_for_the_seats_by_default_and_off_or_over_its_size_it_is_not_served() {
+    use radovid::config::ArtifactAccess;
+    let dir = artifact_dir("named-seats");
+    let mut rules = rules("team0");
+    rules[0]
+        .artifacts
+        .insert("meta".to_owned(), named(&dir, ArtifactAccess::Seats));
+    let mut off = named(&dir, ArtifactAccess::Seats);
+    off.path = format!("{}/off-{{match_id}}.bin", dir.display());
+    off.kept = false;
+    rules[0].artifacts.insert("off".to_owned(), off);
+    let env = start_configured(rules, |_| {});
+    let (mut a, _b, match_id, _) = finished_match(&env, &dir, |env, name| env.bot(name));
+    let mut onlooker = env.bot("gamma");
+    assert!(matches!(
+        fetch_named(&mut a, match_id, "meta", 0),
+        Ok(Reply::ArtifactNamed { .. })
+    ));
+    assert_eq!(
+        fetch_named(&mut onlooker, match_id, "meta", 0).err(),
+        Some(Error::NoArtifact)
+    );
+    assert_eq!(
+        fetch_named(&mut a, match_id, "off", 0).err(),
+        Some(Error::ArtifactsNotKept)
+    );
+    assert!(
+        !dir.join(format!("off-{}.bin", match_id.0)).exists(),
+        "the game was not asked"
+    );
+    std::fs::write(
+        dir.join(format!("meta-{}.meta", match_id.0)),
+        vec![0u8; 4 * 1024 + 1],
+    )
+    .expect("a long file");
+    assert_eq!(
+        fetch_named(&mut a, match_id, "meta", 0).err(),
+        Some(Error::NoArtifact)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A client of the oldest protocol version served still logs in and fetches the replay, and the
+/// replay is the artifact named `replay`.
+#[test]
+fn a_client_of_the_oldest_protocol_fetches_the_replay_and_the_replay_is_the_artifact_so_named() {
+    let dir = artifact_dir("oldest");
+    let mut rules = rules("team0");
+    rules[0].launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+    rules[0]
+        .launcher
+        .artifact_env
+        .insert("GAME_ARTIFACT".to_owned(), "{artifact}".to_owned());
+    let env = keeping(rules);
+    let (a, _b, match_id, _) = finished_match(&env, &dir, |env, name| env.bot(name));
+    let mut old =
+        Client::connect_as(&env.url, &env.tls, MIN_PROTO_VERSION, FINGERPRINT).expect("served");
+    let logged = old
+        .login("alpha", PASSWORD, ClientInfo::default())
+        .expect("login");
+    let mut old = Account {
+        client: old,
+        me: logged.me,
+        token: logged.session,
+    };
+    let Ok(Reply::Artifact { data, .. }) = fetch_artifact(&mut old, match_id) else {
+        panic!("the replay is served to the oldest client");
+    };
+    assert_eq!(data, format!("replay of {}", match_id.0).as_bytes());
+    let mut new = a;
+    let Ok(Reply::ArtifactNamed { data: named, .. }) = fetch_named(&mut new, match_id, "replay", 0)
+    else {
+        panic!("the replay by name");
+    };
+    assert_eq!(named, data);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What a configuration may not say about artifacts is refused when the service starts.
+#[test]
+fn a_configuration_spelling_artifacts_wrongly_is_refused() {
+    use radovid::config::ArtifactAccess;
+    let dir = artifact_dir("named-config");
+    let meta = || named(&dir, ArtifactAccess::Seats);
+    let refused = |mutate: &dyn Fn(&mut radovid::config::RulesetConfig)| {
+        let mut rules = rules("team0");
+        mutate(&mut rules[0]);
+        try_start(rules, |_| {}).err().expect("refused")
+    };
+    let error = refused(&|r| {
+        r.launcher.artifact = Some("/tmp/r-{match_id}.brp".to_owned());
+        r.artifacts.insert("replay".to_owned(), meta());
+    });
+    assert!(error.contains("spelled twice"), "{error}");
+    let error = refused(&|r| {
+        r.artifacts.insert("Bad Name".to_owned(), meta());
+    });
+    assert!(error.contains("[a-z0-9_]"), "{error}");
+    let error = refused(&|r| {
+        r.artifacts.insert("one".to_owned(), meta());
+        r.artifacts.insert("two".to_owned(), meta());
+    });
+    assert!(error.contains("names a path another one does"), "{error}");
+    let error = refused(&|r| {
+        let mut both = meta();
+        both.max_mib = Some(1);
+        r.artifacts.insert("both".to_owned(), both);
+    });
+    assert!(error.contains("max_kib or max_mib"), "{error}");
+    let error = refused(&|r| {
+        let mut far = meta();
+        far.max_kib = None;
+        far.max_mib = Some(2);
+        far.cap_mib = Some(1);
+        r.artifacts.insert("far".to_owned(), far);
+    });
+    assert!(error.contains("at most its cap"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
