@@ -1,326 +1,106 @@
 # radovid
 
-radovid is a matchmaking service for any game whose servers can be started from a command line:
-accounts, queues with two-phase match acceptance, custom lobbies, Glicko-2 ratings, a ladder,
-admin bans, and the launching of one game server per match. It knows no game. A ruleset names its
-game and how to start a server; players get the server's address and a ticket for their seat, and
-what they say to the server there is the game's business. radovid never carries game traffic.
+A matchmaking service for any game whose servers start from a command line. Accounts, rated queues, lobbies,
+ratings and a ladder, and one game server launched per match, in a single process with a single SQLite file.
 
-It is one process (tokio) with one SQLite file. Clients speak WebSocket over TLS on one port.
+radovid knows nothing about your game. A ruleset says which program to start and how; radovid starts it when a match
+is formed, hands each player the server's address and a ticket for their seat, and reads the result from the server's
+own output. It never carries game traffic, and clients can't report outcomes, so there is nothing for them to forge.
 
-```
-radovid_proto   the wire types, limits, the frame codec, registry/wire.txt; serde + postcard only
-radovid_client  Control (the protocol without I/O); Client (blocking) and Background (a thread)
-                over tungstenite + rustls (feature native, default); WebClient over the browser's
-                WebSocket (feature web, wasm32)
-radovid         the service (library + binary)
-```
+## What it does today
 
-## What it does
+- **Accounts:** login and password (no e-mail, no recovery), human or bot. Players see each other as `nickname#id`;
+  the login stays private.
+- **Rated queues** with two-phase acceptance: a found match must be accepted by everyone within a time limit; a
+  decline or silence sends that player to a short cooldown and the others back to their places.
+- **Lobbies:** found in the list of open lobbies or by searching names and owners, and joined at once: an open lobby
+  needs nothing, a locked one its password, which the service shows to nobody but the owner who set it. No approval
+  step. Slots by team,
+  spectators, and a game mode the owner chooses, which changes the rules but never how many may play.
+- **Glicko-2 ratings** and a ladder; a draw is half a win, a crashed or abandoned match changes nothing.
+- **Several games per account** at once (queues, lobbies, running matches), within per-account and per-address limits.
+- **Game capacity:** a fixed number of servers run at once, and formed matches wait their turn in order.
+- **Replays and other match files** kept for a set time and fetched by the players who sat in the match (or everyone,
+  if you choose).
+- **A practice ruleset** one player can start alone at once, e.g. a demo with cheats.
+- **Admin:** bans with reason and expiry, account kinds, stopping a match.
+- **Safe by default:** TLS 1.3 only, argon2id passwords, every limit bounded, tickets passed to game servers by
+  environment only, no IP addresses or e-mails stored. Docker game servers run read-only with all capabilities
+  dropped.
 
-- **Accounts.** A login and a password (no e-mail, no recovery), human or bot. Another account is
-  always shown by nickname and id (`nickname#id`); the login is a credential and only its owner
-  sees it. `DeleteAccount` removes the credentials, sessions and ratings and leaves the match
-  history under the name `deleted`.
-- **Several games at once.** An account has games in flight (queue entries, lobby seats, join
-  requests, unfinished matches) up to its limit (`[limits] games_per_account`, per kind, per
-  ruleset overridable, readable with `Limits`); all accounts of one source (an IPv4 address or an
-  IPv6 /64) together up to `games_per_source`. One rating per account per rated ruleset.
-- **Queues and proposals.** A rated ruleset has a queue. The pairer takes the oldest free entries,
-  never one account twice, and two from one source only when no other entry fits. A pairing is a
-  proposal that names no opponent: every player accepts within `accept_timeout_secs`. A decline
-  or silence ends it: the decliner's entry is gone and its account may not queue for
-  `decline_cooldown_secs`; the others keep their entries and places. Leaving a match costs nothing beyond the lost
-  match: there is no cooldown for it.
-- **Game slots.** At most `game_capacity` games run at once, lobby games at most
-  `lobby_games_max` of them, so queued matches always have slots of their own. Formed matches wait
-  in the order they were formed and are told how many wait before them (`MatchQueued`); the
-  pairer pauses while `game_capacity` matches are being formed or waiting, and entries see
-  `overloaded` in their `QueueStatus`. The queues take `queue_capacity` entries; past that
-  `QueueFull`.
-- **Lobbies.** Unrated games with an owner and a unique name, found in the list of open lobbies
-  (`LobbyList`) or by a search of their names and owners (`LobbySearch`). Whoever may sit is in at
-  once (`LobbyJoin`): an open lobby needs nothing, a locked one its password (`LobbyPasswordRequired`
-  without, `BadLobbyPassword` for a wrong one, guesses delayed as failed logins are); there is no
-  request for the owner to decide. Press ready; the owner's ready starts a 5 s countdown nobody can
-  cancel; the match then waits for a slot like any other. The owner leaving closes the lobby. A new
-  lobby is of the service's `lobby_ruleset` unless made for another: name the standard rules there
-  (`lobby_ruleset = "full"` for bota's full game), so that the order of the `[[ruleset]]` tables does
-  not decide it. A lobby's password reaches nobody but the owner who set it: members and the list
-  see only that the lobby is locked.
-  Slots are the service's `lobby_teams` numbered team by team (two teams of five unless set), the same for
-  every ruleset: a member chooses a free slot at once (`LobbySlot`), the owner moves others, a member may
-  hold none (a spectator, who stays out of the match), and a move unreadies. The owner changes the
-  ruleset, the audience and the password (`LobbyConfigure`); choosing a ruleset changes the rules and never
-  the slots, and no ruleset caps how many sit on a side. The match has exactly the members who hold a slot,
-  none is added to fill the others. The others read the settings in the lobby's state.
-- **Ratings.** Glicko-2 (1500, 350, 0.06, tau 0.5), one rating period per game, the deviation
-  grown for idle days first; a draw is half a win; a null changes nothing.
-- **Admin.** Ban (with reason and expiry), unban, change an account's kind, stop a match (a null).
-  An admin is made on the host: `radovid admin --config radovid.toml <login>`.
+Clients speak WebSocket over TLS on one port; `radovid_client` is the Rust client library (blocking, a background
+thread, or the browser's WebSocket). It can also serve a web client's static files on the same origin.
 
-## Ratings of concurrent matches
+What is missing: password recovery and e-mail, rated matches with more than one player a side (rated rulesets are
+1v1), a ladder across several hosts (one process, one SQLite file), and rolling protocol compatibility (clients and
+service update together).
 
-Glicko-2 depends on the order of results, and one account may finish several matches at about the
-same time. The rule: results are applied one at a time, in the order radovid reads their `RESULT`
-lines; each is one SQLite transaction that reads both seats' ratings as stored at that moment
-(not at the match start), grows their deviations for the time since each one's last stored game,
-updates both, and writes them back. `before` and `after` in a `MatchResult` are the values around
-that transaction. Two matches finishing within a second thus apply in arrival order and the second
-sees the first's result; the outcome differs from the other order only by Glicko-2's own
-non-commutativity.
+## Get started: a development setup on one machine
 
-## Launcher contract
+No docker and no domain needed. This uses bota's game server as the game; any game that honours the
+[launcher contract](DEVELOPMENT.md#launcher-contract) works the same way.
 
-Any game can be launched that honours this, a shell script included:
+1. Build radovid and the game server (in the bota checkout, `cargo build --release -p bota_server`), make a
+   development certificate, and ask the game for its wire fingerprint:
 
-1. radovid starts the launcher with the ruleset's arguments and environment, placeholders
-   expanded, stdin closed, stdout read by radovid, stderr logged (the first 200 lines, cut short):
-   a game prints no secret there.
-2. The game prints a line `READY` once players may connect. Until then radovid tells them nothing;
-   no `READY` within `start_timeout_secs` is a crash.
-3. When the match is over the game prints one line
-   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex> [<key>=<value>]...` and exits 0, within
-   10 seconds (it is killed after that; the match counts as the line says). `report` is up to
-   64 KiB of the game's own bytes, stored and forwarded to clients untouched. The first three fields are
-   fixed, in this order; the others are `key=value` fields in any order, each key at most once, at most 16:
-   - `left=<slot>` names a player who left the match for good (the game's own rule): `winner` must then be
-     another team's; the match is rated, ends as `Left`, and nothing else is held against the leaver.
-   - `replay=truncated` (version 2): the game closed its artifact short of the match's end (a size limit); radovid logs it.
-   - `v=<n>`: the version of the line, absent for 1. A game that only adds fields leaves it alone, since
-     radovid skips keys it does not know; a game that changes what a field means raises it, and a radovid
-     that knows only older versions treats the line as malformed (a crash). Lines of older games parse as before.
-   radovid sets `RADOVID_RESULT_VERSION` (now 2) in every game's environment: the newest line version it reads. A game prints
-   the fields of a version only when the variable says that much (absent: 1), so a new game and an old radovid, or the
-   other way round, work together whatever order they are updated in.
-   radovid tells the hub (the seats, the rating) and serves the match's artifact only after the game process
-   has exited, so a game may finish writing its files after printing `RESULT`.
-4. Exit code 3 without `RESULT` means abandoned (nobody came, or everybody left); any other exit
-   without `RESULT`, or a malformed one, means crashed. Both are null: nothing is rated. A match
-   running past `max_duration_secs`, or stopped by an admin or the shutdown, is killed: stopped,
-   null.
+   ```sh
+   cargo build --release -p radovid
+   mkdir dev && target/release/radovid dev-cert dev/        # cert.pem and key.pem for localhost; development only
+   GAME=../bota/target/release/bota_server
+   $GAME --wire-fingerprint                                  # 16 hex digits for game_fingerprint below
+   ```
 
-The result reaches radovid only on the game server's own stdout, which only that process (and the
-host's root) can write: clients never report outcomes, and there is no network path to forge one.
+2. Write `dev/radovid.toml`. A `local` launcher runs the game as a child process on loopback:
 
-Placeholders in `args`, `env` values and `public_url`: `{match_id}`, `{port}` (taken from
-`game_ports`, the host port of this match), `{seats}` (`ticket_hex:team:name:kind` per slot in slot
-order, comma separated; kind is `bot` or `human`: the account's own, chosen at registration and changed
-only by an administrator), `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>}`; `{{` and `}}` are
-braces. Tickets may only go into `env`: an argument shows in every process listing. Slots are
-numbered team by team. A ticket is 32 random bytes; the game checks it (in constant time) and
-decides what it allows: a seat, reconnecting to it, watching it.
+   ```toml
+   listen = "127.0.0.1:4460"
+   database = "dev/radovid.db"
+   tls_cert = "dev/cert.pem"
+   tls_key = "dev/key.pem"
+   game_ports = "20000-20010"
 
-A `docker` launcher runs `docker run --rm` attached, one container per match, publishing
-`<publish_address>:{port}` to `container_port`; a `local` one runs the binary as a child
-process (development: bind the game to loopback).
+   [[ruleset]]
+   id = "solo_mid"
+   name = "1x1 Mid Only"
+   game = "bota"
+   game_fingerprint = "<the digits above>"
+   teams = [1, 1]
+   rated = true
 
-`version_probe`: arguments that make the game print its wire fingerprint (16 hex digits) and
-exit. radovid runs it at start and refuses to serve a ruleset whose game servers speak another
-wire than `game_fingerprint`. A client names its game wire in `Hello`; a ruleset of another
-fingerprint refuses its queue and lobby requests (`GameVersionMismatch`).
+   [ruleset.launcher]
+   kind = "local"
+   binary = "<absolute path of bota_server>"
+   public_url = "ws://127.0.0.1:{port}"
+   version_probe = ["--wire-fingerprint"]
+   args = ["--map", "2", "--match-id", "{match_id}", "--bind", "127.0.0.1", "--port", "0",
+           "--ws-port", "{port}", "--heroes", "1", "--start-after-secs", "60",
+           "--abandon-unjoined", "--empty-after-secs", "120"]
+   env = { BOTA_SEATS = "{seats}" }
+   artifact = "/abs/dev/replays/replay-{match_id}.brp"    # the replay the game writes; players fetch it afterwards
+   artifact_args = ["--replay", "{artifact}"]             # used only with [artifacts] save_replays = true
+   ```
 
-## Run it
+3. Run it:
 
-```sh
-cargo build --release -p radovid
-target/release/radovid dev-cert dev/          # self-signed cert.pem and key.pem (mode 0600) for localhost, 127.0.0.1 and ::1; development only
-cp radovid.example.toml radovid.toml          # tls_cert/tls_key: yours; image and public_url: your game's
-target/release/radovid serve --config radovid.toml
-target/release/radovid admin --config radovid.toml <login>   # make an existing account an admin
-```
+   ```sh
+   target/release/radovid serve --config dev/radovid.toml
+   target/release/radovid admin --config dev/radovid.toml <login>   # make an existing account an admin
+   ```
 
-SIGHUP rereads `tls_cert` and `tls_key` (connections already up keep theirs; a bad pair keeps
-the old one); SIGINT or SIGTERM stops every match (a null) and exits. After a crash the next
-start records unfinished matches as lost (null) and removes the containers left behind.
-Backups, if wanted: `sqlite3 radovid.db ".backup copy.db"` takes a consistent copy while the
-service runs.
+Clients connect to `wss://localhost:4460` and trust `dev/cert.pem` (dbota: `--trust-cert dev/cert.pem`). A bot
+registers its own account of kind `bot` on first login. If matches end as crashes, look at the service's stderr
+(`radovid: match N: ...`).
 
-### A development setup on one machine (no docker, no domain)
+For production, start from `radovid.example.toml`: a `docker` launcher runs one container per match, `public_url`
+must be `wss://` for anything but loopback, `lobby_ruleset` names the rules a new lobby starts with when there are
+several, and SIGHUP reloads the certificate. `sqlite3 radovid.db ".backup copy.db"`
+takes a consistent backup while the service runs.
 
-Build the game server with its WebSocket listener (bota: `cargo build --release -p bota_server` in the bota
-checkout; the `websocket` feature is on by default) and make a certificate:
+## For developers
 
-```sh
-cargo build --release -p radovid
-mkdir dev && target/release/radovid dev-cert dev/
-GAME=../bota/target/release/bota_server
-$GAME --wire-fingerprint                      # 16 hex digits for game_fingerprint below
-```
+[DEVELOPMENT.md](DEVELOPMENT.md) has the launcher contract a game must honour, every configuration key, the protocol,
+how concurrent results are rated, the security model and the tests.
 
-`dev/radovid.toml` (a `local` launcher runs the game server as a child process on loopback; the
-game's address is `ws://127.0.0.1:{port}`, which a non-`wss://` `public_url` may be only because
-it is loopback):
+## License
 
-```toml
-listen = "127.0.0.1:4460"
-database = "dev/radovid.db"
-tls_cert = "dev/cert.pem"
-tls_key = "dev/key.pem"
-game_ports = "20000-20010"
-
-[[ruleset]]
-id = "solo_mid"
-name = "1x1 Mid Only"
-game = "bota"
-game_fingerprint = "<the digits above>"
-teams = [1, 1]
-rated = true
-
-[ruleset.launcher]
-kind = "local"
-binary = "<absolute path of bota_server>"
-public_url = "ws://127.0.0.1:{port}"
-version_probe = ["--wire-fingerprint"]
-args = ["--map", "2", "--match-id", "{match_id}", "--bind", "127.0.0.1", "--port", "0",
-        "--ws-port", "{port}", "--heroes", "1", "--start-after-secs", "60",
-        "--abandon-unjoined", "--empty-after-secs", "120"]
-env = { BOTA_SEATS = "{seats}" }
-artifact = "/abs/dev/replays/replay-{match_id}.brp"    # the game writes it ({artifact}); seats fetch it after the match
-artifact_args = ["--replay", "{artifact}"]             # added to args only with [artifacts] save_replays = true
-```
-
-```sh
-target/release/radovid serve --config dev/radovid.toml
-```
-
-Clients name the service `wss://localhost:4460` (the certificate names `localhost`, `127.0.0.1`
-and `::1`) and trust `dev/cert.pem` (dbota: `--trust-cert dev/cert.pem`). A bot client needs an
-account of its own: it registers one with kind `bot` on first login. A game server built without
-the listener (`--no-default-features`) refuses `--ws-port`: every match then ends as a crash,
-nothing is rated; start the service once and look at its stderr lines (`radovid: match N: ...`)
-when matches are lost.
-
-### Safe by default
-
-- One listener, TLS 1.3 only; no plain-text mode exists.
-- The service refuses to start when a secret file is open to every user of the host (the
-  database, the TLS key: `chmod o-rwx`); it creates the database `0600`, and `dev-cert` writes
-  its key `0600`.
-- A `public_url` that is not `wss://` must name a loopback host, or tickets would cross the
-  network in clear; `insecure_plaintext = true` allows it on a network you trust.
-- Every limit has a default (table below); unknown keys and out-of-range values fail at start
-  with the offending key named.
-- Tickets go to game servers by environment only (a `{ticket_*}` or `{seats}` placeholder in
-  `args` is refused); logs carry match ids and errors, never logins, passwords, tokens or tickets.
-
-### Configuration
-
-Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at least one
-`[[ruleset]]` with its `[ruleset.launcher]`. Everything else has a default.
-
-| Key | Default | What it controls | Change it when |
-|---|---|---|---|
-| `listen` | | address and port of the TLS listener | |
-| `database` | | the SQLite file (WAL; created `0600`) | |
-| `tls_cert`, `tls_key` | | PEM chain and key, reread on SIGHUP | a renewal |
-| `game_ports` | | `"first-last"` host ports, one per running match; at least `game_capacity` | |
-| `web.static_dir` | none | a directory of static files served read-only on the listener's own origin (`GET`/`HEAD`, no listings, nothing outside the directory, `index.html` at `/`, a `.br` or `.gz` sibling for clients that take it), so a page and the service share one URL | a client is a web page |
-| `max_connections` | `2048` | connections at once, logged in or not | the host has fewer file descriptors or more memory |
-| `server_name` | `radovid` | the name in `Welcome` | |
-| `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes (stored hashes keep theirs) | lower only for tests |
-| `password.max_waiting` | `64` | password checks waiting for a hash slot (one hash per source at a time); more are answered `Throttled` | |
-| `limits.games_per_account` | `{ human = 2, bot = 8 }` | games in flight per account: queue entries, lobbies, unfinished matches | |
-| `limits.games_per_source` | `8` | the same for all accounts of an IPv4 address or IPv6 /64 | players behind one NAT |
-| `limits.accept_timeout_secs` | `30` | to accept a proposal (1 to 600); silence declines | |
-| `limits.decline_cooldown_secs` | `120` | out of the queues after a decline or silence (at most a day) | |
-| `limits.game_capacity` | `8` | games running at once; formed matches wait in order | the host takes more games |
-| `limits.lobby_games_max` | `6` | of those, the most lobby games may hold | |
-| `limits.queue_capacity` | `256` | queue entries across rulesets; past it `QueueFull` | |
-| `ruleset.id` | | `[a-z0-9_]`, 1 to 32 bytes, never reused for other rules | |
-| `ruleset.name`, `ruleset.game` | | display name (1 to 64 bytes); the game's label for clients (1 to 32) | |
-| `ruleset.game_fingerprint` | | 16 hex digits: the game wire clients and servers must speak | each game release |
-| `ruleset.teams` | | team sizes; slots are numbered team by team | |
-| `ruleset.rated` | | queue and ladder; a rated ruleset is `teams = [1, 1]` | |
-| `ruleset.info` | `""` | hex bytes shown to clients (the game's own meaning) | |
-| `ruleset.max_duration_secs` | `7200` | a match running longer is killed (a null); a full match of a game may last 60 to 90 minutes and more, so set it for the ruleset | shorter or longer games |
-| `ruleset.artifact_max_mib` | `limits.artifact_max_mib` | the most one artifact of this ruleset may have (1 to 1024, at most `artifact_cap_mib`): a docker game cannot write more (`--ulimit fsize`), a longer file is not served. A game that records a long match must close its file before the limit: bota_server does by itself (it reads the limit) | the ruleset's matches are long |
-| `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit, one number or per kind | |
-| `lobby_teams` | `[5, 5]` | the slots of every lobby: team sizes, numbered team by team, at most 10 seats | |
-| `lobby_ruleset` | the first `[[ruleset]]` (a warning at start when there are several) | the ruleset a new lobby is of until its host chooses another (`RulesetInfo.lobby_default`), e.g. `lobby_ruleset = "full"` | always, with more than one ruleset |
-| `ruleset.lobby_min_players` | `1` | players a lobby needs before its host may start it (`LobbyReady`); the match has only the seats held (the game plays on with the sides it has) | |
-| `ruleset.instant_solo` | `false` | one account may start a match alone at once (`StartSolo`): no queue, lobby or countdown; unrated only | a demo or practice ruleset |
-| `ruleset.audience` | `everyone` | `everyone`, `humans_only` or `bots_only`: who may queue and sit in lobbies here (`AudienceMismatch` otherwise); the others are not told the ruleset exists | |
-| `launcher.kind` | | `docker` (one container per match) or `local` (a child process, development) | |
-| `launcher.image`, `launcher.container_port` | | docker: the image, and the game's port inside it | |
-| `launcher.binary` | | local: the executable | |
-| `launcher.public_url` | | what players connect to; placeholders below | |
-| `launcher.insecure_plaintext` | `false` | allow a non-`wss://` `public_url` to another host | a trusted network without TLS |
-| `launcher.args`, `launcher.env` | `[]`, `{}` | the game's command line and environment; tickets only in `env` | |
-| `launcher.version_probe` | `[]` | arguments that make the game print its wire fingerprint and exit; checked at start | always, when the game has one |
-| `launcher.artifact` | none | an absolute path whose file name holds `{match_id}`: the replay the game leaves for a match. radovid creates the empty file before the game starts and passes its path as `{artifact}` (in `args` and `env` values); a docker container gets exactly that file, writable at `/artifact` (at most the ruleset's `artifact_max_mib`, `--ulimit fsize`), and the rest of it stays read-only. Keep the directory above it closed to other users: the file is world-writable so the container's user can open it. `{artifact}` is allowed only in `artifact_args` and `artifact_env`, which are added to `args` and `env` when `artifacts.save_replays` is on and left out when it is off. The seats of the finished match fetch it in chunks (`MatchArtifact`; of any match that ended, lost, left or abandoned ones included, once the game wrote a file); a file that is a link, or longer than that, is never served | the game records matches |
-| `ruleset.artifact_access` | `seats` | `seats`: only the accounts that sat in the match fetch its artifact; `audience`: also every account the ruleset's `audience` admits (a replay anyone may watch by the match's id) | public replays |
-| `artifacts.save_replays` | `false` | whether matches' artifacts are kept and served at all. Off, no game is asked to write one (`artifact_args` and `artifact_env` are left out, no file is made) and `MatchArtifact` is answered `ArtifactsNotKept`; on, the behaviour of `launcher.artifact` above | a deployment that keeps replays |
-| `ruleset.artifacts.<name>` | none | a further file the ruleset's game leaves for every match, besides the replay (which is the artifact called `replay`, spelled by the `launcher.artifact*` keys above; naming `replay` here as well is refused): a table with `path` (absolute, the file name holds `{match_id}`), `args` and `env` (added to the game's while it is kept; `{artifact}` is this file's path as the game sees it, in a docker container `/artifacts/<name>`), `max_kib` or `max_mib` (default `limits.artifact_max_mib`), `access` (`seats` by default, or `audience`), `retention_days` and `cap_mib` (default the `limits` ones) and `kept` (on; off, the game is not asked and a fetch is answered `ArtifactsNotKept`). The name is 1 to 32 of `[a-z0-9_]`. `artifacts.save_replays` gates only `replay`. A client fetches one in chunks by name (`MatchArtifactNamed`) once the game has exited; radovid never reads the bytes, which say what they are and which version wrote them, so a game's durable files (a match's metadata, a PGN, a log) are kept as long as the operator says whatever happens to its replays. A docker game has one `--ulimit fsize`, the largest of its kept artifacts' sizes | the game leaves more than a replay |
-| `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the size cap, are deleted (hourly) | the disk is smaller or replays matter longer |
-| `limits.artifact_max_mib` | `64` | the most one artifact may have: a docker game cannot write more, and a longer file is not served (`NoArtifact`); at most `artifact_cap_mib` | longer matches |
-| `launcher.start_timeout_secs` | `60` | from launch to the game's `READY` | slow-starting games |
-| `launcher.memory`, `cpus`, `pids_limit` | `512m`, `1`, `256` | docker limits per container | heavier games |
-| `launcher.network` | docker's bridge | the container's network | a network without egress |
-| `launcher.publish_address` | `0.0.0.0` | host address the game port is published on | a host with several addresses |
-| `launcher.mounts` | `[]` | read-only `-v` mounts, e.g. the game's certificate | |
-| `launcher.docker` | `docker` | the docker client binary | |
-
-Docker containers always run `--read-only`, `--cap-drop ALL`, `no-new-privileges`, labelled
-`radovid.match`, environment passed by name only (`--env NAME`).
-
-### A ruleset for one player (a demo or practice game)
-
-`instant_solo = true` lets one account start a match of the ruleset alone, at once: `StartSolo` makes the match with no
-queue, no lobby and no countdown (the ruleset is unrated; the one seat is slot 0 and the game server is told only
-that seat). The match then waits for a game slot like any other and comes as `MatchQueued` and `MatchFound`.
-`radovid.example.toml` has such a `demo` ruleset: `audience = "humans_only"`, cheats on in the game's own arguments, no
-replay. What tells a client it is a demo is the game's business, put in `info` (here bota's one flag byte, which radovid
-does not read). Such a match counts among the lobby games (`lobby_games_max`) and, while it runs, among `game_capacity`,
-so a service that offers one sizes both for it.
-
-## Protocol
-
-`/control` speaks `radovid_proto`. One binary WebSocket message is one frame
-(`u32 LE length | postcard payload`): at most 64 KiB from a client, 4 MiB from the service.
-
-- The first message is `Hello { proto, game_fingerprint, client }`. The protocol version must lie in
-  `MIN_PROTO_VERSION..=PROTO_VERSION` (else `Error::ProtoMismatch`; the older ones are served while changes are
-  appended fields and variants only); the answer `Welcome` carries the version asked and the ruleset catalog.
-- Every client frame has a `seq`; the service answers it with exactly one `Reply` or `Refused`, and
-  sends `Event`s on its own. `Rulesets` and `Limits` are answered before login too.
-- A queue entry leads to `MatchProposed` (answer `MatchAccept` or `MatchDecline`),
-  `ProposalUpdate`, then `ProposalFailed` (the entry is back at its place) or `MatchQueued`
-  (waiting for a slot) and `MatchFound { handoff }` (connect), and in the end `MatchResult`.
-  `LoggedIn.activities` lists what an account has in flight; `MyMatches` and `MatchHandoff`
-  return the handoffs of its running matches, for a reconnect or a second device.
-- `registry/wire.txt` lists every enum variant and field position; it only grows. Protocol
-  version 2 restarted it (version 1 never shipped). Every wire change bumps `PROTO_VERSION`; there
-  is no rolling compatibility for now.
-- A position is never reused, like a protobuf field number. A message, variant or field that goes is
-  retired: its line stays, `retired <the line>` is appended, and a placeholder holds the position with
-  the same payload, so that every byte after it stays where it was: the variant `Retired<Name>` (a
-  frame holding one is no message, and the service never sends one) or the field `retired_<name>`
-  (always empty). Version 11 retired the join requests (`LobbyAsk`, `LobbyJoinByName`,
-  `LobbyAskCancel`, `LobbyDecide`, `LobbyJoined`, `LobbyDenied`, `NoSuchRequest`, `NoPendingRequest`,
-  `LobbyState.pending`, `Activities.asking`) and the per-ruleset team cap (`TeamTooLarge`); it serves
-  no older client.
-
-## Security notes
-
-- argon2id, at most four hashes at once and one per source; the line of waiting checks is
-  bounded and a full line answers `Throttled`. An unknown login costs a hash too. Failed logins
-  grow a delay per source and per (login, source) pair (after 3: 1, 2, 4 ... 300 s) and per
-  login across all sources (after 30), so strangers cannot hold a login back from its owner; a
-  right password after the delay always works; a resume is never delayed (its token cannot be
-  guessed).
-- Session tokens are random, stored as SHA-256, expire after 30 days idle and are revoked by a
-  password change, which also ends the other tokens' live sessions.
-- Also bounded: a client's message size (64 KiB) and rate, unauthenticated connections per
-  source, TLS and WebSocket handshakes (10 s), sessions per account, lobbies, list sizes,
-  registrations per hour per source, the game servers' output lines.
-- Stored: per account login, nickname, password hash, kind, admin and ban flags, bot version,
-  creation time; per session a token hash; per match seats, outcome, duration, the game's
-  report, ratings before and after. No e-mail, no IP address.
-
-## Tests
-
-`cargo test` runs the end-to-end tests over real WebSockets; the game servers are
-`crates/radovid/tests/fake_game.sh`, which honours the launcher contract and plays nothing (its
-report echoes what it was started with). A game's own client library carries the tests against
-its real server.
+MIT, see [LICENSE](LICENSE).

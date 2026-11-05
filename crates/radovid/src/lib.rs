@@ -1,5 +1,5 @@
 //! radovid: accounts, matchmaking, ratings and the launching of game servers,
-//! for any game that honours the launcher contract (README).
+//! for any game that honours the launcher contract (DEVELOPMENT.md).
 
 pub mod artifacts;
 pub mod config;

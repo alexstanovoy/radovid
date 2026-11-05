@@ -6,7 +6,7 @@
 //! order, each key once: `left=<slot>`, `replay=truncated` (version 2), `v=<n>`. A key radovid does not know
 //! is skipped, so a game may add facts without breaking the radovid that reads it; a game that
 //! changes what a field means says so with `v=<n>` (absent: 1), and a radovid that knows only
-//! older versions refuses the line (README "Launcher contract").
+//! older versions refuses the line (DEVELOPMENT.md "Launcher contract").
 
 use radovid_proto::MAX_GAME_REPORT_LEN;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -157,7 +157,7 @@ mod tests {
         parse_result(&format!("winner=1 duration_ms=5 report=0aff{extra}"))
     }
 
-    /// The contract in README "Launcher contract": old lines parse, new fields are skipped,
+    /// The contract in DEVELOPMENT.md "Launcher contract": old lines parse, new fields are skipped,
     /// a newer version or a damaged field is refused.
     #[test]
     fn a_result_line_reads_old_and_future_games_and_refuses_what_it_cannot_know() {

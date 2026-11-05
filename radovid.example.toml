@@ -1,4 +1,4 @@
-# radovid: the least a service needs; every other key and its default is in the README.
+# radovid: the least a service needs; every other key and its default is in DEVELOPMENT.md.
 # Run: radovid serve --config radovid.toml
 
 listen = "0.0.0.0:4460"

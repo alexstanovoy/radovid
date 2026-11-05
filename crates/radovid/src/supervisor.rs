@@ -1,5 +1,5 @@
 //! One task per launched match: starts the game server, reads its stdout
-//! (README "Launcher contract") and reports to the hub what became of it.
+//! (DEVELOPMENT.md "Launcher contract") and reports to the hub what became of it.
 
 use std::time::Duration;
 

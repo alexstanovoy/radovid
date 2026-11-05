@@ -1,4 +1,4 @@
-# Every position on the radovid wire: append-only (README.md, Protocol).
+# Every position on the radovid wire: append-only (DEVELOPMENT.md, Protocol).
 #
 # Protocol version 2 restarted this registry: version 1 carried the types of one game and never
 # shipped. From version 2 on, one line a position postcard encodes: an enum variant index, a struct or

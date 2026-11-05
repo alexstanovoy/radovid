@@ -505,7 +505,7 @@ impl Db {
 
     /// Records the end of a match and, for a rated one, the Glicko-2 update
     /// of both seats against each other's rating as stored now, in one
-    /// transaction (README "Ratings"). Returns the rating changes.
+    /// transaction (DEVELOPMENT.md "Ratings"). Returns the rating changes.
     pub async fn finish_match(&self, finish: Finish) -> DbResult<Vec<RatingChange>> {
         self.run(move |c| {
             let tx = c.transaction()?;

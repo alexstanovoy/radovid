@@ -1,6 +1,6 @@
 //! Starting one game server per match from a ruleset's launcher: a local
 //! process or a docker container, its stdout piped to radovid (the launcher
-//! contract, README "Launcher contract").
+//! contract, DEVELOPMENT.md "Launcher contract").
 
 mod lines;
 
@@ -280,7 +280,7 @@ fn docker_run_args(
 }
 
 /// Logs the first lines of a game server's stderr, cut short: a game prints
-/// no secret there (README "Launcher contract"). Reads to the end, a line at
+/// no secret there (DEVELOPMENT.md "Launcher contract"). Reads to the end, a line at
 /// a time within the bound and whatever its bytes, so the game never blocks
 /// on a full pipe nor fails to write to a closed one.
 async fn log_stderr(match_id: MatchId, stderr: tokio::process::ChildStderr) {

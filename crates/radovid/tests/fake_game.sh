@@ -1,6 +1,6 @@
 #!/bin/sh
 # A stand-in game server for the tests. It honours the launcher contract
-# (README, "Launcher contract") and plays nothing:
+# (DEVELOPMENT.md, "Launcher contract") and plays nothing:
 #   fake_game.sh --probe <hex>                        prints the fingerprint
 #   fake_game.sh <behaviour> <seconds> <match_id> <port>
 # Its report is the hex of "<match_id>|<port>|$GAME_SEATS", so a test sees

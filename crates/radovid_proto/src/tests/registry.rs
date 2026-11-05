@@ -40,7 +40,7 @@ fn the_wire_layout_only_grows() {
     assert!(
         changed.is_empty(),
         "these wire positions changed or disappeared; keep them and retire them instead \
-         (README.md, Protocol):\n{}",
+         (DEVELOPMENT.md, Protocol):\n{}",
         changed.join("\n")
     );
     let unregistered: Vec<&String> = live
