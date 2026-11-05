@@ -924,3 +924,66 @@ fn a_cheats_argument_that_every_match_gets_is_refused_at_start() {
     rules.launcher.cheats_args = vec!["--lobby-cheats".to_owned()];
     assert!(try_start(vec![rules], |_| {}).is_ok());
 }
+
+/// A cheats flag is compared whole, with the values that follow it: a value of its own may stand
+/// anywhere, a flag that merely begins like it is another flag, and the same flag with another
+/// value is another setting. Each of these rulesets starts; the same flag and value in an env
+/// value does not.
+#[test]
+fn a_cheats_argument_is_compared_whole_and_its_values_are_free() {
+    let start = |cheats: &[&str], args: &[&str], env: Option<&str>| {
+        let mut rules = ruleset("cheaty", true, "team0", "0.3");
+        rules.launcher.cheats_args = cheats.iter().map(|a| (*a).to_owned()).collect();
+        rules
+            .launcher
+            .args
+            .extend(args.iter().map(|a| (*a).to_owned()));
+        if let Some(value) = env {
+            rules
+                .launcher
+                .env
+                .insert("GAME_FLAGS".to_owned(), value.to_owned());
+        }
+        try_start(vec![rules], |_| {}).map(drop)
+    };
+    assert_eq!(
+        start(&["--cheat-level", "1"], &["--players", "10"], None),
+        Ok(())
+    );
+    assert_eq!(
+        start(&["--cheat-level", "1"], &["--level", "1"], None),
+        Ok(()),
+        "a value is no marker"
+    );
+    assert_eq!(
+        start(&["--cheats"], &["--cheats-log"], Some("--cheats-log=1")),
+        Ok(())
+    );
+    assert_eq!(
+        start(&["--sandbox"], &["--mode", "ranked"], Some("-v --verbose")),
+        Ok(())
+    );
+    assert_eq!(
+        start(&["--mode", "sandbox"], &["--mode", "ranked"], None),
+        Ok(()),
+        "another value of the flag is another setting"
+    );
+    assert_eq!(
+        start(
+            &["--mode", "sandbox"],
+            &["--port", "1", "--mode", "sandbox"],
+            None
+        ),
+        Err(
+            "ruleset cheaty: cheats_args \"--mode sandbox\" is also in args, where it would reach \
+             every match, queued and rated ones too: keep it in cheats_args alone"
+                .to_owned()
+        ),
+        "the flag with its value"
+    );
+    assert!(
+        start(&["--cheats"], &[], Some("-v --cheats"))
+            .is_err_and(|e| e.contains("is also in env GAME_FLAGS")),
+        "a word of an env value"
+    );
+}
