@@ -222,12 +222,9 @@ impl Conn {
             }
             (
                 Some(live),
-                msg @ (ClientMsg::LobbyAsk {
+                msg @ ClientMsg::LobbyJoin {
                     password: Some(_), ..
-                }
-                | ClientMsg::LobbyJoinByName {
-                    password: Some(_), ..
-                }),
+                },
             ) => {
                 // A lobby password is guessed like a login: the same delay per source.
                 let session = live.id;
@@ -575,8 +572,11 @@ fn token_hash(token: &SessionToken) -> [u8; 32] {
     Sha256::digest(token.0).into()
 }
 
+/// A frame, or none when the bytes are no message: a retired variant is none either.
 fn decode_control_frame(bytes: &[u8]) -> Option<ClientFrame> {
-    decode_payload(whole_frame(bytes, MAX_CONTROL_PAYLOAD_LEN)?).ok()
+    decode_payload(whole_frame(bytes, MAX_CONTROL_PAYLOAD_LEN)?)
+        .ok()
+        .filter(|frame: &ClientFrame| !frame.msg.is_retired())
 }
 
 /// The next event for the live session, or never while there is none.

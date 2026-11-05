@@ -77,7 +77,6 @@ fn ruleset(id: &str, rated: bool, teams: Vec<u8>, behaviour: &str, max_secs: u64
         audience: Default::default(),
         lobby_min_players: None,
         artifact_access: Default::default(),
-        lobby_max_per_team: None,
         instant_solo: false,
         artifacts: Default::default(),
         launcher: LauncherConfig {
@@ -126,6 +125,7 @@ fn config(dir: &std::path::Path) -> Config {
         },
         artifacts: Default::default(),
         lobby_teams: vec![5, 5],
+        lobby_ruleset: None,
         web: None,
         limits: LimitsConfig {
             games_per_account: PerKind { human: 2, bot: 4 },

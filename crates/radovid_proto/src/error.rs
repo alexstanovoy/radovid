@@ -60,16 +60,20 @@ pub enum Error {
     AudienceMismatch,
     NotLobbyOwner,
     NoSuchMember,
-    NoSuchRequest,
-    NoPendingRequest,
+    /// Retired: no such join request. Never sent.
+    #[doc(hidden)]
+    RetiredNoSuchRequest,
+    /// Retired: the caller had no join request there. Never sent.
+    #[doc(hidden)]
+    RetiredNoPendingRequest,
     TooManyLobbies,
     /// The lobby is counting down; nothing changes now.
     Starting,
     /// Only in `Event::Bye`: the service is shutting down.
     ServerStopping,
     Internal,
-    /// The account has this many games in flight (queue entries, lobbies, join
-    /// requests and unfinished matches) already.
+    /// The account has this many games in flight (queue entries, lobbies and unfinished
+    /// matches) already.
     TooManyGames {
         limit: u8,
     },
@@ -100,10 +104,13 @@ pub enum Error {
     NoSuchSlot,
     /// This service keeps no artifact of any match (`[artifacts] save_replays` is off).
     ArtifactsNotKept,
-    /// The lobby's ruleset takes fewer players on one team than are seated there.
-    TeamTooLarge,
+    /// Retired: a ruleset capped the players of a lobby's team. Never sent.
+    #[doc(hidden)]
+    RetiredTeamTooLarge,
     /// The ruleset does not start for one account alone (`instant_solo` in its configuration).
     NoSoloStart,
+    /// The lobby has a password and none was given.
+    LobbyPasswordRequired,
 }
 
 impl core::fmt::Display for Error {

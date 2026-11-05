@@ -1,6 +1,7 @@
 //! Lobbies: custom unrated games with an owner, a unique name, an optional
-//! password (whoever knows it is in at once), join requests, readiness and a
-//! countdown nobody can cancel. An account may sit in several.
+//! password, readiness and a countdown nobody can cancel. Whoever may sit in a
+//! lobby (it is open, or the password is right) is in at once. An account may
+//! sit in several.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -19,11 +20,6 @@ pub(super) struct Member {
     pub source: IpAddr,
 }
 
-pub(super) struct Asker {
-    pub account: AccountId,
-    pub source: IpAddr,
-}
-
 pub(super) struct Lobby {
     pub id: LobbyId,
     pub name: String,
@@ -35,8 +31,6 @@ pub(super) struct Lobby {
     pub password: Option<Secret>,
     /// Sorted by slot.
     pub members: Vec<Member>,
-    /// Join requests, oldest first.
-    pub pending: Vec<Asker>,
     pub starting: Option<Instant>,
 }
 
@@ -83,35 +77,16 @@ impl Hub {
                 self.lobby_create(session, ruleset, name, audience, password)
                     .await
             }
-            ClientMsg::LobbyList => Ok(self.lobby_list()),
-            ClientMsg::LobbyAsk { lobby, password } => {
-                self.lobby_ask(session, lobby, password).await
-            }
-            ClientMsg::LobbyJoinByName { name, password } => {
-                let lobby = self
-                    .lobbies
-                    .values()
-                    .find(|l| l.name.eq_ignore_ascii_case(&name))
-                    .map(|l| l.id)
-                    .ok_or(Error::UnknownLobby)?;
-                self.lobby_ask(session, lobby, password).await
-            }
-            ClientMsg::LobbyAskCancel { lobby } => {
-                if !self
-                    .accounts
-                    .get(&id)
-                    .is_some_and(|a| a.asking.contains(&lobby))
-                {
-                    return Err(Error::NoPendingRequest);
+            ClientMsg::LobbyList => Ok(self.lobby_list("")),
+            ClientMsg::LobbySearch { query } => {
+                if query.chars().count() > MAX_LOBBY_NAME_LEN {
+                    return Err(Error::BadLobbyName);
                 }
-                self.cancel_ask(id, lobby);
-                Ok(Reply::Done)
+                Ok(self.lobby_list(&query))
             }
-            ClientMsg::LobbyDecide {
-                lobby,
-                account,
-                allow,
-            } => self.lobby_decide(id, lobby, account, allow).await,
+            ClientMsg::LobbyJoin { lobby, password } => {
+                self.lobby_join(session, lobby, password).await
+            }
             ClientMsg::LobbyKick { lobby, account } => self.lobby_kick(id, lobby, account),
             ClientMsg::LobbyReady { lobby, ready } => self.lobby_ready(id, lobby, ready),
             ClientMsg::LobbySlot {
@@ -180,11 +155,7 @@ impl Hub {
                     self.member_view(m.account, m.slot, m.ready, m.rating, team)
                 })
                 .collect(),
-            pending: lobby
-                .pending
-                .iter()
-                .map(|a| self.member_view(a.account, 0, false, None, 0))
-                .collect(),
+            retired_pending: Retired,
             starting_in_ms: lobby.starting.map(millis_until),
             teams: self.config.lobby_teams.clone(),
         }
@@ -268,7 +239,6 @@ impl Hub {
                 rating,
                 source,
             }],
-            pending: Vec::new(),
             starting: None,
         };
         let state = self.lobby_state(&lobby);
@@ -289,23 +259,32 @@ impl Hub {
         }
     }
 
-    fn lobby_list(&self) -> Reply {
+    /// The open lobbies, newest first, whose name or owner's nickname holds `query` (ASCII case
+    /// ignored; empty matches every one).
+    fn lobby_list(&self, query: &str) -> Reply {
         let list = self
             .lobbies
             .values()
             .rev()
             .filter(|l| l.starting.is_none() && !l.is_full())
+            .map(|l| {
+                let owner_nickname = self
+                    .accounts
+                    .get(&l.owner)
+                    .map(|a| a.info.nickname.clone())
+                    .unwrap_or_default();
+                (l, owner_nickname)
+            })
+            .filter(|(l, owner)| {
+                holds_ignoring_case(&l.name, query) || holds_ignoring_case(owner, query)
+            })
             .take(MAX_LOBBY_LIST)
-            .map(|l| LobbySummary {
+            .map(|(l, owner_nickname)| LobbySummary {
                 id: l.id,
                 name: l.name.clone(),
                 ruleset: l.ruleset.clone(),
                 owner: l.owner,
-                owner_nickname: self
-                    .accounts
-                    .get(&l.owner)
-                    .map(|a| a.info.nickname.clone())
-                    .unwrap_or_default(),
+                owner_nickname,
                 audience: l.audience,
                 locked: l.password.is_some(),
                 members: l.members.len() as u8,
@@ -315,8 +294,8 @@ impl Hub {
         Reply::Lobbies { list }
     }
 
-    /// A join request, or with the lobby's password the seat itself.
-    async fn lobby_ask(
+    /// The seat itself, at once: an open lobby needs no password, a locked one the right one.
+    async fn lobby_join(
         &mut self,
         session: SessionId,
         lobby: LobbyId,
@@ -334,41 +313,26 @@ impl Hub {
                 state: self.lobby_state(l),
             });
         }
-        if l.pending.iter().any(|a| a.account == id) {
-            return Ok(Reply::Done);
-        }
         if l.starting.is_some() {
             return Err(Error::Starting);
         }
-        if l.is_full() || l.pending.len() >= MAX_PENDING_PER_LOBBY {
+        if l.is_full() {
             return Err(Error::LobbyFull);
         }
         if !l.audience.admits(self.kind_of(id)) {
             return Err(Error::AudienceMismatch);
         }
         let rules = config.ruleset(&l.ruleset).ok_or(Error::UnknownRuleset)?;
-        let direct = match (&password, &l.password) {
-            (Some(given), Some(set)) if same_secret(given, set) => true,
+        match (&password, &l.password) {
+            (_, None) => {}
+            (None, Some(_)) => return Err(Error::LobbyPasswordRequired),
+            (Some(given), Some(set)) if same_secret(given, set) => {}
             (Some(_), Some(_)) => return Err(Error::BadLobbyPassword),
-            _ => false,
-        };
+        }
         self.admit_game(session, rules)?;
-        if direct {
-            let rating = self.rating_for(id, &rules.ruleset_id()).await;
-            let state = self.seat_member(lobby, id, rating, source)?;
-            return Ok(Reply::Lobby { state });
-        }
-        if let Some(l) = self.lobbies.get_mut(&lobby) {
-            l.pending.push(Asker {
-                account: id,
-                source,
-            });
-        }
-        if let Some(account) = self.accounts.get_mut(&id) {
-            account.asking.push(lobby);
-        }
-        self.broadcast_lobby(lobby, None);
-        Ok(Reply::Done)
+        let rating = self.rating_for(id, &rules.ruleset_id()).await;
+        let state = self.seat_member(lobby, id, rating, source)?;
+        Ok(Reply::Lobby { state })
     }
 
     /// Gives an account the lowest free seat and tells the others.
@@ -396,18 +360,6 @@ impl Hub {
         Ok(self.lobby_state(&self.lobbies[&lobby]))
     }
 
-    /// Withdraws a pending join request of an account, if it has one there.
-    pub(super) fn cancel_ask(&mut self, id: AccountId, lobby: LobbyId) {
-        if let Some(account) = self.accounts.get_mut(&id) {
-            account.asking.retain(|l| *l != lobby);
-        }
-        if let Some(l) = self.lobbies.get_mut(&lobby) {
-            l.pending.retain(|a| a.account != id);
-            self.broadcast_lobby(lobby, None);
-        }
-        self.forget_if_idle(id);
-    }
-
     fn owned_by(&self, id: AccountId, lobby: LobbyId) -> Result<(), Error> {
         match self.lobbies.get(&lobby) {
             Some(l) if l.owner == id => Ok(()),
@@ -429,41 +381,6 @@ impl Hub {
             Some(_) => Ok(()),
             None => Err(Error::UnknownLobby),
         }
-    }
-
-    async fn lobby_decide(
-        &mut self,
-        id: AccountId,
-        lobby: LobbyId,
-        asker: AccountId,
-        allow: bool,
-    ) -> Result<Reply, Error> {
-        self.owned_by(id, lobby)?;
-        self.not_starting(lobby)?;
-        let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
-        let at = l
-            .pending
-            .iter()
-            .position(|a| a.account == asker)
-            .ok_or(Error::NoSuchRequest)?;
-        if allow && l.is_full() {
-            return Err(Error::LobbyFull);
-        }
-        let ruleset = l.ruleset.clone();
-        let Asker { source, .. } = l.pending.remove(at);
-        if let Some(account) = self.accounts.get_mut(&asker) {
-            account.asking.retain(|x| *x != lobby);
-        }
-        if !allow {
-            self.notify(asker, Event::LobbyDenied { lobby });
-            self.forget_if_idle(asker);
-            self.broadcast_lobby(lobby, None);
-            return Ok(Reply::Done);
-        }
-        let rating = self.rating_for(asker, &ruleset).await;
-        let state = self.seat_member(lobby, asker, rating, source)?;
-        self.notify(asker, Event::LobbyJoined { state });
-        Ok(Reply::Done)
     }
 
     fn lobby_kick(
@@ -579,7 +496,6 @@ impl Hub {
             .get(&lobby)
             .and_then(|l| self.config.ruleset(&l.ruleset));
         let needed = rules.map_or(usize::MAX, |rules| usize::from(rules.lobby_min_players()));
-        let per_team = rules.map_or(0, |rules| usize::from(rules.lobby_max_per_team()));
         let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
         let starts = l.owner == id && ready;
         if starts {
@@ -591,17 +507,6 @@ impl Hub {
                     .any(|m| m.account == id && m.slot == LOBBY_NO_SLOT)
             {
                 return Err(Error::LobbyNotFull);
-            }
-            // The slots do not follow the ruleset, so the rules say how many a team may seat.
-            let mut on_team =
-                vec![0_usize; l.teams.iter().max().map_or(0, |t| usize::from(*t) + 1)];
-            for member in seated.clone() {
-                if let Some(team) = l.teams.get(usize::from(member.slot)) {
-                    on_team[usize::from(*team)] += 1;
-                }
-            }
-            if on_team.iter().any(|n| *n > per_team) {
-                return Err(Error::TeamTooLarge);
             }
             if seated.into_iter().any(|m| m.account != id && !m.ready) {
                 return Err(Error::NotAllReady);
@@ -647,13 +552,6 @@ impl Hub {
         let Some(l) = self.lobbies.remove(&lobby) else {
             return;
         };
-        for asker in &l.pending {
-            if let Some(account) = self.accounts.get_mut(&asker.account) {
-                account.asking.retain(|x| *x != lobby);
-            }
-            self.notify(asker.account, Event::LobbyDenied { lobby });
-            self.forget_if_idle(asker.account);
-        }
         let config = Arc::clone(&self.config);
         // The members who hold a slot play, in slot order and on the sides they chose; the
         // spectators' lobby ends with the countdown.
@@ -714,13 +612,6 @@ impl Hub {
         let Some(l) = self.lobbies.remove(&lobby) else {
             return;
         };
-        for asker in &l.pending {
-            if let Some(account) = self.accounts.get_mut(&asker.account) {
-                account.asking.retain(|x| *x != lobby);
-            }
-            self.notify(asker.account, Event::LobbyDenied { lobby });
-            self.forget_if_idle(asker.account);
-        }
         for member in &l.members {
             if let Some(account) = self.accounts.get_mut(&member.account) {
                 account.lobbies.retain(|x| *x != lobby);
@@ -729,6 +620,15 @@ impl Hub {
             self.forget_if_idle(member.account);
         }
     }
+}
+
+/// Whether `text` holds `query`, ASCII case ignored.
+fn holds_ignoring_case(text: &str, query: &str) -> bool {
+    let (text, query) = (text.as_bytes(), query.as_bytes());
+    query.is_empty()
+        || text
+            .windows(query.len())
+            .any(|w| w.eq_ignore_ascii_case(query))
 }
 
 /// Whether two secrets are equal, in time that depends on their lengths

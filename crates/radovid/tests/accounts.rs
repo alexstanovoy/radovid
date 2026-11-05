@@ -469,6 +469,26 @@ fn hostile_input_closes_that_connection_and_nothing_else() {
         "{told:?}"
     );
 
+    // A retired message keeps its place on the wire and is no message.
+    let mut client = env.connect();
+    let retired = ClientFrame {
+        seq: 1,
+        msg: ClientMsg::RetiredLobbyAsk,
+    };
+    client
+        .send_raw(encode_frame_to_vec(&retired).expect("encoded"))
+        .expect("sent");
+    let told = read_raw(&mut client, 5);
+    assert!(
+        matches!(
+            told,
+            Ok(Some(Incoming::Event(Event::Bye {
+                error: Error::Malformed
+            })))
+        ),
+        "{told:?}"
+    );
+
     // A message far over the limit is refused as its header comes in: the
     // connection just ends.
     let mut client = env.connect();

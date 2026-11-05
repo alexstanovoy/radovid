@@ -1,12 +1,12 @@
 //! Limits both sides hold.
 
 /// The version of every wire type here. Bumped on every change of any of them.
-pub const PROTO_VERSION: u16 = 10;
+pub const PROTO_VERSION: u16 = 11;
 
 /// The oldest version a server still serves: a client of it keeps working while the changes since
 /// are only appended fields and variants (postcard leaves trailing bytes of a message unread).
 /// Raised only with a change an older client cannot read.
-pub const MIN_PROTO_VERSION: u16 = 7;
+pub const MIN_PROTO_VERSION: u16 = 11;
 
 /// Bytes of a match artifact (a game's replay) one `Reply::Artifact` carries at most: well under
 /// `MAX_SERVER_PAYLOAD_LEN`.
@@ -56,8 +56,6 @@ pub const MAX_LOBBY_LIST: usize = 100;
 pub const MAX_RECENT_MATCHES: u8 = 50;
 /// Lobbies alive at once at most.
 pub const MAX_LOBBIES: usize = 256;
-/// Join requests pending per lobby at most.
-pub const MAX_PENDING_PER_LOBBY: usize = 16;
 /// Seats of a match at most.
 pub const MAX_SEATS: usize = 10;
 

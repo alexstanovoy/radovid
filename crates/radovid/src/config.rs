@@ -40,6 +40,9 @@ pub struct Config {
     /// chosen for a lobby changes the rules and never this layout.
     #[serde(default = "default_lobby_teams")]
     pub lobby_teams: Vec<u8>,
+    /// The id of the ruleset a new lobby is of unless its host chooses another (clients are told
+    /// it in `RulesetInfo::lobby_default`); the first `[[ruleset]]` when absent.
+    pub lobby_ruleset: Option<String>,
     /// Files served on the listener's own origin, beside `/control`.
     pub web: Option<WebConfig>,
     #[serde(rename = "ruleset")]
@@ -147,8 +150,8 @@ impl PerKindOrBoth {
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct LimitsConfig {
-    /// Games in flight per account: queue entries, lobbies, join requests and
-    /// unfinished matches.
+    /// Games in flight per account: queue entries, lobbies and unfinished
+    /// matches.
     pub games_per_account: PerKind,
     /// Games in flight of all accounts of one source (an IPv4 address or an
     /// IPv6 /64).
@@ -227,10 +230,6 @@ pub struct RulesetConfig {
     /// Who may fetch a finished match's artifact (its replay).
     #[serde(default)]
     pub artifact_access: ArtifactAccess,
-    /// Most players one team may seat when a lobby of this ruleset starts; the largest of `teams`
-    /// when absent. The lobby's slots do not depend on the ruleset, so a game that plays more per
-    /// side than its queue pairs says so here.
-    pub lobby_max_per_team: Option<u8>,
     /// One account may start a match of it alone at once (`StartSolo`): no queue, no lobby, no
     /// countdown. For a demo or practice ruleset: unrated, and the game server is told one seat.
     #[serde(default)]
@@ -460,7 +459,12 @@ impl RulesetConfig {
             .of(kind)
     }
 
-    pub fn info(&self, limits: &LimitsConfig, kind: AccountKind) -> RulesetInfo {
+    pub fn info(
+        &self,
+        limits: &LimitsConfig,
+        kind: AccountKind,
+        lobby_default: bool,
+    ) -> RulesetInfo {
         RulesetInfo {
             id: self.ruleset_id(),
             name: self.name.clone(),
@@ -472,18 +476,13 @@ impl RulesetConfig {
             games_per_account: self.games_per_account(limits, kind),
             audience: self.audience.into(),
             lobby_min_players: self.lobby_min_players(),
+            lobby_default,
         }
     }
 
     /// Players a lobby of this ruleset needs before its host starts it.
     pub fn lobby_min_players(&self) -> u8 {
         self.lobby_min_players.unwrap_or(1)
-    }
-
-    /// Most players one team may seat when a lobby of this ruleset starts.
-    pub fn lobby_max_per_team(&self) -> u8 {
-        self.lobby_max_per_team
-            .unwrap_or_else(|| self.teams.iter().copied().max().unwrap_or(1))
     }
 
     /// Whether an account of `kind` may queue and sit in lobbies here.
@@ -609,18 +608,20 @@ impl Config {
             ));
         }
         for ruleset in &self.rulesets {
-            let asks = [
-                ("lobby_min_players", ruleset.lobby_min_players),
-                ("lobby_max_per_team", ruleset.lobby_max_per_team),
-            ];
-            for (key, value) in asks {
-                if value.is_some_and(|n| usize::from(n) > seats) {
-                    return Err(format!(
-                        "ruleset {}: {key} is at most the lobby's {seats} seats",
-                        ruleset.id
-                    ));
-                }
+            if ruleset
+                .lobby_min_players
+                .is_some_and(|n| usize::from(n) > seats)
+            {
+                return Err(format!(
+                    "ruleset {}: lobby_min_players is at most the lobby's {seats} seats",
+                    ruleset.id
+                ));
             }
+        }
+        if let Some(id) = &self.lobby_ruleset
+            && self.rulesets.iter().all(|r| &r.id != id)
+        {
+            return Err(format!("lobby_ruleset {id:?} names no [[ruleset]]"));
         }
         Ok(())
     }
@@ -736,11 +737,19 @@ impl Config {
     }
 
     pub fn ruleset_infos(&self, kind: AccountKind) -> Vec<RulesetInfo> {
+        let lobby_default = self.lobby_ruleset();
         self.rulesets
             .iter()
             .filter(|r| r.admits(kind))
-            .map(|r| r.info(&self.limits, kind))
+            .map(|r| r.info(&self.limits, kind, Some(r.id.as_str()) == lobby_default))
             .collect()
+    }
+
+    /// The id of the ruleset a new lobby is of unless its host chooses another.
+    pub fn lobby_ruleset(&self) -> Option<&str> {
+        self.lobby_ruleset
+            .as_deref()
+            .or_else(|| self.rulesets.first().map(|r| r.id.as_str()))
     }
 }
 
@@ -762,8 +771,8 @@ fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {
             "needs two or more teams of at least one, {MAX_SEATS} seats at most"
         ));
     }
-    if ruleset.lobby_min_players == Some(0) || ruleset.lobby_max_per_team == Some(0) {
-        return Err("lobby_min_players and lobby_max_per_team are at least 1".to_owned());
+    if ruleset.lobby_min_players == Some(0) {
+        return Err("lobby_min_players is at least 1".to_owned());
     }
     if ruleset.instant_solo && ruleset.rated {
         return Err("an instant_solo ruleset is unrated".to_owned());

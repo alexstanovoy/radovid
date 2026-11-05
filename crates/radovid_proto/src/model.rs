@@ -126,13 +126,20 @@ pub struct RulesetInfo {
     /// Players a lobby of it needs before its host may start it: the seats, unless the
     /// service lets a lobby start with fewer: the seats nobody holds stay empty.
     pub lobby_min_players: u8,
+    /// The ruleset a new lobby is of unless its host chooses another (the service's
+    /// `lobby_ruleset`); one ruleset of the catalog at most.
+    pub lobby_default: bool,
 }
+
+/// A retired position of the wire: a struct field that is gone keeps its place with this, which
+/// takes no bytes, so that no later field takes its number.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Retired;
 
 /// What bounds an account's play, as it applies to the caller.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Games in flight at once: queue entries, lobbies, join requests and
-    /// unfinished matches.
+    /// Games in flight at once: queue entries, lobbies and unfinished matches.
     pub games_per_account: u8,
     /// Milliseconds to accept a proposal; silence counts as a decline.
     pub accept_timeout_ms: u32,
@@ -189,8 +196,9 @@ pub struct Activities {
     pub matches: Vec<MatchId>,
     /// Milliseconds before the account may queue again.
     pub cooldown_ms: u32,
-    /// Lobbies with a join request of the account pending.
-    pub asking: Vec<LobbyId>,
+    /// Retired: the lobbies the account asked to join.
+    #[doc(hidden)]
+    pub retired_asking: Retired,
 }
 
 /// Why a queue entry is gone without a match.
@@ -280,11 +288,12 @@ pub struct LobbyState {
     pub audience: Audience,
     /// Always false today: lobbies are unrated.
     pub rated: bool,
-    /// Has a password: whoever knows it joins without asking.
+    /// Has a password: whoever knows it joins.
     pub locked: bool,
     pub members: Vec<LobbyMember>,
-    /// Join requests awaiting the owner; slot, team and ready mean nothing there.
-    pub pending: Vec<LobbyMember>,
+    /// Retired: the join requests awaiting the owner.
+    #[doc(hidden)]
+    pub retired_pending: Retired,
     pub starting_in_ms: Option<u32>,
     /// The lobby's slots: the size of each team, slots numbered team by team. The service's, the
     /// same for every ruleset.

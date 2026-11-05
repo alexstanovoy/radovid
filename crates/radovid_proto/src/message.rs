@@ -95,25 +95,18 @@ pub enum ClientMsg {
         password: Option<Secret>,
     },
     LobbyList,
-    /// Without a password, a request the owner decides; with the right one,
-    /// the caller is in at once.
-    LobbyAsk {
-        lobby: LobbyId,
-        password: Option<Secret>,
-    },
-    /// As `LobbyAsk`, finding the open lobby by its name.
-    LobbyJoinByName {
-        name: String,
-        password: Option<Secret>,
-    },
-    LobbyAskCancel {
-        lobby: LobbyId,
-    },
-    LobbyDecide {
-        lobby: LobbyId,
-        account: AccountId,
-        allow: bool,
-    },
+    /// Retired: a join that asked the owner. Never sent; a frame with it is no message.
+    #[doc(hidden)]
+    RetiredLobbyAsk,
+    /// Retired: a join by the lobby's name. Never sent; a frame with it is no message.
+    #[doc(hidden)]
+    RetiredLobbyJoinByName,
+    /// Retired: withdrew a request to the owner. Never sent; a frame with it is no message.
+    #[doc(hidden)]
+    RetiredLobbyAskCancel,
+    /// Retired: the owner's answer to a request. Never sent; a frame with it is no message.
+    #[doc(hidden)]
+    RetiredLobbyDecide,
     LobbyKick {
         lobby: LobbyId,
         account: AccountId,
@@ -192,6 +185,33 @@ pub enum ClientMsg {
         name: String,
         offset: u64,
     },
+    /// Sits in a lobby at once, in the lowest free slot: an open lobby needs no password, a
+    /// locked one its password (`LobbyPasswordRequired` without one, `BadLobbyPassword` for a
+    /// wrong one). The answer is `Lobby`.
+    LobbyJoin {
+        lobby: LobbyId,
+        password: Option<Secret>,
+    },
+    /// The open lobbies whose name or owner's nickname holds `query` (ASCII case ignored; at
+    /// most `MAX_LOBBY_NAME_LEN` characters, empty lists them all), newest first, as `LobbyList`
+    /// lists them. The answer is `Lobbies`.
+    LobbySearch {
+        query: String,
+    },
+}
+
+impl ClientMsg {
+    /// Whether this is a retired variant: a placeholder that keeps its position on the wire and
+    /// is never a message.
+    pub fn is_retired(&self) -> bool {
+        matches!(
+            self,
+            ClientMsg::RetiredLobbyAsk
+                | ClientMsg::RetiredLobbyJoinByName
+                | ClientMsg::RetiredLobbyAskCancel
+                | ClientMsg::RetiredLobbyDecide
+        )
+    }
 }
 
 /// The answer to a request that succeeded.
@@ -301,12 +321,12 @@ pub enum Event {
         lobby: LobbyId,
         in_ms: u32,
     },
-    LobbyJoined {
-        state: LobbyState,
-    },
-    LobbyDenied {
-        lobby: LobbyId,
-    },
+    /// Retired: told an asker the owner let it in. Never sent.
+    #[doc(hidden)]
+    RetiredLobbyJoined,
+    /// Retired: told an asker the owner said no. Never sent.
+    #[doc(hidden)]
+    RetiredLobbyDenied,
     LobbyKicked {
         lobby: LobbyId,
     },

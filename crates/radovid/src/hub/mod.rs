@@ -107,8 +107,6 @@ struct Account {
     sessions: Vec<SessionId>,
     entries: Vec<QueueEntryId>,
     lobbies: Vec<LobbyId>,
-    /// Lobbies with a join request of the account pending.
-    asking: Vec<LobbyId>,
     /// Unfinished matches: waiting for a slot, starting or running.
     matches: Vec<MatchId>,
 }
@@ -116,7 +114,7 @@ struct Account {
 impl Account {
     /// Games in flight: what the per-account limit counts.
     fn in_flight(&self) -> usize {
-        self.entries.len() + self.lobbies.len() + self.asking.len() + self.matches.len()
+        self.entries.len() + self.lobbies.len() + self.matches.len()
     }
 
     fn is_idle(&self) -> bool {
@@ -300,7 +298,6 @@ impl Hub {
             sessions: Vec::new(),
             entries: Vec::new(),
             lobbies: Vec::new(),
-            asking: Vec::new(),
             matches: Vec::new(),
         });
         entry.info = account.info();
@@ -331,7 +328,7 @@ impl Hub {
             lobbies: account.lobbies.clone(),
             matches: account.matches.clone(),
             cooldown_ms: self.cooldown_ms(id),
-            asking: account.asking.clone(),
+            retired_asking: Retired,
         }
     }
 
@@ -350,7 +347,7 @@ impl Hub {
     }
 
     /// The last control session of an account is gone: its queue entries
-    /// (an open proposal counts as declined), join requests and lobbies end
+    /// (an open proposal counts as declined) and lobbies end
     /// (but not a lobby counting down); its matches run on.
     fn account_went_away(&mut self, id: AccountId) {
         self.drop_entries(id, true);
@@ -370,14 +367,11 @@ impl Hub {
     }
 
     fn drop_lobbies(&mut self, id: AccountId) {
-        let (asking, lobbies) = self
+        let lobbies = self
             .accounts
             .get(&id)
-            .map(|a| (a.asking.clone(), a.lobbies.clone()))
+            .map(|a| a.lobbies.clone())
             .unwrap_or_default();
-        for lobby in asking {
-            self.cancel_ask(id, lobby);
-        }
         for lobby in lobbies {
             if self
                 .lobbies

@@ -88,16 +88,13 @@ impl Hub {
     }
 
     /// Games in flight of every account at `source`: queue entries, lobby
-    /// seats, join requests and unfinished matches started from there.
+    /// seats and unfinished matches started from there.
     fn source_in_flight(&self, source: IpAddr) -> usize {
         let entries = self.entries.values().filter(|e| e.source == source).count();
         let lobbies: usize = self
             .lobbies
             .values()
-            .map(|l| {
-                l.members.iter().filter(|m| m.source == source).count()
-                    + l.pending.iter().filter(|p| p.source == source).count()
-            })
+            .map(|l| l.members.iter().filter(|m| m.source == source).count())
             .sum();
         let matches: usize = self
             .matches

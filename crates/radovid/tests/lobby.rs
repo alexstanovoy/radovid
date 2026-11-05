@@ -1,6 +1,6 @@
-//! Custom games: names and passwords, join requests, kicks, readiness, the
-//! countdown nobody can cancel, the lobby closing with its owner, and several
-//! lobbies per account.
+//! Custom games: names, search and passwords, joining at once, kicks,
+//! readiness, the countdown nobody can cancel, the lobby closing with its
+//! owner, and several lobbies per account.
 
 mod common;
 
@@ -36,26 +36,16 @@ fn create(owner: &mut Account, name: &str, password: Option<&str>) -> LobbyState
     }
 }
 
-/// `member` asks into `lobby`; the owner lets it in.
-fn join(owner: &mut Account, member: &mut Account, lobby: LobbyId) {
-    member.expect_done(ClientMsg::LobbyAsk {
+/// `member` sits in the open `lobby` at once.
+fn join(member: &mut Account, lobby: LobbyId) {
+    let state = match member.ask(ClientMsg::LobbyJoin {
         lobby,
         password: None,
-    });
-    owner.wait_for(10, |event| match event {
-        Event::LobbyState { state } if state.pending.iter().any(|m| m.account == member.me.id) => {
-            Some(())
-        }
-        _ => None,
-    });
-    owner.expect_done(ClientMsg::LobbyDecide {
-        lobby,
-        account: member.me.id,
-        allow: true,
-    });
-    member.wait_for(10, |event| {
-        matches!(event, Event::LobbyJoined { .. }).then_some(())
-    });
+    }) {
+        Ok(Reply::Lobby { state }) => state,
+        other => panic!("join: {other:?}"),
+    };
+    assert!(state.members.iter().any(|m| m.account == member.me.id));
 }
 
 #[test]
@@ -76,7 +66,7 @@ fn a_lobby_fills_kicks_counts_down_and_starts_an_unrated_match() {
     );
     assert_eq!((state.members[0].slot, state.members[0].team), (0, 0));
 
-    // Listed while it has a free seat; a request waits for the owner.
+    // Listed while it has a free seat; whoever may sit is in at once.
     let Ok(Reply::Lobbies { list }) = guest.ask(ClientMsg::LobbyList) else {
         panic!("list")
     };
@@ -90,13 +80,13 @@ fn a_lobby_fills_kicks_counts_down_and_starts_an_unrated_match() {
         (1, "olga", 1, 10)
     );
     assert_eq!(
-        guest.ask(ClientMsg::LobbyAsk {
+        guest.ask(ClientMsg::LobbyJoin {
             lobby: LobbyId(999),
             password: None
         }),
         Err(Error::UnknownLobby)
     );
-    join(&mut owner, &mut guest, lobby);
+    join(&mut guest, lobby);
     let joined = owner.wait_for(10, |event| match event {
         Event::LobbyState { state } if state.members.len() == 2 => Some(state),
         _ => None,
@@ -110,10 +100,9 @@ fn a_lobby_fills_kicks_counts_down_and_starts_an_unrated_match() {
         ("gus", 1, Some("test-1"))
     );
     assert_eq!(
-        guest.ask(ClientMsg::LobbyDecide {
+        guest.ask(ClientMsg::LobbyKick {
             lobby,
-            account: owner.me.id,
-            allow: true
+            account: owner.me.id
         }),
         Err(Error::NotLobbyOwner)
     );
@@ -150,7 +139,7 @@ fn a_lobby_fills_kicks_counts_down_and_starts_an_unrated_match() {
     );
 
     // Back in, ready; the owner's ready starts the count.
-    join(&mut owner, &mut guest, lobby);
+    join(&mut guest, lobby);
     guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
     let started = Instant::now();
     owner.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
@@ -213,6 +202,7 @@ fn a_password_lets_in_at_once_and_names_are_unique() {
     let mut stranger = env.account("sam", AccountKind::Human);
     let state = create(&mut owner, "Friday Night", Some("open sesame"));
     assert!(state.locked);
+    let lobby = state.id;
     let Ok(Reply::Lobbies { list }) = stranger.ask(ClientMsg::LobbyList) else {
         panic!("list")
     };
@@ -225,18 +215,26 @@ fn a_password_lets_in_at_once_and_names_are_unique() {
     };
     assert_eq!(friend.ask(taken), Err(Error::LobbyNameTaken));
 
+    // A locked lobby takes its password and nothing else: no request for the owner to decide.
     assert_eq!(
-        stranger.ask(ClientMsg::LobbyJoinByName {
-            name: "Friday Night".to_owned(),
+        stranger.ask(ClientMsg::LobbyJoin {
+            lobby,
+            password: None
+        }),
+        Err(Error::LobbyPasswordRequired)
+    );
+    assert_eq!(
+        stranger.ask(ClientMsg::LobbyJoin {
+            lobby,
             password: Some(Secret::new("guess"))
         }),
         Err(Error::BadLobbyPassword)
     );
-    let Ok(Reply::Lobby { state }) = friend.ask(ClientMsg::LobbyJoinByName {
-        name: "Friday Night".to_owned(),
+    let Ok(Reply::Lobby { state }) = friend.ask(ClientMsg::LobbyJoin {
+        lobby,
         password: Some(Secret::new("open sesame")),
     }) else {
-        panic!("join by name");
+        panic!("join with the password");
     };
     assert_eq!(state.members[1].account, friend.me.id);
     let seen = owner.wait_for(10, |event| match event {
@@ -244,13 +242,70 @@ fn a_password_lets_in_at_once_and_names_are_unique() {
         _ => None,
     });
     assert_eq!(seen, 2);
-    // Without the password, a request is the owner's to decide, as anywhere.
     assert_eq!(
-        stranger.ask(ClientMsg::LobbyAsk {
-            lobby: state.id,
-            password: None
+        stranger.ask(ClientMsg::LobbyJoin {
+            lobby,
+            password: Some(Secret::new("open sesame"))
         }),
         Err(Error::LobbyFull)
+    );
+}
+
+/// The service names the ruleset a new lobby is of: its `lobby_ruleset`, else its first, and no
+/// other; a `lobby_ruleset` that names no ruleset is refused at start.
+#[test]
+fn the_lobby_ruleset_is_the_default_of_a_new_lobby() {
+    let defaults = |env: &Env| match env.human("lena").ask(ClientMsg::Rulesets) {
+        Ok(Reply::Rulesets { list }) => list
+            .into_iter()
+            .filter(|r| r.lobby_default)
+            .map(|r| r.id.0)
+            .collect::<Vec<_>>(),
+        other => panic!("rulesets: {other:?}"),
+    };
+    assert_eq!(
+        defaults(&start(rules())),
+        ["solo"],
+        "the first unless named"
+    );
+    let named = start_configured(rules(), |c| c.lobby_ruleset = Some("fun".to_owned()));
+    assert_eq!(defaults(&named), ["fun"]);
+    let refused = try_start(rules(), |c| c.lobby_ruleset = Some("nowhere".to_owned()));
+    assert!(
+        refused.is_err_and(|e| e.contains("lobby_ruleset \"nowhere\" names no [[ruleset]]")),
+        "a lobby_ruleset of no ruleset is refused"
+    );
+}
+
+/// A search lists the open lobbies whose name or owner holds the text, case ignored; an empty
+/// one lists them all, and one longer than any name is refused.
+#[test]
+fn a_search_finds_lobbies_by_name_and_owner() {
+    let env = start(rules());
+    let mut olga = env.account("olga", AccountKind::Human);
+    let mut fritz = env.account("fritz", AccountKind::Human);
+    let mut seeker = env.account("sam", AccountKind::Human);
+    create(&mut olga, "Friday Night", Some("open sesame"));
+    create(&mut fritz, "Practice", None);
+    let mut search = |query: &str| match seeker.ask(ClientMsg::LobbySearch {
+        query: query.to_owned(),
+    }) {
+        Ok(Reply::Lobbies { list }) => list.into_iter().map(|l| l.name).collect::<Vec<_>>(),
+        other => panic!("search {query:?}: {other:?}"),
+    };
+    assert_eq!(search("FRIDAY"), ["Friday Night"], "by name, case ignored");
+    assert_eq!(search("frit"), ["Practice"], "by the owner's nickname");
+    assert_eq!(
+        search(""),
+        ["Practice", "Friday Night"],
+        "all, newest first"
+    );
+    assert!(search("saturday").is_empty());
+    assert_eq!(
+        seeker.ask(ClientMsg::LobbySearch {
+            query: "x".repeat(MAX_LOBBY_NAME_LEN + 1),
+        }),
+        Err(Error::BadLobbyName)
     );
 }
 
@@ -286,7 +341,7 @@ fn a_member_who_drops_during_the_countdown_is_still_in_the_match() {
     let mut owner = env.account("olga", AccountKind::Human);
     let mut guest = env.bot("gus");
     let lobby = create(&mut owner, "casual game", None).id;
-    join(&mut owner, &mut guest, lobby);
+    join(&mut guest, lobby);
     guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
     owner.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
     owner.wait_for(10, |event| {
@@ -348,15 +403,15 @@ fn the_owner_leaving_closes_the_lobby_and_audiences_are_kept() {
         other => panic!("{other:?}"),
     };
     assert_eq!(
-        bot.ask(ClientMsg::LobbyAsk {
+        bot.ask(ClientMsg::LobbyJoin {
             lobby: state.id,
             password: None
         }),
         Err(Error::AudienceMismatch)
     );
-    join(&mut owner, &mut human, state.id);
+    join(&mut human, state.id);
     assert_eq!(
-        asker.ask(ClientMsg::LobbyAsk {
+        asker.ask(ClientMsg::LobbyJoin {
             lobby: state.id,
             password: None
         }),
@@ -374,23 +429,15 @@ fn the_owner_leaving_closes_the_lobby_and_audiences_are_kept() {
     };
     assert!(list.is_empty());
 
-    // A pending asker is denied when the owner goes; a vanished owner closes it too.
+    // A vanished owner closes it too.
     let state = create(&mut owner, "again", None);
-    let ask = ClientMsg::LobbyAsk {
-        lobby: state.id,
-        password: None,
-    };
-    asker.expect_done(ask.clone());
-    asker.expect_done(ClientMsg::LobbyAskCancel { lobby: state.id });
-    assert_eq!(
-        asker.ask(ClientMsg::LobbyAskCancel { lobby: state.id }),
-        Err(Error::NoPendingRequest)
-    );
-    asker.expect_done(ask);
+    join(&mut asker, state.id);
     drop(owner);
-    asker.wait_for(10, |event| {
-        matches!(event, Event::LobbyDenied { .. }).then_some(())
+    let closed = asker.wait_for(10, |event| match event {
+        Event::LobbyClosed { lobby } => Some(lobby),
+        _ => None,
     });
+    assert_eq!(closed, state.id);
     let logged = env
         .connect()
         .login("olga", PASSWORD, ClientInfo::default())
@@ -507,8 +554,8 @@ fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
     let (mut owner, mut guest, mut watcher) =
         (env.human("olga"), env.bot("gus"), env.human("walt"));
     let lobby = lobby_in(&mut owner, "big", "slots").id;
-    join(&mut owner, &mut guest, lobby);
-    join(&mut owner, &mut watcher, lobby);
+    join(&mut guest, lobby);
+    join(&mut watcher, lobby);
 
     // Slots 0 to 4 are Radiant's, 5 to 9 Dire's, whatever the ruleset: the guest, who came
     // to Dire's first slot, goes to its second.
@@ -606,7 +653,7 @@ fn the_owner_changes_a_lobbys_settings_and_nobody_else() {
     let env = start(vec![ruleset("fun", false, "team0", "0.3"), big]);
     let (mut owner, mut guest) = (env.human("olga"), env.bot("gus"));
     let lobby = lobby_in(&mut owner, "fun", "settings").id;
-    join(&mut owner, &mut guest, lobby);
+    join(&mut guest, lobby);
     let configure = |ruleset: &str, audience, password: Option<&str>| ClientMsg::LobbyConfigure {
         lobby,
         ruleset: RulesetId(ruleset.to_owned()),
@@ -653,22 +700,20 @@ fn the_owner_changes_a_lobbys_settings_and_nobody_else() {
 }
 
 /// Every lobby has the service's ten slots, whatever its ruleset: a ruleset chosen later changes
-/// the rules and nothing else, and one that takes fewer players on a team than are seated there
-/// refuses the start (`TeamTooLarge`) where one that takes more starts, with the seated alone.
+/// the rules and nothing else. A ruleset whose own games are one a side (the duel) still starts
+/// with as many on a side as are seated there: a mode caps nobody.
 #[test]
 fn a_lobby_keeps_its_ten_slots_under_any_ruleset() {
     let mut full = ruleset("full", false, "team0", "0.3");
     full.teams = vec![5, 5];
     let duel = ruleset("duel", false, "team0", "0.3");
-    let mut mid = ruleset("mid", false, "team0", "0.3");
-    mid.lobby_max_per_team = Some(5);
-    let env = start(vec![full, duel, mid]);
+    let env = start(vec![full, duel]);
     let (mut owner, mut guest) = (env.human("olga"), env.bot("gus"));
 
     let state = lobby_in(&mut owner, "full", "ten");
     let lobby = state.id;
     assert_eq!(state.teams, [5, 5], "the default lobby is five a side");
-    join(&mut owner, &mut guest, lobby);
+    join(&mut guest, lobby);
     let joined = state_until(&mut owner, lobby, |s| s.members.len() == 2);
     let teams: Vec<u8> = joined.members.iter().map(|m| m.team).collect();
     assert_eq!(teams, [0, 1], "two players meet across the sides");
@@ -686,19 +731,13 @@ fn a_lobby_keeps_its_ten_slots_under_any_ruleset() {
     let slots: Vec<u8> = state.members.iter().map(|m| m.slot).collect();
     assert_eq!(slots, [0, 5]);
 
-    // Two on one team: past what the duel takes. Nothing was added to fill the other slots.
+    // Two on one team, more than the duel's own games seat: it starts all the same, and nothing
+    // was added to fill the other slots.
     guest.expect_done(ClientMsg::LobbySlot {
         lobby,
         account: None,
         slot: 1,
     });
-    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
-    assert_eq!(
-        owner.ask(ClientMsg::LobbyReady { lobby, ready: true }),
-        Err(Error::TeamTooLarge)
-    );
-    // A ruleset that plays more a side takes them.
-    owner.expect_done(configure("mid"));
     guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
     owner.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
     owner.wait_match_found();

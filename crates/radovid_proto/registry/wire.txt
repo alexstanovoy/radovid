@@ -4,6 +4,9 @@
 # shipped. From version 2 on, one line a position postcard encodes: an enum variant index, a struct or
 # struct variant field order. New variants and fields go last and their lines are appended here; a
 # line is never edited or removed. Every change bumps PROTO_VERSION.
+# A position that is gone is retired, never reused: `retired <its line>` is appended, and a
+# placeholder keeps its number: the unit variant `Retired<Name>`, or the field `retired_<name>` of
+# the zero-byte type `Retired` (a retired variant's fields go with it).
 # Frozen: ClientMsg 0 Hello, ServerMsg 1 Refused, Error 0 ProtoMismatch.
 
 newtype AccountId u64
@@ -414,3 +417,44 @@ field Reply::ArtifactNamed 1 name: String
 field Reply::ArtifactNamed 2 offset: u64
 field Reply::ArtifactNamed 3 total: u64
 field Reply::ArtifactNamed 4 data: Vec<u8>
+# Protocol 11: the join requests and the per-ruleset team cap are gone; their positions are retired.
+retired field Activities 5 asking: Vec<LobbyId>
+retired variant ClientMsg 17 LobbyAsk {}
+retired field ClientMsg::LobbyAsk 0 lobby: LobbyId
+retired field ClientMsg::LobbyAsk 1 password: Option<Secret>
+retired variant ClientMsg 18 LobbyJoinByName {}
+retired field ClientMsg::LobbyJoinByName 0 name: String
+retired field ClientMsg::LobbyJoinByName 1 password: Option<Secret>
+retired variant ClientMsg 19 LobbyAskCancel {}
+retired field ClientMsg::LobbyAskCancel 0 lobby: LobbyId
+retired variant ClientMsg 20 LobbyDecide {}
+retired field ClientMsg::LobbyDecide 0 lobby: LobbyId
+retired field ClientMsg::LobbyDecide 1 account: AccountId
+retired field ClientMsg::LobbyDecide 2 allow: bool
+retired variant Error 32 NoSuchRequest
+retired variant Error 33 NoPendingRequest
+retired variant Event 8 LobbyJoined {}
+retired field Event::LobbyJoined 0 state: LobbyState
+retired variant Event 9 LobbyDenied {}
+retired field Event::LobbyDenied 0 lobby: LobbyId
+retired field LobbyState 8 pending: Vec<LobbyMember>
+retired variant Error 50 TeamTooLarge
+unit Retired
+field Activities 5 retired_asking: Retired
+variant ClientMsg 17 RetiredLobbyAsk
+variant ClientMsg 18 RetiredLobbyJoinByName
+variant ClientMsg 19 RetiredLobbyAskCancel
+variant ClientMsg 20 RetiredLobbyDecide
+variant Error 32 RetiredNoSuchRequest
+variant Error 33 RetiredNoPendingRequest
+variant Event 8 RetiredLobbyJoined
+variant Event 9 RetiredLobbyDenied
+field LobbyState 8 retired_pending: Retired
+variant Error 50 RetiredTeamTooLarge
+variant ClientMsg 37 LobbyJoin {}
+field ClientMsg::LobbyJoin 0 lobby: LobbyId
+field ClientMsg::LobbyJoin 1 password: Option<Secret>
+variant ClientMsg 38 LobbySearch {}
+field ClientMsg::LobbySearch 0 query: String
+variant Error 52 LobbyPasswordRequired
+field RulesetInfo 10 lobby_default: bool

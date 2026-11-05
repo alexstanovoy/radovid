@@ -96,17 +96,15 @@ fn main() {
                 (2, ClientMsg::LobbyList),
                 (
                     2,
-                    ClientMsg::LobbyAsk {
-                        lobby: LobbyId(1),
-                        password: Some(Secret::new("pw")),
+                    ClientMsg::LobbySearch {
+                        query: "ro".to_owned(),
                     },
                 ),
                 (
-                    1,
-                    ClientMsg::LobbyDecide {
+                    2,
+                    ClientMsg::LobbyJoin {
                         lobby: LobbyId(1),
-                        account: AccountId(3),
-                        allow: true,
+                        password: Some(Secret::new("pw")),
                     },
                 ),
                 (
@@ -125,8 +123,8 @@ fn main() {
                 ),
                 (
                     3,
-                    ClientMsg::LobbyJoinByName {
-                        name: "room".to_owned(),
+                    ClientMsg::LobbyJoin {
+                        lobby: LobbyId(1),
                         password: None,
                     },
                 ),

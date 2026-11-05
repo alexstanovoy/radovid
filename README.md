@@ -38,16 +38,19 @@ radovid         the service (library + binary)
   pairer pauses while `game_capacity` matches are being formed or waiting, and entries see
   `overloaded` in their `QueueStatus`. The queues take `queue_capacity` entries; past that
   `QueueFull`.
-- **Lobbies.** Unrated games with an owner and a unique name. Ask the owner, or give the lobby's
-  password and be in at once; press ready; the owner's ready starts a 5 s countdown nobody can
-  cancel; the match then waits for a slot like any other. The owner leaving closes the lobby.
+- **Lobbies.** Unrated games with an owner and a unique name, found in the list of open lobbies
+  (`LobbyList`) or by a search of their names and owners (`LobbySearch`). Whoever may sit is in at
+  once (`LobbyJoin`): an open lobby needs nothing, a locked one its password (`LobbyPasswordRequired`
+  without, `BadLobbyPassword` for a wrong one, guesses delayed as failed logins are); there is no
+  request for the owner to decide. Press ready; the owner's ready starts a 5 s countdown nobody can
+  cancel; the match then waits for a slot like any other. The owner leaving closes the lobby. A new
+  lobby is of the service's `lobby_ruleset` unless made for another.
   Slots are the service's `lobby_teams` numbered team by team (two teams of five unless set), the same for
   every ruleset: a member chooses a free slot at once (`LobbySlot`), the owner moves others, a member may
   hold none (a spectator, who stays out of the match), and a move unreadies. The owner changes the
   ruleset, the audience and the password (`LobbyConfigure`); choosing a ruleset changes the rules and never
-  the slots. The match has exactly the members who hold a slot, none is added to fill the others; a ruleset
-  that takes fewer players on a team than are seated refuses the start (`TeamTooLarge`). The others read
-  the settings in the lobby's state.
+  the slots, and no ruleset caps how many sit on a side. The match has exactly the members who hold a slot,
+  none is added to fill the others. The others read the settings in the lobby's state.
 - **Ratings.** Glicko-2 (1500, 350, 0.06, tau 0.5), one rating period per game, the deviation
   grown for idle days first; a draw is half a win; a null changes nothing.
 - **Admin.** Ban (with reason and expiry), unban, change an account's kind, stop a match (a null).
@@ -214,7 +217,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `server_name` | `radovid` | the name in `Welcome` | |
 | `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes (stored hashes keep theirs) | lower only for tests |
 | `password.max_waiting` | `64` | password checks waiting for a hash slot (one hash per source at a time); more are answered `Throttled` | |
-| `limits.games_per_account` | `{ human = 2, bot = 8 }` | games in flight per account: queue entries, lobbies, join requests, unfinished matches | |
+| `limits.games_per_account` | `{ human = 2, bot = 8 }` | games in flight per account: queue entries, lobbies, unfinished matches | |
 | `limits.games_per_source` | `8` | the same for all accounts of an IPv4 address or IPv6 /64 | players behind one NAT |
 | `limits.accept_timeout_secs` | `30` | to accept a proposal (1 to 600); silence declines | |
 | `limits.decline_cooldown_secs` | `120` | out of the queues after a decline or silence (at most a day) | |
@@ -231,8 +234,8 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `ruleset.artifact_max_mib` | `limits.artifact_max_mib` | the most one artifact of this ruleset may have (1 to 1024, at most `artifact_cap_mib`): a docker game cannot write more (`--ulimit fsize`), a longer file is not served. A game that records a long match must close its file before the limit: bota_server does by itself (it reads the limit) | the ruleset's matches are long |
 | `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit, one number or per kind | |
 | `lobby_teams` | `[5, 5]` | the slots of every lobby: team sizes, numbered team by team, at most 10 seats | |
+| `lobby_ruleset` | the first `[[ruleset]]` | the ruleset a new lobby is of until its host chooses another (`RulesetInfo.lobby_default`) | the standard rules are not listed first |
 | `ruleset.lobby_min_players` | `1` | players a lobby needs before its host may start it (`LobbyReady`); the match has only the seats held (the game plays on with the sides it has) | |
-| `ruleset.lobby_max_per_team` | the largest of `teams` | most players one team may seat when a lobby of the ruleset starts (`TeamTooLarge` past it) | |
 | `ruleset.instant_solo` | `false` | one account may start a match alone at once (`StartSolo`): no queue, lobby or countdown; unrated only | a demo or practice ruleset |
 | `ruleset.audience` | `everyone` | `everyone`, `humans_only` or `bots_only`: who may queue and sit in lobbies here (`AudienceMismatch` otherwise); the others are not told the ruleset exists | |
 | `launcher.kind` | | `docker` (one container per match) or `local` (a child process, development) | |
@@ -286,6 +289,13 @@ so a service that offers one sizes both for it.
 - `registry/wire.txt` lists every enum variant and field position; it only grows. Protocol
   version 2 restarted it (version 1 never shipped). Every wire change bumps `PROTO_VERSION`; there
   is no rolling compatibility for now.
+- A position is never reused, like a protobuf field number. A message, variant or field that goes is
+  retired: its line stays, `retired <the line>` is appended, and a placeholder keeps its number: the
+  unit variant `Retired<Name>` (a frame holding one is no message) or the field `retired_<name>` of
+  the zero-byte type `Retired`. Version 11 retired the join requests (`LobbyAsk`, `LobbyJoinByName`,
+  `LobbyAskCancel`, `LobbyDecide`, `LobbyJoined`, `LobbyDenied`, `NoSuchRequest`, `NoPendingRequest`,
+  `LobbyState.pending`, `Activities.asking`) and the per-ruleset team cap (`TeamTooLarge`); it serves
+  no older client.
 
 ## Security notes
 

@@ -6,6 +6,7 @@ database = "radovid.db"                    # created 0600
 tls_cert = "/etc/radovid/play-cert/fullchain.pem"
 tls_key = "/etc/radovid/play-cert/privkey.pem"   # refused if every user may read it
 game_ports = "20000-20100"                 # one host port per running match
+lobby_ruleset = "full"                     # a new lobby is of these rules until its host chooses others; absent: the first [[ruleset]]
 
 # [artifacts]
 # save_replays = false                     # keep and serve each match's artifact (its replay); off by default
@@ -13,7 +14,7 @@ game_ports = "20000-20100"                 # one host port per running match
 # [web]
 # static_dir = "/srv/radovid/page"          # a web client served on this origin, beside /control
 
-# bota's full game: the first ruleset is the default of a lobby. Ten slots, five a side, for
+# bota's full game: the default of a lobby (lobby_ruleset above). Ten slots, five a side, for
 # lobbies only (not rated, no queue); a lobby starts with the players it has.
 [[ruleset]]
 id = "full"
@@ -46,7 +47,6 @@ game = "bota"
 game_fingerprint = "0123456789abcdef"      # what `bota_server --wire-fingerprint` prints
 teams = [1, 1]
 rated = true
-lobby_max_per_team = 5                     # a lobby of it may seat five a side: the slots are the service's, not the ruleset's
 # lobby_min_players = 1                    # a lobby starts with its host alone by default (the empty seats stay empty)
 max_duration_secs = 1800                   # a match running longer is killed (a null); absent: 7200, room for a long one of any game
 # audience = "everyone"                    # or "humans_only" / "bots_only"
