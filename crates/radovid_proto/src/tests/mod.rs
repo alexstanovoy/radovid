@@ -1,1 +1,2 @@
+mod frames;
 mod registry;

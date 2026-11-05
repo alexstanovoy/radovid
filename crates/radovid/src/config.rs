@@ -534,12 +534,68 @@ impl Config {
             validate_ruleset(ruleset).map_err(|e| format!("ruleset {}: {e}", ruleset.id))?;
             self.validate_artifacts(ruleset)
                 .map_err(|e| format!("ruleset {}: {e}", ruleset.id))?;
+            self.validate_cheats(ruleset)
+                .map_err(|e| format!("ruleset {}: {e}", ruleset.id))?;
             if ruleset.artifact_max_bytes(&self.limits)
                 > u64::from(self.limits.artifact_cap_mib) << 20
             {
                 return Err(format!(
                     "ruleset {}: artifact_max_mib is over limits.artifact_cap_mib",
                     ruleset.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The arguments that turn cheats on are the lobby's alone: none of them may also stand in
+    /// what every match of the ruleset is started with (its `args` and `env`, and the artifacts'
+    /// arguments and environment), where it would reach queued, rated matches too. radovid knows
+    /// no game's flags, so it can only keep the two apart: an argument of `cheats_args` found in
+    /// any of those, whole or as part of one, refuses the ruleset.
+    fn validate_cheats(&self, ruleset: &RulesetConfig) -> Result<(), String> {
+        let launcher = &ruleset.launcher;
+        if launcher.cheats_args.iter().any(|a| a.trim().is_empty()) {
+            return Err("cheats_args holds an empty argument".to_owned());
+        }
+        let mut shared: Vec<(String, &str)> = launcher
+            .args
+            .iter()
+            .map(|a| ("args".to_owned(), a.as_str()))
+            .chain(
+                launcher
+                    .env
+                    .iter()
+                    .map(|(name, value)| (format!("env {name}"), value.as_str())),
+            )
+            .collect();
+        let artifacts = self.artifacts_of(ruleset);
+        for artifact in &artifacts {
+            let (args, env) = if artifact.name == REPLAY_ARTIFACT {
+                ("artifact_args".to_owned(), "artifact_env".to_owned())
+            } else {
+                let name = &artifact.name;
+                (
+                    format!("artifacts.{name}.args"),
+                    format!("artifacts.{name}.env"),
+                )
+            };
+            shared.extend(artifact.args.iter().map(|a| (args.clone(), a.as_str())));
+            shared.extend(
+                artifact
+                    .env
+                    .iter()
+                    .map(|(name, value)| (format!("{env} {name}"), value.as_str())),
+            );
+        }
+        for cheat in &launcher.cheats_args {
+            if let Some((place, _)) = shared
+                .iter()
+                .find(|(_, word)| word.contains(cheat.as_str()))
+            {
+                return Err(format!(
+                    "cheats_args {cheat:?} is also in {place}, where it would reach every match, \
+                     queued and rated ones too: keep it in cheats_args alone"
                 ));
             }
         }

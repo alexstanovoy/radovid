@@ -880,3 +880,47 @@ fn a_lobby_owner_turns_cheats_on_and_only_that_lobby_has_them() {
         "a queued match has no cheats"
     );
 }
+
+/// An argument of `cheats_args` that also stands in what every match of the ruleset is started
+/// with (its `args`, `env`, the artifacts' arguments and environment) would reach queued, rated
+/// matches too: the service refuses to start with it, naming where it is.
+#[test]
+fn a_cheats_argument_that_every_match_gets_is_refused_at_start() {
+    let refused = |change: fn(&mut radovid::config::RulesetConfig)| {
+        let mut rules = ruleset("cheaty", true, "team0", "0.3");
+        rules.launcher.cheats_args = vec!["--lobby-cheats".to_owned()];
+        change(&mut rules);
+        match try_start(vec![rules], |_| {}) {
+            Ok(_) => panic!("a ruleset sharing its cheats was taken"),
+            Err(error) => error,
+        }
+    };
+    let shared = |error: &str, place: &str| {
+        error.contains(&format!(
+            "ruleset cheaty: cheats_args \"--lobby-cheats\" is also in {place}, where it would \
+             reach every match"
+        ))
+    };
+    let error = refused(|r| r.launcher.args.push("--lobby-cheats".to_owned()));
+    assert!(shared(&error, "args"), "{error}");
+    let error = refused(|r| {
+        r.launcher
+            .env
+            .insert("GAME_FLAGS".to_owned(), "-x --lobby-cheats".to_owned());
+    });
+    assert!(shared(&error, "env GAME_FLAGS"), "{error}");
+    let error = refused(|r| {
+        r.launcher.artifact = Some("/tmp/radovid-never/replay-{match_id}".to_owned());
+        r.launcher.artifact_args = vec!["--lobby-cheats".to_owned()];
+    });
+    assert!(shared(&error, "artifact_args"), "{error}");
+    let error = refused(|r| r.launcher.cheats_args.push(" ".to_owned()));
+    assert!(
+        error.contains("cheats_args holds an empty argument"),
+        "{error}"
+    );
+    // Kept apart, the same arguments start.
+    let mut rules = ruleset("cheaty", true, "team0", "0.3");
+    rules.launcher.cheats_args = vec!["--lobby-cheats".to_owned()];
+    assert!(try_start(vec![rules], |_| {}).is_ok());
+}

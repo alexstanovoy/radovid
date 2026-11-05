@@ -296,8 +296,8 @@ pub struct LobbyState {
     /// same for every ruleset.
     pub teams: Vec<u8>,
     /// The game's cheats in the lobby's match: none when its ruleset has none, else whether the
-    /// owner turned them on (`LobbyCheats`). Last, so that a client of version 11, which never
-    /// reads it, still reads the state.
+    /// owner turned them on (`LobbyCheats`). Every member's client reads it: none older than
+    /// version 12 is served.
     pub cheats: Option<bool>,
 }
 
