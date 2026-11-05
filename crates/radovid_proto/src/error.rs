@@ -111,6 +111,8 @@ pub enum Error {
     NoSoloStart,
     /// The lobby has a password and none was given.
     LobbyPasswordRequired,
+    /// The lobby's ruleset has no cheats to turn on.
+    NoCheats,
 }
 
 impl core::fmt::Display for Error {

@@ -812,3 +812,71 @@ fn a_lobby_keeps_its_ten_slots_under_any_ruleset() {
         "exactly the two seated, both on the first side"
     );
 }
+
+/// A lobby's owner turns the game's cheats on for a ruleset that has them (`cheats_args`): every
+/// member sees it and is unreadied, and the match is started with them. Nobody else can turn
+/// them on, a ruleset without them refuses, a change to such a ruleset turns them off, and a
+/// queued match of the very ruleset never has them.
+#[test]
+fn a_lobby_owner_turns_cheats_on_and_only_that_lobby_has_them() {
+    let mut cheaty = ruleset("cheaty", true, "team0", "0.3");
+    cheaty.launcher.cheats_args = vec!["--cheats".to_owned()];
+    let plain = ruleset("plain", false, "team0", "0.3");
+    let env = start(vec![cheaty, plain]);
+    let (mut owner, mut guest) = (env.human("olga"), env.human("gus"));
+    let lobby = lobby_in(&mut owner, "cheaty", "sandbox");
+    assert_eq!(
+        lobby.cheats,
+        Some(false),
+        "a ruleset with cheats, off at first"
+    );
+    let lobby = lobby.id;
+    join(&mut guest, lobby);
+    let cheats = |on| ClientMsg::LobbyCheats { lobby, on };
+    assert_eq!(guest.ask(cheats(true)), Err(Error::NotLobbyOwner));
+    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    owner.expect_done(cheats(true));
+    let seen = state_until(&mut guest, lobby, |s| s.cheats == Some(true));
+    assert!(
+        seen.members.iter().all(|m| !m.ready),
+        "cheats unready everyone"
+    );
+
+    // Rules without cheats turn them off; they refuse to have them.
+    let configure = |ruleset: &str| ClientMsg::LobbyConfigure {
+        lobby,
+        ruleset: RulesetId(ruleset.to_owned()),
+        audience: Audience::Everyone,
+        password: None,
+    };
+    owner.expect_done(configure("plain"));
+    state_until(&mut guest, lobby, |s| {
+        s.ruleset.0 == "plain" && s.cheats.is_none()
+    });
+    assert_eq!(owner.ask(cheats(true)), Err(Error::NoCheats));
+    owner.expect_done(configure("cheaty"));
+    let back = state_until(&mut guest, lobby, |s| s.ruleset.0 == "cheaty");
+    assert_eq!(back.cheats, Some(false), "asked for again");
+
+    owner.expect_done(cheats(true));
+    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    owner.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    owner.wait_match_found();
+    let result = owner.wait_result();
+    assert!(!result.rated);
+    assert_eq!(started_args(&result.game_report), "--cheats");
+
+    // The same ruleset queued: rated, and never with cheats.
+    let (mut a, mut b) = (env.bot("ann"), env.bot("bob"));
+    a.queue(&RulesetId("cheaty".to_owned()));
+    b.queue(&RulesetId("cheaty".to_owned()));
+    a.accept();
+    b.accept();
+    let result = a.wait_result();
+    assert!(result.rated);
+    assert_eq!(
+        started_args(&result.game_report),
+        "",
+        "a queued match has no cheats"
+    );
+}

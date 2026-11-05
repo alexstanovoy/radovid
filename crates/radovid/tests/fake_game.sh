@@ -2,16 +2,18 @@
 # A stand-in game server for the tests. It honours the launcher contract
 # (DEVELOPMENT.md, "Launcher contract") and plays nothing:
 #   fake_game.sh --probe <hex>                        prints the fingerprint
-#   fake_game.sh <behaviour> <seconds> <match_id> <port>
-# Its report is the hex of "<match_id>|<port>|$GAME_SEATS", so a test sees
-# what the game was started with.
+#   fake_game.sh <behaviour> <seconds> <match_id> <port> [more...]
+# Its report is the hex of "<match_id>|<port>|$GAME_SEATS|<more>", so a test
+# sees what the game was started with (<more>: the further arguments, space
+# separated, e.g. a lobby's cheats).
 set -eu
 if [ "$1" = "--probe" ]; then
     echo "$2"
     exit 0
 fi
 behaviour=$1 delay=$2 match_id=$3 port=$4
-report=$(printf '%s|%s|%s' "$match_id" "$port" "${GAME_SEATS:-}" | od -An -v -tx1 | tr -d ' \n')
+shift 4
+report=$(printf '%s|%s|%s|%s' "$match_id" "$port" "${GAME_SEATS:-}" "$*" | od -An -v -tx1 | tr -d ' \n')
 case $behaviour in
     noready) exec sleep 3600 ;;
     fail) exit 1 ;;

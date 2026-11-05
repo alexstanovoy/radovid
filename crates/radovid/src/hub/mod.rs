@@ -515,6 +515,7 @@ impl Hub {
             | ClientMsg::LobbyReady { .. }
             | ClientMsg::LobbySlot { .. }
             | ClientMsg::LobbyConfigure { .. }
+            | ClientMsg::LobbyCheats { .. }
             | ClientMsg::LobbyLeave { .. }) => self.lobby_request(session, id, lobby).await,
             // No message: the control task drops a frame holding one before it gets here.
             ClientMsg::RetiredLobbyAsk { .. }

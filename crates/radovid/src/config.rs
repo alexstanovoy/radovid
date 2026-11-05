@@ -384,6 +384,10 @@ pub struct LauncherConfig {
     /// Environment added to `env` only when artifacts are kept: where `{artifact}` is allowed.
     #[serde(default)]
     pub artifact_env: BTreeMap<String, String>,
+    /// Arguments that start the game with its cheats, added to `args` for a lobby's match whose
+    /// owner turned them on (`LobbyCheats`), never for a queued one. Empty: no cheats.
+    #[serde(default)]
+    pub cheats_args: Vec<String>,
 }
 
 fn default_start_timeout() -> u64 {
@@ -478,6 +482,11 @@ impl RulesetConfig {
             lobby_min_players: self.lobby_min_players(),
             lobby_default,
         }
+    }
+
+    /// Whether a lobby of this ruleset may turn the game's cheats on.
+    pub fn has_cheats(&self) -> bool {
+        !self.launcher.cheats_args.is_empty()
     }
 
     /// Players a lobby of this ruleset needs before its host starts it.
@@ -857,6 +866,9 @@ loopback host, or set insecure_plaintext = true for a network you trust",
     }
     for arg in &launcher.artifact_args {
         template::check_with(arg, seats, false, true).map_err(|e| format!("artifact_args: {e}"))?;
+    }
+    for arg in &launcher.cheats_args {
+        template::check(arg, seats, false).map_err(|e| format!("cheats_args: {}", hint(e)))?;
     }
     for (group, vars, artifact_ok) in [
         ("env", &launcher.env, false),

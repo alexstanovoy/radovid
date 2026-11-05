@@ -9,6 +9,7 @@ use std::time::Duration;
 use radovid_proto::*;
 use tokio::time::{Instant, sleep_until};
 
+use super::matches::Origin;
 use super::{Cmd, Hub, millis_until};
 
 pub(super) struct ProposalState {
@@ -217,7 +218,7 @@ impl Hub {
             .iter()
             .filter_map(|e| self.entries.get(e).map(|e| (e.account, e.source)))
             .collect();
-        match self.form_match(rules, false, members, None).await {
+        match self.form_match(rules, Origin::Queue, members, None).await {
             Ok(_) => {
                 self.proposals.remove(&proposal);
                 for entry in entries {

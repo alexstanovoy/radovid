@@ -32,6 +32,8 @@ const STDERR_LINE_LEN: usize = 300;
 pub struct LaunchSpec {
     pub match_id: MatchId,
     pub port: u16,
+    /// The ruleset's `cheats_args` are added: a lobby's match whose owner turned them on.
+    pub cheats: bool,
     pub seats: Vec<SeatSpec>,
     /// The artifacts the game is asked to leave: those of its ruleset that are kept.
     pub artifacts: Vec<Artifact>,
@@ -112,6 +114,14 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
         .iter()
         .map(|a| template::expand(a, &vars(spec, None)))
         .collect();
+    if spec.cheats {
+        args.extend(
+            launcher
+                .cheats_args
+                .iter()
+                .map(|a| template::expand(a, &vars(spec, None))),
+        );
+    }
     let mut env: Vec<(String, String)> = launcher
         .env
         .iter()

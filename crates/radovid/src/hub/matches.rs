@@ -38,6 +38,9 @@ pub(super) struct MatchState {
     pub rated: bool,
     /// Came from a lobby: holds one of the `lobby_games_max` slots.
     pub lobby: bool,
+    /// The game is started with its ruleset's cheats: a lobby's match whose owner turned them on,
+    /// never a rated one.
+    pub cheats: bool,
     pub seats: Vec<SeatState>,
     pub phase: Phase,
     pub stop: Option<oneshot::Sender<()>>,
@@ -47,6 +50,15 @@ pub(super) struct MatchState {
     pub game_url: String,
     /// The last `ahead` the seats were told in `MatchQueued`.
     pub told_ahead: Option<u32>,
+}
+
+/// Where a match comes from: a queue's pairing (rated as its ruleset is), or a lobby or a solo
+/// start (unrated; with the game's cheats when a lobby's owner turned them on). A queued match has
+/// no way to cheats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Origin {
+    Queue,
+    Lobby { cheats: bool },
 }
 
 impl Hub {
@@ -70,8 +82,13 @@ impl Hub {
             .get(&session)
             .map(|s| s.source)
             .ok_or(Error::NotLoggedIn)?;
-        self.form_match(rules, true, vec![(id, source)], None)
-            .await?;
+        self.form_match(
+            rules,
+            Origin::Lobby { cheats: false },
+            vec![(id, source)],
+            None,
+        )
+        .await?;
         self.try_launch();
         Ok(Reply::Done)
     }
@@ -81,7 +98,7 @@ impl Hub {
     pub(super) async fn form_match(
         &mut self,
         ruleset: &RulesetConfig,
-        lobby: bool,
+        origin: Origin,
         members: Vec<(AccountId, IpAddr)>,
         teams: Option<Vec<u8>>,
     ) -> Result<MatchId, Error> {
@@ -98,6 +115,10 @@ impl Hub {
                     .unwrap_or_else(|| ruleset.team_of(slot)),
             })
             .collect();
+        let (lobby, cheats) = match origin {
+            Origin::Queue => (false, false),
+            Origin::Lobby { cheats } => (true, cheats && ruleset.has_cheats()),
+        };
         let rated = ruleset.rated && !lobby;
         let match_id = self
             .db
@@ -121,6 +142,7 @@ impl Hub {
                 ruleset: ruleset.ruleset_id(),
                 rated,
                 lobby,
+                cheats,
                 seats: states,
                 phase: Phase::Waiting,
                 stop: None,

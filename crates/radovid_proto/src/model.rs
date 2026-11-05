@@ -295,6 +295,10 @@ pub struct LobbyState {
     /// The lobby's slots: the size of each team, slots numbered team by team. The service's, the
     /// same for every ruleset.
     pub teams: Vec<u8>,
+    /// The game's cheats in the lobby's match: none when its ruleset has none, else whether the
+    /// owner turned them on (`LobbyCheats`). Last, so that a client of version 11, which never
+    /// reads it, still reads the state.
+    pub cheats: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

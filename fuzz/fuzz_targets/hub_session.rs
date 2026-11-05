@@ -102,6 +102,7 @@ fn ruleset(id: &str, rated: bool, teams: Vec<u8>, behaviour: &str, max_secs: u64
             artifact: None,
             artifact_args: Vec::new(),
             artifact_env: Default::default(),
+            cheats_args: Vec::new(),
         },
     }
 }

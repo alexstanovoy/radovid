@@ -75,9 +75,15 @@ impl Hub {
                     .map_or(AccountKind::Human, |a| a.info.kind),
             })
             .collect();
+        // Cheats are a lobby's, never a rated match's.
+        assert!(
+            !(state.cheats && (state.rated || !state.lobby)),
+            "match {match_id:?}: cheats in a rated or queued match"
+        );
         let spec = LaunchSpec {
             match_id,
             port,
+            cheats: state.cheats,
             seats,
             artifacts: self
                 .config

@@ -10,6 +10,7 @@ use std::time::Duration;
 use radovid_proto::*;
 use tokio::time::Instant;
 
+use super::matches::Origin;
 use super::{Cmd, Hub, SessionId, internal, millis_until};
 
 pub(super) struct Member {
@@ -31,6 +32,8 @@ pub(super) struct Lobby {
     pub password: Option<Secret>,
     /// Sorted by slot.
     pub members: Vec<Member>,
+    /// The owner turned the game's cheats on; they hold while the ruleset has them.
+    pub cheats: bool,
     pub starting: Option<Instant>,
 }
 
@@ -102,6 +105,7 @@ impl Hub {
                 audience,
                 password,
             } => self.lobby_configure(id, lobby, ruleset, audience, password),
+            ClientMsg::LobbyCheats { lobby, on } => self.lobby_cheats(id, lobby, on),
             ClientMsg::LobbyLeave { lobby } => {
                 self.member_of(id, lobby)?;
                 self.not_starting(lobby)?;
@@ -161,6 +165,11 @@ impl Hub {
             retired_pending: Vec::new(),
             starting_in_ms: lobby.starting.map(millis_until),
             teams: self.config.lobby_teams.clone(),
+            cheats: self
+                .config
+                .ruleset(&lobby.ruleset)
+                .is_some_and(|rules| rules.has_cheats())
+                .then_some(lobby.cheats),
         }
     }
 
@@ -243,6 +252,7 @@ impl Hub {
                 source,
             }],
             starting: None,
+            cheats: false,
         };
         let state = self.lobby_state(&lobby);
         self.lobbies.insert(lobby_id, lobby);
@@ -483,6 +493,26 @@ impl Hub {
         l.ruleset = ruleset;
         l.audience = audience;
         l.password = password;
+        // Cheats stay on only under rules that have them; turned on again, they are asked again.
+        l.cheats &= rules.has_cheats();
+        for member in &mut l.members {
+            member.ready = false;
+        }
+        self.broadcast_lobby(lobby, None);
+        Ok(Reply::Done)
+    }
+
+    /// The owner's switch of the game's cheats, for a ruleset that has them. Everyone is unreadied:
+    /// a member readied for a match without cheats is asked again.
+    fn lobby_cheats(&mut self, id: AccountId, lobby: LobbyId, on: bool) -> Result<Reply, Error> {
+        self.owned_by(id, lobby)?;
+        self.not_starting(lobby)?;
+        let config = Arc::clone(&self.config);
+        let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
+        if !config.ruleset(&l.ruleset).is_some_and(|r| r.has_cheats()) {
+            return Err(Error::NoCheats);
+        }
+        l.cheats = on;
         for member in &mut l.members {
             member.ready = false;
         }
@@ -572,9 +602,10 @@ impl Hub {
             self.notify(spectator.account, Event::LobbyClosed { lobby });
             self.forget_if_idle(spectator.account);
         }
+        let origin = Origin::Lobby { cheats: l.cheats };
         let formed = match config.ruleset(&l.ruleset) {
             Some(rules) => self
-                .form_match(rules, true, members.clone(), Some(teams))
+                .form_match(rules, origin, members.clone(), Some(teams))
                 .await
                 .is_ok(),
             None => false,

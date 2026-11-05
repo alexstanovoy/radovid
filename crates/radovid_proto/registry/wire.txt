@@ -467,3 +467,9 @@ variant ClientMsg 38 LobbySearch {}
 field ClientMsg::LobbySearch 0 query: String
 variant Error 52 LobbyPasswordRequired
 field RulesetInfo 10 lobby_default: bool
+# Protocol 12: a lobby's owner turns the game's cheats on (served to clients of 11 too).
+variant ClientMsg 39 LobbyCheats {}
+field ClientMsg::LobbyCheats 0 lobby: LobbyId
+field ClientMsg::LobbyCheats 1 on: bool
+variant Error 53 NoCheats
+field LobbyState 11 cheats: Option<bool>

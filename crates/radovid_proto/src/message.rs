@@ -212,6 +212,14 @@ pub enum ClientMsg {
     LobbySearch {
         query: String,
     },
+    /// The owner turns the game's cheats on or off for a lobby whose ruleset has them
+    /// (`LobbyState.cheats` is not none; else `NoCheats`). Everyone is unreadied, so that nobody
+    /// plays a match with cheats who readied without them. Only a lobby's match ever has cheats:
+    /// never a queued, rated one.
+    LobbyCheats {
+        lobby: LobbyId,
+        on: bool,
+    },
 }
 
 impl ClientMsg {

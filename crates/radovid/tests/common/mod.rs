@@ -193,6 +193,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
             artifact: None,
             artifact_args: Vec::new(),
             artifact_env: Default::default(),
+            cheats_args: Vec::new(),
         },
     }
 }
@@ -418,7 +419,7 @@ pub type StartedSeat = (String, String, String, String);
 /// `(match_id, port, seats)` with each seat `(ticket_hex, team, name, kind)`.
 pub fn started_with(report: &[u8]) -> (String, String, Vec<StartedSeat>) {
     let text = String::from_utf8(report.to_vec()).expect("utf-8 report");
-    let mut parts = text.splitn(3, '|');
+    let mut parts = text.splitn(4, '|');
     let (match_id, port, seats) = (
         parts.next().unwrap_or_default().to_owned(),
         parts.next().unwrap_or_default().to_owned(),
@@ -437,6 +438,13 @@ pub fn started_with(report: &[u8]) -> (String, String, Vec<StartedSeat>) {
         })
         .collect();
     (match_id, port, seats)
+}
+
+/// The arguments a game reporting `report` (fake_game.sh) was started with past its match and
+/// port, space separated.
+pub fn started_args(report: &[u8]) -> String {
+    let text = String::from_utf8(report.to_vec()).expect("utf-8 report");
+    text.splitn(4, '|').nth(3).unwrap_or_default().to_owned()
 }
 
 /// Reads one raw message, for tests of hostile input.
