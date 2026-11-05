@@ -473,7 +473,10 @@ fn hostile_input_closes_that_connection_and_nothing_else() {
     let mut client = env.connect();
     let retired = ClientFrame {
         seq: 1,
-        msg: ClientMsg::RetiredLobbyAsk,
+        msg: ClientMsg::RetiredLobbyAsk {
+            lobby: LobbyId(1),
+            password: None,
+        },
     };
     client
         .send_raw(encode_frame_to_vec(&retired).expect("encoded"))

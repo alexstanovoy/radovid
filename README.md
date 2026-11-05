@@ -44,7 +44,10 @@ radovid         the service (library + binary)
   without, `BadLobbyPassword` for a wrong one, guesses delayed as failed logins are); there is no
   request for the owner to decide. Press ready; the owner's ready starts a 5 s countdown nobody can
   cancel; the match then waits for a slot like any other. The owner leaving closes the lobby. A new
-  lobby is of the service's `lobby_ruleset` unless made for another.
+  lobby is of the service's `lobby_ruleset` unless made for another: name the standard rules there
+  (`lobby_ruleset = "full"` for bota's full game), so that the order of the `[[ruleset]]` tables does
+  not decide it. A lobby's password reaches nobody but the owner who set it: members and the list
+  see only that the lobby is locked.
   Slots are the service's `lobby_teams` numbered team by team (two teams of five unless set), the same for
   every ruleset: a member chooses a free slot at once (`LobbySlot`), the owner moves others, a member may
   hold none (a spectator, who stays out of the match), and a move unreadies. The owner changes the
@@ -234,7 +237,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `ruleset.artifact_max_mib` | `limits.artifact_max_mib` | the most one artifact of this ruleset may have (1 to 1024, at most `artifact_cap_mib`): a docker game cannot write more (`--ulimit fsize`), a longer file is not served. A game that records a long match must close its file before the limit: bota_server does by itself (it reads the limit) | the ruleset's matches are long |
 | `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit, one number or per kind | |
 | `lobby_teams` | `[5, 5]` | the slots of every lobby: team sizes, numbered team by team, at most 10 seats | |
-| `lobby_ruleset` | the first `[[ruleset]]` | the ruleset a new lobby is of until its host chooses another (`RulesetInfo.lobby_default`) | the standard rules are not listed first |
+| `lobby_ruleset` | the first `[[ruleset]]` (a warning at start when there are several) | the ruleset a new lobby is of until its host chooses another (`RulesetInfo.lobby_default`), e.g. `lobby_ruleset = "full"` | always, with more than one ruleset |
 | `ruleset.lobby_min_players` | `1` | players a lobby needs before its host may start it (`LobbyReady`); the match has only the seats held (the game plays on with the sides it has) | |
 | `ruleset.instant_solo` | `false` | one account may start a match alone at once (`StartSolo`): no queue, lobby or countdown; unrated only | a demo or practice ruleset |
 | `ruleset.audience` | `everyone` | `everyone`, `humans_only` or `bots_only`: who may queue and sit in lobbies here (`AudienceMismatch` otherwise); the others are not told the ruleset exists | |
@@ -290,9 +293,10 @@ so a service that offers one sizes both for it.
   version 2 restarted it (version 1 never shipped). Every wire change bumps `PROTO_VERSION`; there
   is no rolling compatibility for now.
 - A position is never reused, like a protobuf field number. A message, variant or field that goes is
-  retired: its line stays, `retired <the line>` is appended, and a placeholder keeps its number: the
-  unit variant `Retired<Name>` (a frame holding one is no message) or the field `retired_<name>` of
-  the zero-byte type `Retired`. Version 11 retired the join requests (`LobbyAsk`, `LobbyJoinByName`,
+  retired: its line stays, `retired <the line>` is appended, and a placeholder holds the position with
+  the same payload, so that every byte after it stays where it was: the variant `Retired<Name>` (a
+  frame holding one is no message, and the service never sends one) or the field `retired_<name>`
+  (always empty). Version 11 retired the join requests (`LobbyAsk`, `LobbyJoinByName`,
   `LobbyAskCancel`, `LobbyDecide`, `LobbyJoined`, `LobbyDenied`, `NoSuchRequest`, `NoPendingRequest`,
   `LobbyState.pending`, `Activities.asking`) and the per-ruleset team cap (`TeamTooLarge`); it serves
   no older client.

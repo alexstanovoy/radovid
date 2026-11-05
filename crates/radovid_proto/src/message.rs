@@ -95,18 +95,31 @@ pub enum ClientMsg {
         password: Option<Secret>,
     },
     LobbyList,
-    /// Retired: a join that asked the owner. Never sent; a frame with it is no message.
+    /// Retired: a join that asked the owner. Its position and payload are kept; a frame holding
+    /// it is no message.
     #[doc(hidden)]
-    RetiredLobbyAsk,
-    /// Retired: a join by the lobby's name. Never sent; a frame with it is no message.
+    RetiredLobbyAsk {
+        lobby: LobbyId,
+        password: Option<Secret>,
+    },
+    /// Retired: a join by the lobby's name. Kept as `RetiredLobbyAsk` is.
     #[doc(hidden)]
-    RetiredLobbyJoinByName,
-    /// Retired: withdrew a request to the owner. Never sent; a frame with it is no message.
+    RetiredLobbyJoinByName {
+        name: String,
+        password: Option<Secret>,
+    },
+    /// Retired: withdrew a request to the owner. Kept as `RetiredLobbyAsk` is.
     #[doc(hidden)]
-    RetiredLobbyAskCancel,
-    /// Retired: the owner's answer to a request. Never sent; a frame with it is no message.
+    RetiredLobbyAskCancel {
+        lobby: LobbyId,
+    },
+    /// Retired: the owner's answer to a request. Kept as `RetiredLobbyAsk` is.
     #[doc(hidden)]
-    RetiredLobbyDecide,
+    RetiredLobbyDecide {
+        lobby: LobbyId,
+        account: AccountId,
+        allow: bool,
+    },
     LobbyKick {
         lobby: LobbyId,
         account: AccountId,
@@ -192,9 +205,10 @@ pub enum ClientMsg {
         lobby: LobbyId,
         password: Option<Secret>,
     },
-    /// The open lobbies whose name or owner's nickname holds `query` (ASCII case ignored; at
-    /// most `MAX_LOBBY_NAME_LEN` characters, empty lists them all), newest first, as `LobbyList`
-    /// lists them. The answer is `Lobbies`.
+    /// The open lobbies whose name or owner's nickname holds `query` (case folded in any script;
+    /// what a lobby name may hold: at most `MAX_LOBBY_NAME_LEN` characters, none a control
+    /// character, else `BadLobbyName`; empty lists them all), newest first, as `LobbyList` lists
+    /// them. The answer is `Lobbies`.
     LobbySearch {
         query: String,
     },
@@ -206,10 +220,10 @@ impl ClientMsg {
     pub fn is_retired(&self) -> bool {
         matches!(
             self,
-            ClientMsg::RetiredLobbyAsk
-                | ClientMsg::RetiredLobbyJoinByName
-                | ClientMsg::RetiredLobbyAskCancel
-                | ClientMsg::RetiredLobbyDecide
+            ClientMsg::RetiredLobbyAsk { .. }
+                | ClientMsg::RetiredLobbyJoinByName { .. }
+                | ClientMsg::RetiredLobbyAskCancel { .. }
+                | ClientMsg::RetiredLobbyDecide { .. }
         )
     }
 }
@@ -321,12 +335,17 @@ pub enum Event {
         lobby: LobbyId,
         in_ms: u32,
     },
-    /// Retired: told an asker the owner let it in. Never sent.
+    /// Retired: told an asker the owner let it in. Its position and payload are kept; never
+    /// sent.
     #[doc(hidden)]
-    RetiredLobbyJoined,
-    /// Retired: told an asker the owner said no. Never sent.
+    RetiredLobbyJoined {
+        state: LobbyState,
+    },
+    /// Retired: told an asker the owner said no. Kept as `RetiredLobbyJoined` is; never sent.
     #[doc(hidden)]
-    RetiredLobbyDenied,
+    RetiredLobbyDenied {
+        lobby: LobbyId,
+    },
     LobbyKicked {
         lobby: LobbyId,
     },

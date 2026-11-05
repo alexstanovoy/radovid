@@ -79,7 +79,9 @@ impl Hub {
             }
             ClientMsg::LobbyList => Ok(self.lobby_list("")),
             ClientMsg::LobbySearch { query } => {
-                if query.chars().count() > MAX_LOBBY_NAME_LEN {
+                // What a lobby name may hold, as `valid_lobby_name` counts it.
+                if query.chars().count() > MAX_LOBBY_NAME_LEN || query.chars().any(char::is_control)
+                {
                     return Err(Error::BadLobbyName);
                 }
                 Ok(self.lobby_list(&query))
@@ -106,6 +108,7 @@ impl Hub {
                 self.leave_lobby(id, lobby);
                 Ok(Reply::Done)
             }
+            // `Hub::request` sends only the lobby messages here.
             _ => Err(Error::Internal),
         }
     }
@@ -155,7 +158,7 @@ impl Hub {
                     self.member_view(m.account, m.slot, m.ready, m.rating, team)
                 })
                 .collect(),
-            retired_pending: Retired,
+            retired_pending: Vec::new(),
             starting_in_ms: lobby.starting.map(millis_until),
             teams: self.config.lobby_teams.clone(),
         }
@@ -259,37 +262,36 @@ impl Hub {
         }
     }
 
-    /// The open lobbies, newest first, whose name or owner's nickname holds `query` (ASCII case
-    /// ignored; empty matches every one).
+    /// The open lobbies, newest first, whose name or owner's nickname holds `query`, case folded
+    /// (empty matches every one).
     fn lobby_list(&self, query: &str) -> Reply {
+        let query = fold_case(query);
         let list = self
             .lobbies
             .values()
             .rev()
             .filter(|l| l.starting.is_none() && !l.is_full())
-            .map(|l| {
+            .filter_map(|l| {
                 let owner_nickname = self
                     .accounts
                     .get(&l.owner)
-                    .map(|a| a.info.nickname.clone())
+                    .map(|a| a.info.nickname.as_str())
                     .unwrap_or_default();
-                (l, owner_nickname)
-            })
-            .filter(|(l, owner)| {
-                holds_ignoring_case(&l.name, query) || holds_ignoring_case(owner, query)
+                let found = fold_case(&l.name).contains(&query)
+                    || fold_case(owner_nickname).contains(&query);
+                found.then(|| LobbySummary {
+                    id: l.id,
+                    name: l.name.clone(),
+                    ruleset: l.ruleset.clone(),
+                    owner: l.owner,
+                    owner_nickname: owner_nickname.to_owned(),
+                    audience: l.audience,
+                    locked: l.password.is_some(),
+                    members: l.members.len() as u8,
+                    seats: l.teams.len() as u8,
+                })
             })
             .take(MAX_LOBBY_LIST)
-            .map(|(l, owner_nickname)| LobbySummary {
-                id: l.id,
-                name: l.name.clone(),
-                ruleset: l.ruleset.clone(),
-                owner: l.owner,
-                owner_nickname,
-                audience: l.audience,
-                locked: l.password.is_some(),
-                members: l.members.len() as u8,
-                seats: l.teams.len() as u8,
-            })
             .collect();
         Reply::Lobbies { list }
     }
@@ -622,13 +624,15 @@ impl Hub {
     }
 }
 
-/// Whether `text` holds `query`, ASCII case ignored.
-fn holds_ignoring_case(text: &str, query: &str) -> bool {
-    let (text, query) = (text.as_bytes(), query.as_bytes());
-    query.is_empty()
-        || text
-            .windows(query.len())
-            .any(|w| w.eq_ignore_ascii_case(query))
+/// `text` with its case folded, so that two spellings that differ only by case compare equal:
+/// lower case, then upper, then lower again, a character at a time (`ẞ`, `ß` and `SS` all become
+/// `ss`, a final `ς` becomes `σ`). Unicode's full case folding without its tables.
+fn fold_case(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .flat_map(char::to_uppercase)
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Whether two secrets are equal, in time that depends on their lengths

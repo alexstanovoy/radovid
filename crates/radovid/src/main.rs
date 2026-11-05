@@ -76,6 +76,13 @@ fn run(args: Args) -> Result<(), String> {
     match args.command {
         Command::Serve { config } => {
             let config = Config::load(&config)?;
+            if config.lobby_ruleset.is_none() && config.rulesets.len() > 1 {
+                eprintln!(
+                    "radovid: warning: lobby_ruleset is not set: a new lobby is of {:?}, the first \
+                     [[ruleset]]; name the standard rules there",
+                    config.lobby_ruleset().unwrap_or_default()
+                );
+            }
             let identity = tls::load(&config.tls_cert, &config.tls_key)?;
             let (cert, key) = (config.tls_cert.clone(), config.tls_key.clone());
             runtime()?.block_on(async {

@@ -65,12 +65,11 @@ fn the_wire_layout_only_grows() {
             !live_set.contains(line),
             "a retired position is on the wire again: {line}"
         );
-        if let Some(placeholder) = placeholder(line, &retired) {
-            assert!(
-                live_set.contains(placeholder.as_str()),
-                "the retired position `{line}` must be held by `{placeholder}`"
-            );
-        }
+        let placeholder = placeholder(line, &retired);
+        assert!(
+            live_set.contains(placeholder.as_str()),
+            "the retired position `{line}` must be held by `{placeholder}`"
+        );
     }
 }
 
@@ -78,26 +77,36 @@ fn the_wire_layout_only_grows() {
 /// as it was committed.
 const RETIRED: &str = "retired ";
 
-/// What holds a retired position, so that nothing else ever takes its number: a variant `Name`
-/// becomes the unit variant `RetiredName`, a field `name` the field `retired_name` of the
-/// zero-byte type `Retired`. A field of a retired variant goes with its variant.
-fn placeholder(line: &str, retired: &HashSet<&str>) -> Option<String> {
+/// What holds a retired position, so that nothing else ever takes it: the same line with the name
+/// marked retired and the payload kept, so that every byte after it stays where it was. A variant
+/// `Name` becomes `RetiredName`, a field `name` becomes `retired_name`, and a field of a retired
+/// variant keeps its name under the variant's new one.
+fn placeholder(line: &str, retired: &HashSet<&str>) -> String {
     let words: Vec<&str> = line.split(' ').collect();
     match words.as_slice() {
-        ["variant", owner, index, name, ..] => {
-            let name = name.split(['(', '{']).next().unwrap_or(name);
-            Some(format!("variant {owner} {index} Retired{name}"))
+        ["variant", owner, index, name, rest @ ..] => {
+            let name = format!("Retired{name}");
+            [&["variant", owner, index, name.as_str()], rest]
+                .concat()
+                .join(" ")
         }
-        ["field", owner, index, name, ..] => {
-            let gone_with_variant = owner.split_once("::").is_some_and(|(enum_name, variant)| {
+        ["field", owner, index, name, rest @ ..] => {
+            let retired_variant = owner.split_once("::").filter(|(enum_name, variant)| {
                 retired.iter().any(|r| {
                     r.strip_prefix(&format!("variant {enum_name} "))
-                        .and_then(|rest| rest.split(' ').nth(1))
-                        .is_some_and(|v| v.split(['(', '{']).next() == Some(variant))
+                        .and_then(|r| r.split(' ').nth(1))
+                        .is_some_and(|v| v.split(['(', '{']).next() == Some(*variant))
                 })
             });
-            let name = name.trim_end_matches(':');
-            (!gone_with_variant).then(|| format!("field {owner} {index} retired_{name}: Retired"))
+            let (owner, name) = match retired_variant {
+                Some((enum_name, variant)) => {
+                    (format!("{enum_name}::Retired{variant}"), (*name).to_owned())
+                }
+                None => ((*owner).to_owned(), format!("retired_{name}")),
+            };
+            [&["field", owner.as_str(), index, name.as_str()], rest]
+                .concat()
+                .join(" ")
         }
         _ => panic!("registry/wire.txt retires a line of no position: {line}"),
     }

@@ -251,6 +251,55 @@ fn a_password_lets_in_at_once_and_names_are_unique() {
     );
 }
 
+/// The owner's password is for the owner to give: nothing the service tells a member or anyone
+/// else holds it, before or after the owner changes it, and no retired join request is listed.
+#[test]
+fn no_member_or_stranger_can_read_the_lobby_password() {
+    let env = start(rules());
+    let mut owner = env.account("olga", AccountKind::Human);
+    let mut friend = env.account("fritz", AccountKind::Human);
+    let mut stranger = env.account("sam", AccountKind::Human);
+    let lobby = create(&mut owner, "Friday Night", Some("open sesame")).id;
+    let mut told: Vec<Vec<u8>> = Vec::new();
+    let encoded = |state: &LobbyState| encode_frame_to_vec(state).expect("encoded");
+    let Ok(Reply::Lobby { state }) = friend.ask(ClientMsg::LobbyJoin {
+        lobby,
+        password: Some(Secret::new("open sesame")),
+    }) else {
+        panic!("join with the password");
+    };
+    assert!(state.locked && state.retired_pending.is_empty());
+    told.push(encoded(&state));
+    owner.expect_done(ClientMsg::LobbyConfigure {
+        lobby,
+        ruleset: fun(),
+        audience: Audience::Everyone,
+        password: Some(Secret::new("new sesame")),
+    });
+    let state = state_until(&mut friend, lobby, |s| s.locked && s.members.len() == 2);
+    told.push(encoded(&state));
+    for asker in [&mut friend, &mut stranger] {
+        for msg in [
+            ClientMsg::LobbyList,
+            ClientMsg::LobbySearch {
+                query: "sesame".to_owned(),
+            },
+        ] {
+            let Ok(Reply::Lobbies { list }) = asker.ask(msg) else {
+                panic!("list")
+            };
+            told.push(encode_frame_to_vec(&list).expect("encoded"));
+        }
+    }
+    for secret in [&b"open sesame"[..], b"new sesame"] {
+        assert!(
+            told.iter()
+                .all(|bytes| !bytes.windows(secret.len()).any(|w| w == secret)),
+            "a lobby's password reached someone who is not its owner"
+        );
+    }
+}
+
 /// The service names the ruleset a new lobby is of: its `lobby_ruleset`, else its first, and no
 /// other; a `lobby_ruleset` that names no ruleset is refused at start.
 #[test]
@@ -277,8 +326,9 @@ fn the_lobby_ruleset_is_the_default_of_a_new_lobby() {
     );
 }
 
-/// A search lists the open lobbies whose name or owner holds the text, case ignored; an empty
-/// one lists them all, and one longer than any name is refused.
+/// A search lists the open lobbies whose name or owner holds the text, case folded in any script;
+/// an empty one lists them all, and one no name could hold (too long, a control character) is
+/// refused.
 #[test]
 fn a_search_finds_lobbies_by_name_and_owner() {
     let env = start(rules());
@@ -287,6 +337,7 @@ fn a_search_finds_lobbies_by_name_and_owner() {
     let mut seeker = env.account("sam", AccountKind::Human);
     create(&mut olga, "Friday Night", Some("open sesame"));
     create(&mut fritz, "Practice", None);
+    create(&mut seeker, "ΟΔΟΣ Straße Ночь", None);
     let mut search = |query: &str| match seeker.ask(ClientMsg::LobbySearch {
         query: query.to_owned(),
     }) {
@@ -295,18 +346,30 @@ fn a_search_finds_lobbies_by_name_and_owner() {
     };
     assert_eq!(search("FRIDAY"), ["Friday Night"], "by name, case ignored");
     assert_eq!(search("frit"), ["Practice"], "by the owner's nickname");
+    for query in ["НОЧЬ", "STRASSE", "οδος"] {
+        assert_eq!(
+            search(query),
+            ["ΟΔΟΣ Straße Ночь"],
+            "{query}: any script's case"
+        );
+    }
     assert_eq!(
         search(""),
-        ["Practice", "Friday Night"],
+        ["ΟΔΟΣ Straße Ночь", "Practice", "Friday Night"],
         "all, newest first"
     );
     assert!(search("saturday").is_empty());
-    assert_eq!(
-        seeker.ask(ClientMsg::LobbySearch {
-            query: "x".repeat(MAX_LOBBY_NAME_LEN + 1),
-        }),
-        Err(Error::BadLobbyName)
+    assert!(
+        search(&"я".repeat(MAX_LOBBY_NAME_LEN)).is_empty(),
+        "as long as a name may be, in characters"
     );
+    for refused in ["x".repeat(MAX_LOBBY_NAME_LEN + 1), "fri\u{7}day".to_owned()] {
+        assert_eq!(
+            seeker.ask(ClientMsg::LobbySearch { query: refused }),
+            Err(Error::BadLobbyName),
+            "nothing a lobby name may not hold"
+        );
+    }
 }
 
 #[test]

@@ -131,11 +131,6 @@ pub struct RulesetInfo {
     pub lobby_default: bool,
 }
 
-/// A retired position of the wire: a struct field that is gone keeps its place with this, which
-/// takes no bytes, so that no later field takes its number.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Retired;
-
 /// What bounds an account's play, as it applies to the caller.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
@@ -196,9 +191,10 @@ pub struct Activities {
     pub matches: Vec<MatchId>,
     /// Milliseconds before the account may queue again.
     pub cooldown_ms: u32,
-    /// Retired: the lobbies the account asked to join.
+    /// Retired: the lobbies the account asked to join. Kept with its type, so that the fields
+    /// after it stay where they were on the wire; always empty.
     #[doc(hidden)]
-    pub retired_asking: Retired,
+    pub retired_asking: Vec<LobbyId>,
 }
 
 /// Why a queue entry is gone without a match.
@@ -291,9 +287,10 @@ pub struct LobbyState {
     /// Has a password: whoever knows it joins.
     pub locked: bool,
     pub members: Vec<LobbyMember>,
-    /// Retired: the join requests awaiting the owner.
+    /// Retired: the join requests awaiting the owner. Kept with its type, so that the fields
+    /// after it stay where they were on the wire; always empty.
     #[doc(hidden)]
-    pub retired_pending: Retired,
+    pub retired_pending: Vec<LobbyMember>,
     pub starting_in_ms: Option<u32>,
     /// The lobby's slots: the size of each team, slots numbered team by team. The service's, the
     /// same for every ruleset.

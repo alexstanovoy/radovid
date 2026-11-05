@@ -5,8 +5,8 @@
 # struct variant field order. New variants and fields go last and their lines are appended here; a
 # line is never edited or removed. Every change bumps PROTO_VERSION.
 # A position that is gone is retired, never reused: `retired <its line>` is appended, and a
-# placeholder keeps its number: the unit variant `Retired<Name>`, or the field `retired_<name>` of
-# the zero-byte type `Retired` (a retired variant's fields go with it).
+# placeholder holds it with the same payload, so every byte after it stays where it was: the variant
+# `Retired<Name>`, or the field `retired_<name>` (a retired variant's fields keep their names).
 # Frozen: ClientMsg 0 Hello, ServerMsg 1 Refused, Error 0 ProtoMismatch.
 
 newtype AccountId u64
@@ -439,17 +439,26 @@ retired variant Event 9 LobbyDenied {}
 retired field Event::LobbyDenied 0 lobby: LobbyId
 retired field LobbyState 8 pending: Vec<LobbyMember>
 retired variant Error 50 TeamTooLarge
-unit Retired
-field Activities 5 retired_asking: Retired
-variant ClientMsg 17 RetiredLobbyAsk
-variant ClientMsg 18 RetiredLobbyJoinByName
-variant ClientMsg 19 RetiredLobbyAskCancel
-variant ClientMsg 20 RetiredLobbyDecide
+field Activities 5 retired_asking: Vec<LobbyId>
+variant ClientMsg 17 RetiredLobbyAsk {}
+field ClientMsg::RetiredLobbyAsk 0 lobby: LobbyId
+field ClientMsg::RetiredLobbyAsk 1 password: Option<Secret>
+variant ClientMsg 18 RetiredLobbyJoinByName {}
+field ClientMsg::RetiredLobbyJoinByName 0 name: String
+field ClientMsg::RetiredLobbyJoinByName 1 password: Option<Secret>
+variant ClientMsg 19 RetiredLobbyAskCancel {}
+field ClientMsg::RetiredLobbyAskCancel 0 lobby: LobbyId
+variant ClientMsg 20 RetiredLobbyDecide {}
+field ClientMsg::RetiredLobbyDecide 0 lobby: LobbyId
+field ClientMsg::RetiredLobbyDecide 1 account: AccountId
+field ClientMsg::RetiredLobbyDecide 2 allow: bool
 variant Error 32 RetiredNoSuchRequest
 variant Error 33 RetiredNoPendingRequest
-variant Event 8 RetiredLobbyJoined
-variant Event 9 RetiredLobbyDenied
-field LobbyState 8 retired_pending: Retired
+variant Event 8 RetiredLobbyJoined {}
+field Event::RetiredLobbyJoined 0 state: LobbyState
+variant Event 9 RetiredLobbyDenied {}
+field Event::RetiredLobbyDenied 0 lobby: LobbyId
+field LobbyState 8 retired_pending: Vec<LobbyMember>
 variant Error 50 RetiredTeamTooLarge
 variant ClientMsg 37 LobbyJoin {}
 field ClientMsg::LobbyJoin 0 lobby: LobbyId

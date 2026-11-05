@@ -328,7 +328,7 @@ impl Hub {
             lobbies: account.lobbies.clone(),
             matches: account.matches.clone(),
             cooldown_ms: self.cooldown_ms(id),
-            retired_asking: Retired,
+            retired_asking: Vec::new(),
         }
     }
 
@@ -507,7 +507,20 @@ impl Hub {
             }
             ClientMsg::AdminStopMatch { match_id } => self.admin_stop(id, match_id).await,
             ClientMsg::StartSolo { ruleset } => self.start_solo(session, id, ruleset).await,
-            lobby => self.lobby_request(session, id, lobby).await,
+            lobby @ (ClientMsg::LobbyCreate { .. }
+            | ClientMsg::LobbyList
+            | ClientMsg::LobbySearch { .. }
+            | ClientMsg::LobbyJoin { .. }
+            | ClientMsg::LobbyKick { .. }
+            | ClientMsg::LobbyReady { .. }
+            | ClientMsg::LobbySlot { .. }
+            | ClientMsg::LobbyConfigure { .. }
+            | ClientMsg::LobbyLeave { .. }) => self.lobby_request(session, id, lobby).await,
+            // No message: the control task drops a frame holding one before it gets here.
+            ClientMsg::RetiredLobbyAsk { .. }
+            | ClientMsg::RetiredLobbyJoinByName { .. }
+            | ClientMsg::RetiredLobbyAskCancel { .. }
+            | ClientMsg::RetiredLobbyDecide { .. } => Err(Error::Malformed),
         }
     }
 
