@@ -42,6 +42,13 @@ impl Supervisor {
         let match_id = self.match_id;
         match launcher::spawn(&self.ruleset, &self.spec) {
             Err(error) => {
+                if error
+                    .get_ref()
+                    .is_some_and(|e| e.is::<launcher::CheatsRefused>())
+                {
+                    // A configuration that would give a match cheats it may not have.
+                    eprintln!("radovid: ERROR: match {}: {error}", match_id.0);
+                }
                 let end = End::Crashed(format!("start: {error}"));
                 let _ = self.hub.send(Cmd::MatchEnded { match_id, end }).await;
             }

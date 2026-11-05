@@ -550,19 +550,25 @@ impl Config {
 
     /// The arguments that turn cheats on are the lobby's alone: none of them may also stand in
     /// what every match of the ruleset is started with, where it would reach queued, rated matches
-    /// too. radovid knows no game's flags, so it keeps the two apart by their markers: each flag
-    /// of `cheats_args` (an element starting with `-`) with the values that follow it up to the
-    /// next flag. A marker found whole and in order among the arguments of `args`,
-    /// `artifact_args` or a named artifact's `args`, or among the whitespace-separated words of a
-    /// value of `env`, `artifact_env` or a named artifact's `env`, refuses the ruleset. Tokens are
-    /// compared whole: `--cheats` is not `--cheats-log`, `--cheat-level 1` is not
-    /// `--players 10`, and `--mode sandbox` is not `--mode ranked`.
+    /// too. radovid knows no game's flags, so it keeps the two apart by their markers
+    /// ([`cheats_markers`]: each flag of `cheats_args` with its values; `cheats_args` begins with
+    /// a flag). A marker found whole and in order ([`cheats_marker_in`]) among the arguments of
+    /// `args`, `artifact_args` or a named artifact's `args`, or among the words of a value of
+    /// `env`, `artifact_env` or a named artifact's `env`, refuses the ruleset. Placeholders are
+    /// read as written here; the launch checks again what they expand to.
     fn validate_cheats(&self, ruleset: &RulesetConfig) -> Result<(), String> {
         let launcher = &ruleset.launcher;
         if launcher.cheats_args.iter().any(|a| a.trim().is_empty()) {
             return Err("cheats_args holds an empty argument".to_owned());
         }
-        // Every match's words: each list of arguments, and each env value by its words.
+        if let Some(first) = launcher.cheats_args.first()
+            && !is_flag(first)
+        {
+            return Err(format!(
+                "cheats_args begins with {first:?}, a value: it begins with the flag that turns \
+                 cheats on"
+            ));
+        }
         let mut shared: Vec<(String, Vec<&str>)> = vec![(
             "args".to_owned(),
             launcher.args.iter().map(String::as_str).collect(),
@@ -586,21 +592,14 @@ impl Config {
                 shared.push((format!("{env} {name}"), value.split_whitespace().collect()));
             }
         }
-        for marker in cheats_markers(&launcher.cheats_args) {
-            let found = shared.iter().find(|(_, words)| {
-                words
-                    .windows(marker.len())
-                    .any(|window| window == marker.as_slice())
-            });
-            if let Some((place, _)) = found {
-                return Err(format!(
-                    "cheats_args {:?} is also in {place}, where it would reach every match, \
-                     queued and rated ones too: keep it in cheats_args alone",
-                    marker.join(" ")
-                ));
-            }
+        let markers = cheats_markers(&launcher.cheats_args);
+        match cheats_marker_in(&markers, shared) {
+            Some((place, marker)) => Err(format!(
+                "cheats_args {marker:?} is also in {place}, where it would reach every match, \
+                 queued and rated ones too: keep it in cheats_args alone"
+            )),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// The named artifacts of a ruleset: their names, paths, limits and the placeholders of what
@@ -819,18 +818,56 @@ impl Config {
     }
 }
 
-/// The markers of `cheats_args`: each flag (an element starting with `-`) with the values that
-/// follow it up to the next flag. Values before the first flag mark nothing.
-fn cheats_markers(cheats_args: &[String]) -> Vec<Vec<&str>> {
+/// Whether `word` is a flag: it starts with `-` and is no number (`-1` and `-0.5` are values).
+fn is_flag(word: &str) -> bool {
+    word.starts_with('-') && word.parse::<f64>().is_err()
+}
+
+/// `words` with each `flag=value` split into the flag and its value, as a game reads them.
+fn split_flags<'a>(words: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut split = Vec::new();
+    for word in words {
+        match word.split_once('=') {
+            Some((flag, value)) if is_flag(flag) => split.extend([flag, value]),
+            _ => split.push(word),
+        }
+    }
+    split
+}
+
+/// The markers of a ruleset's `cheats_args`: each flag with the values that follow it up to the
+/// next flag (`--x=1` is the flag `--x` with the value `1`).
+pub fn cheats_markers(cheats_args: &[String]) -> Vec<Vec<&str>> {
     let mut markers: Vec<Vec<&str>> = Vec::new();
-    for arg in cheats_args {
-        if arg.starts_with('-') {
-            markers.push(vec![arg.as_str()]);
+    for word in split_flags(cheats_args.iter().map(String::as_str)) {
+        if is_flag(word) {
+            markers.push(vec![word]);
         } else if let Some(marker) = markers.last_mut() {
-            marker.push(arg.as_str());
+            marker.push(word);
         }
     }
     markers
+}
+
+/// The first marker found whole and in order among one of `lists` (a place and its words; a
+/// word `--flag=value` is read as `--flag value`), and the place: what turns cheats on, where
+/// every match would get it.
+pub fn cheats_marker_in<'a>(
+    markers: &[Vec<&str>],
+    lists: impl IntoIterator<Item = (String, Vec<&'a str>)>,
+) -> Option<(String, String)> {
+    for (place, words) in lists {
+        let words = split_flags(words);
+        for marker in markers {
+            if words
+                .windows(marker.len())
+                .any(|window| window == marker.as_slice())
+            {
+                return Some((place, marker.join(" ")));
+            }
+        }
+    }
+    None
 }
 
 fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {

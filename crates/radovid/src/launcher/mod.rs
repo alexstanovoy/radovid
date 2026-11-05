@@ -81,6 +81,50 @@ impl GameProcess {
     }
 }
 
+/// A match without cheats whose arguments or environment, as its placeholders expanded them,
+/// hold a marker of the ruleset's cheats (`config::cheats_markers`) is not started: the check at
+/// start reads placeholders as written, and one may expand to what turns cheats on. Names where,
+/// never the values (the environment holds tickets).
+fn refuse_cheats(
+    ruleset: &RulesetConfig,
+    args: &[String],
+    env: &[(String, String)],
+) -> std::io::Result<()> {
+    let markers = crate::config::cheats_markers(&ruleset.launcher.cheats_args);
+    if markers.is_empty() {
+        return Ok(());
+    }
+    let lists = std::iter::once((
+        "its arguments".to_owned(),
+        args.iter().map(String::as_str).collect(),
+    ))
+    .chain(env.iter().map(|(name, value)| {
+        (
+            format!("its env {name}"),
+            value.split_whitespace().collect(),
+        )
+    }));
+    match crate::config::cheats_marker_in(&markers, lists) {
+        Some((place, marker)) => Err(std::io::Error::other(CheatsRefused(format!(
+            "refused: a match without cheats would get cheats_args {marker:?} in {place}, as \
+             placeholders expanded them"
+        )))),
+        None => Ok(()),
+    }
+}
+
+/// A launch refused because a match without cheats would get them ([`refuse_cheats`]).
+#[derive(Debug)]
+pub struct CheatsRefused(pub String);
+
+impl std::fmt::Display for CheatsRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CheatsRefused {}
+
 /// Starts the game server of one match.
 pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<GameProcess> {
     let launcher = &ruleset.launcher;
@@ -136,6 +180,9 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
                 .iter()
                 .map(|(name, value)| (name.clone(), template::expand(value, &vars))),
         );
+    }
+    if !spec.cheats {
+        refuse_cheats(ruleset, &args, &env)?;
     }
     // Last, so a ruleset's own variable cannot overrule what this radovid reads.
     env.push((RESULT_VERSION_VAR.to_owned(), RESULT_VERSION.to_string()));

@@ -29,7 +29,7 @@ Any game can be launched that honours this, a shell script included:
    radovid sets `RADOVID_RESULT_VERSION` (now 2), the newest version it reads; a game prints a version's fields only
    when the variable allows (absent: 1), so either side can be updated first. radovid reports the result and serves
    the match's artifact only after the game process has exited, so a game may finish writing after `RESULT`.
-4. Exit code 3 without `RESULT` means abandoned (nobody came, or everybody left); any other exit without `RESULT`, or a
+4. Exit code 3 without `RESULT` means abandoned (nobody came, everybody left, or a seat left for good during the picks, which cancels the match); any other exit without `RESULT`, or a
    malformed line, means crashed. Both are null: nothing is rated. A match running past `max_duration_secs`, or stopped
    by an admin or the shutdown, is killed and null.
 
@@ -99,7 +99,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `launcher.public_url` | | what players connect to; must be `wss://` unless loopback |
 | `launcher.insecure_plaintext` | `false` | allow a non-`wss://` `public_url` to another host |
 | `launcher.args`, `launcher.env` | `[]`, `{}` | the game's command line and environment; tickets only in `env` |
-| `launcher.cheats_args` | `[]` | arguments that start the game with its cheats, added to `args` for a lobby's match whose owner turned them on (`LobbyCheats`, seen in `LobbyState.cheats`), never a queued one; empty: the ruleset has no cheats. Each of its flags (an element starting with `-`) with the values after it may not stand, whole and in order, among the arguments of the ruleset's `args` or its artifacts' arguments, or among the words of an env value of `env` or the artifacts' environment (refused at start), where every match would get it |
+| `launcher.cheats_args` | `[]` | arguments that start the game with its cheats, added to `args` for a lobby's match whose owner turned them on (`LobbyCheats`, seen in `LobbyState.cheats`), never a queued one; empty: the ruleset has no cheats. It begins with a flag (an element starting with `-` that is no number). Each of its flags with the values after it (`--x=1` is `--x 1`) may not stand, whole and in order, among the arguments of the ruleset's `args` or its artifacts' arguments, or among the words of an env value of `env` or the artifacts' environment: refused at start as written, and a match without cheats whose placeholders expand to one is not launched (an ERROR line; the match ends null) |
 | `launcher.version_probe` | `[]` | arguments that print the wire fingerprint |
 | `launcher.artifact`, `artifact_args`, `artifact_env` | none | the replay file per match (absolute, `{match_id}` in its name) and how the game is told its path (`{artifact}`); a docker game gets exactly that file, writable at `/artifact` |
 | `launcher.start_timeout_secs` | `60` | from launch to `READY` |

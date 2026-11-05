@@ -986,4 +986,51 @@ fn a_cheats_argument_is_compared_whole_and_its_values_are_free() {
             .is_err_and(|e| e.contains("is also in env GAME_FLAGS")),
         "a word of an env value"
     );
+    // A flag joined to its value is the flag and its value.
+    assert!(
+        start(&["--cheats"], &["--cheats=1"], None)
+            .is_err_and(|e| e.contains("cheats_args \"--cheats\" is also in args")),
+        "--cheats=1 holds --cheats"
+    );
+    assert!(
+        start(&["--mode", "sandbox"], &["--mode=sandbox"], None)
+            .is_err_and(|e| e.contains("cheats_args \"--mode sandbox\" is also in args")),
+    );
+    assert_eq!(start(&["--mode=sandbox"], &["--mode=ranked"], None), Ok(()));
+    // A negative number is a value: the marker is the flag with it.
+    assert_eq!(
+        start(&["--cheat-level", "-1"], &["--cheat-level", "0"], None),
+        Ok(())
+    );
+    // cheats_args begins with the flag that turns cheats on: a lone value marks nothing.
+    assert!(
+        start(&["on"], &["on"], None).is_err_and(|e| e.contains("cheats_args begins with \"on\"")),
+        "a value first is refused"
+    );
+}
+
+/// The check at start reads placeholders as written: one that expands, for a queued match, to a
+/// marker of the ruleset's cheats is caught at launch. The match is not started and ends with
+/// nothing (a crash: null, unrated), and the service goes on.
+#[test]
+fn a_queued_match_that_placeholders_would_give_cheats_is_not_started() {
+    let mut cheaty = ruleset("cheaty", true, "team0", "0.3");
+    cheaty.launcher.cheats_args = vec!["--cheat-team".to_owned(), "1".to_owned()];
+    // Slot 1 plays for team 1: expanded, these are the cheats' own words.
+    cheaty
+        .launcher
+        .args
+        .extend(["--cheat-team".to_owned(), "{team_1}".to_owned()]);
+    let env = start(vec![cheaty]);
+    let (mut a, mut b) = (env.bot("ann"), env.bot("bob"));
+    a.queue(&RulesetId("cheaty".to_owned()));
+    b.queue(&RulesetId("cheaty".to_owned()));
+    a.accept();
+    b.accept();
+    let result = a.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason, result.game_report.is_empty()),
+        (Outcome::Null, EndReason::Crashed, true),
+        "refused at launch: no game ran"
+    );
 }
