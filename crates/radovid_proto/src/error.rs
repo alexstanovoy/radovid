@@ -113,6 +113,10 @@ pub enum Error {
     LobbyPasswordRequired,
     /// The lobby's ruleset has no cheats to turn on.
     NoCheats,
+    /// Starting, waiting and running lobby/solo matches hold the global custom capacity.
+    CustomMatchCapacity { limit: u32 },
+    /// Activities across all /64 source keys of an IPv6 /48 have reached their cap.
+    TooManyGamesFromIpv6Site { limit: u32 },
 }
 
 impl core::fmt::Display for Error {

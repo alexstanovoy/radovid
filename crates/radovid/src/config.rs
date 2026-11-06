@@ -173,6 +173,10 @@ pub struct LimitsConfig {
     /// Games in flight of all accounts of one source (an IPv4 address or an
     /// IPv6 /64).
     pub games_per_source: u8,
+    /// Activities across all /64 sources of one IPv6 /48.
+    pub games_per_ipv6_48: u32,
+    /// Lobby/solo matches starting, waiting or running, including lobby countdowns.
+    pub custom_match_capacity: u32,
     /// Seconds to accept a proposal; silence counts as a decline.
     pub accept_timeout_secs: u32,
     /// Seconds out of the queues after a decline or a silence.
@@ -198,6 +202,8 @@ impl Default for LimitsConfig {
         LimitsConfig {
             games_per_account: PerKind { human: 0, bot: 0 },
             games_per_source: 8,
+            games_per_ipv6_48: 64,
+            custom_match_capacity: 256,
             accept_timeout_secs: 30,
             decline_cooldown_secs: 120,
             game_capacity: 8,
@@ -726,6 +732,9 @@ impl Config {
 
     fn validate_limits(&self) -> Result<(), String> {
         let limits = &self.limits;
+        if !(1..=65536).contains(&limits.custom_match_capacity) || !(1..=65536).contains(&limits.games_per_ipv6_48) {
+            return Err("limits.custom_match_capacity and games_per_ipv6_48 must be 1 to 65536".into());
+        }
         if limits.games_per_source == 0 || limits.queue_capacity == 0 {
             return Err("limits.games_per_source and queue_capacity must be at least 1".to_owned());
         }
@@ -829,6 +838,8 @@ impl Config {
             game_capacity: limits.game_capacity,
             lobby_games_max: limits.lobby_games_max,
             games_per_source: limits.games_per_source,
+            custom_match_capacity: limits.custom_match_capacity,
+            games_per_ipv6_48: limits.games_per_ipv6_48,
         }
     }
 

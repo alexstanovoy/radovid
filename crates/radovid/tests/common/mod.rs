@@ -222,6 +222,8 @@ pub fn test_limits() -> LimitsConfig {
     LimitsConfig {
         games_per_account: PerKind { human: 2, bot: 8 },
         games_per_source: 200,
+        games_per_ipv6_48: 800,
+        custom_match_capacity: 256,
         accept_timeout_secs: 30,
         decline_cooldown_secs: 120,
         game_capacity: 8,

@@ -56,6 +56,15 @@ pub fn source(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// A site's /48 key, in addition to its individual /64 source keys. Mapped
+/// IPv4 addresses keep IPv4 semantics and never count in an IPv6 site.
+pub fn ipv6_site(ip: IpAddr) -> Option<Ipv6Addr> {
+    match source(ip) {
+        IpAddr::V6(ip) => Some(Ipv6Addr::from_bits(ip.to_bits() & (u128::MAX << 80))),
+        IpAddr::V4(_) => None,
+    }
+}
+
 /// Unauthenticated connections one IPv6 /48 may hold: a site, or one host of a provider, holds a
 /// whole /48 and could take a fresh /64 for every connection.
 pub const MAX_UNAUTHENTICATED_PER_48: usize = 64;

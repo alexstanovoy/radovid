@@ -77,6 +77,7 @@ impl Hub {
             return Err(Error::NoSoloStart);
         }
         self.admit_game(session, rules)?;
+        self.admit_custom_match()?;
         let source = self
             .sessions
             .get(&session)
@@ -119,6 +120,7 @@ impl Hub {
             Origin::Queue => (false, false),
             Origin::Lobby { cheats } => (true, cheats && ruleset.has_cheats()),
         };
+        if lobby { self.admit_custom_match()?; }
         let rated = ruleset.rated && !lobby;
         let match_id = self
             .db

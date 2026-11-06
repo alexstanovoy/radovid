@@ -160,6 +160,10 @@ pub struct Limits {
     pub games_per_source: u8,
     /// Games in flight at once: queue entries, lobbies and unfinished matches.
     pub games_per_account: AccountGameLimit,
+    /// Starting, waiting and running lobby/solo matches, including countdowns.
+    pub custom_match_capacity: u32,
+    /// Activities across all /64 sources in one IPv6 /48.
+    pub games_per_ipv6_48: u32,
 }
 
 /// One queue entry and where it stands.

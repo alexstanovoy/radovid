@@ -51,6 +51,20 @@ impl Hub {
         if self.source_in_flight(s.source) >= usize::from(per_source) {
             return Err(Error::TooManyGamesFromSource { limit: per_source });
         }
+        if let Some(site) = crate::throttle::ipv6_site(s.source) {
+            let limit = self.config.limits.games_per_ipv6_48;
+            if self.sources_in_flight(|ip| crate::throttle::ipv6_site(ip) == Some(site)) >= limit as usize {
+                return Err(Error::TooManyGamesFromIpv6Site { limit });
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn admit_custom_match(&self) -> Result<(), Error> {
+        let in_flight = self.matches.values().filter(|game| game.lobby).count()
+            + self.lobbies.values().filter(|lobby| lobby.starting.is_some()).count();
+        let limit = self.config.limits.custom_match_capacity;
+        if in_flight >= limit as usize { return Err(Error::CustomMatchCapacity { limit }); }
         Ok(())
     }
 
@@ -90,16 +104,20 @@ impl Hub {
     /// Games in flight of every account at `source`: queue entries, lobby
     /// seats and unfinished matches started from there.
     fn source_in_flight(&self, source: IpAddr) -> usize {
-        let entries = self.entries.values().filter(|e| e.source == source).count();
+        self.sources_in_flight(|candidate| candidate == source)
+    }
+
+    fn sources_in_flight(&self, matches: impl Fn(IpAddr) -> bool) -> usize {
+        let entries = self.entries.values().filter(|e| matches(e.source)).count();
         let lobbies: usize = self
             .lobbies
             .values()
-            .map(|l| l.members.iter().filter(|m| m.source == source).count())
+            .map(|l| l.members.iter().filter(|m| matches(m.source)).count())
             .sum();
         let matches: usize = self
             .matches
             .values()
-            .map(|m| m.seats.iter().filter(|s| s.source == source).count())
+            .map(|m| m.seats.iter().filter(|s| matches(s.source)).count())
             .sum();
         entries + lobbies + matches
     }
@@ -131,3 +149,7 @@ impl Hub {
         self.penalties.retain(|_, p| !p.spent(now));
     }
 }
+
+#[cfg(test)]
+#[path = "limits_tests.rs"]
+mod tests;

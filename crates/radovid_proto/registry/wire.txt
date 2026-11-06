@@ -483,3 +483,11 @@ variant AccountGameLimit 0 Limited(u8)
 variant AccountGameLimit 1 Unlimited
 field Limits 7 games_per_account: AccountGameLimit
 field RulesetInfo 11 games_per_account: AccountGameLimit
+
+# Version 14: bounded custom match admission and IPv6-site admission.
+variant Error 54 CustomMatchCapacity {}
+field Error::CustomMatchCapacity 0 limit: u32
+variant Error 55 TooManyGamesFromIpv6Site {}
+field Error::TooManyGamesFromIpv6Site 0 limit: u32
+field Limits 8 custom_match_capacity: u32
+field Limits 9 games_per_ipv6_48: u32

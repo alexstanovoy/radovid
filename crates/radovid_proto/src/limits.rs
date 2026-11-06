@@ -1,12 +1,12 @@
 //! Limits both sides hold.
 
 /// The version of every wire type here. Bumped on every change of any of them.
-pub const PROTO_VERSION: u16 = 13;
+pub const PROTO_VERSION: u16 = 14;
 
 /// The oldest version a server still serves: a client of it keeps working while the changes since
 /// are only appended fields and variants (postcard leaves trailing bytes of a message unread).
 /// Raised only with a change an older client cannot read.
-pub const MIN_PROTO_VERSION: u16 = 13;
+pub const MIN_PROTO_VERSION: u16 = 14;
 
 /// Bytes of a match artifact (a game's replay) one `Reply::Artifact` carries at most: well under
 /// `MAX_SERVER_PAYLOAD_LEN`.
