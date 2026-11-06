@@ -76,6 +76,10 @@ pub struct WebConfig {
 /// minutes, at about 210 KiB a second; a fair connection does better.
 pub const PAGE_SEND_DEADLINE_SECS: u64 = 600;
 
+/// The longest [`WebConfig::send_deadline_secs`] taken: an hour. Past it a slow reader keeps its
+/// place as good as for ever.
+pub const MAX_PAGE_SEND_DEADLINE_SECS: u64 = 3600;
+
 fn default_send_deadline_secs() -> u64 {
     PAGE_SEND_DEADLINE_SECS
 }
@@ -541,9 +545,11 @@ impl Config {
         if self
             .web
             .as_ref()
-            .is_some_and(|web| web.send_deadline_secs == 0)
+            .is_some_and(|web| !(1..=MAX_PAGE_SEND_DEADLINE_SECS).contains(&web.send_deadline_secs))
         {
-            return Err("web.send_deadline_secs must be at least 1".to_owned());
+            return Err(format!(
+                "web.send_deadline_secs must be 1 to {MAX_PAGE_SEND_DEADLINE_SECS} seconds"
+            ));
         }
         self.validate_limits()?;
         self.validate_lobby()?;

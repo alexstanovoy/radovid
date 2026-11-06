@@ -85,3 +85,20 @@ fn a_game_url_in_clear_must_stay_on_this_machine_unless_allowed() {
         assert!(with_url(url, false).is_ok(), "{url}");
     }
 }
+
+/// The page deadline is a deployment setting kept within reason: none at all, or one past an
+/// hour, which would leave a slow reader its place as good as for ever, is refused at startup.
+#[test]
+fn a_page_deadline_out_of_reason_is_refused() {
+    for secs in [0, radovid::config::MAX_PAGE_SEND_DEADLINE_SECS + 1] {
+        let error = try_start(vec![ruleset("solo", true, "draw", "0")], |config| {
+            config.web = Some(radovid::config::WebConfig {
+                static_dir: std::env::temp_dir(),
+                send_deadline_secs: secs,
+            });
+        })
+        .err()
+        .unwrap_or_else(|| panic!("a deadline of {secs} s was taken"));
+        assert!(error.contains("web.send_deadline_secs"), "{error}");
+    }
+}

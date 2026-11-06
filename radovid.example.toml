@@ -13,7 +13,7 @@ lobby_ruleset = "full"                     # a new lobby is of these rules until
 
 # [web]
 # static_dir = "/srv/radovid/page"          # a web client served on this origin, beside /control
-# send_deadline_secs = 600                  # seconds a page has to be sent whole; a slower peer is cut off
+# send_deadline_secs = 600                  # seconds a page has to be sent whole (1 to 3600); a slower peer is cut off
 
 # bota's full game: the default of a lobby (lobby_ruleset above). Ten slots, five a side, for
 # lobbies only (not rated, no queue); a lobby starts with the players it has.

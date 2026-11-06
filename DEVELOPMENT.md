@@ -63,7 +63,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `tls_cert`, `tls_key` | | PEM chain and key, reread on SIGHUP |
 | `game_ports` | | `"first-last"` host ports, one per running match; at least `game_capacity` |
 | `web.static_dir` | none | static files served read-only on the listener's origin (`GET`/`HEAD`, no listings, `index.html` at `/`, `.br`/`.gz` siblings), so a web client and the service share one URL |
-| `web.send_deadline_secs` | `600` | seconds a page has to be sent whole, TLS close included (the largest, the client's ~125 MB module, at ~210 KiB/s); a slower peer is cut off |
+| `web.send_deadline_secs` | `600` | seconds a page has to be sent whole, TLS close included; a slower peer is cut off. 1 to 3600 (see "Serving a web client") |
 | `max_connections` | `2048` | connections at once, logged in or not |
 | `server_name` | `radovid` | the name in `Welcome` |
 | `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes; lower only for tests |
@@ -119,6 +119,14 @@ operator says. `radovid.example.toml` shows a full deployment, including a one-p
 Operation: SIGHUP rereads the certificate and key (a bad pair keeps the old one); SIGINT or SIGTERM stops every match
 (a null) and exits. After a crash the next start records unfinished matches as null and removes leftover containers.
 
+### Serving a web client
+
+With `[web] static_dir`, the service sends the files of a web client on its own origin. Each page holds a place of a
+connection not logged in until it is sent, so `web.send_deadline_secs` bounds how long a slow reader may hold one. Size
+it to the largest file a client may fetch uncompressed over the slowest connection you mean to serve: the default, 600
+seconds, sends the bota client's ~125 MB WebAssembly module at ~210 KiB/s. Serve `.br`/`.gz` siblings so most clients
+fetch far less. A shorter deadline is stricter with slow readers; past 3600 seconds it is refused at startup.
+
 ## Protocol
 
 `/control` speaks `radovid_proto`. One binary WebSocket message is one frame (`u32 LE length | postcard payload`): at
@@ -163,8 +171,8 @@ are the values around that transaction, so two matches of one account finishing 
   per account, lobbies, list sizes, registrations per hour per source, game servers' output lines. Connections not logged
   in, pages among them, hold half of `max_connections` at most, so the sessions logged in keep the other half; pages
   being sent hold a quarter at most, so pages held open by many sources leave room to log in (one past it is answered
-  `503 Service Unavailable` with `Retry-After`). Behind a reverse
-  proxy every peer counts as the proxy's address: `X-Forwarded-For`, which any peer could forge, is not read.
+  `503 Service Unavailable` with `Retry-After`). Behind a reverse proxy every peer counts as the proxy's address:
+  `X-Forwarded-For`, which any peer could forge, is not read.
 - Tickets reach game servers only by environment; logs carry match ids and errors, never logins, passwords, tokens or
   tickets.
 - Stored: per account login, nickname, password hash, kind, admin and ban flags, bot version, creation time; per session
