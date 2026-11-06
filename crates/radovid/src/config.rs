@@ -65,6 +65,19 @@ pub struct ArtifactsConfig {
 #[serde(deny_unknown_fields)]
 pub struct WebConfig {
     pub static_dir: PathBuf,
+    /// Seconds a page has to be sent whole, its TLS close included; a peer slower than that is
+    /// cut off, and its place goes to the next.
+    #[serde(default = "default_send_deadline_secs")]
+    pub send_deadline_secs: u64,
+}
+
+/// The default of [`WebConfig::send_deadline_secs`]: the largest page, the browser client's
+/// WebAssembly module of about 125 MB (when the client takes no compressed sibling), in ten
+/// minutes, at about 210 KiB a second; a fair connection does better.
+pub const PAGE_SEND_DEADLINE_SECS: u64 = 600;
+
+fn default_send_deadline_secs() -> u64 {
+    PAGE_SEND_DEADLINE_SECS
 }
 
 fn default_lobby_teams() -> Vec<u8> {
@@ -524,6 +537,13 @@ impl Config {
                 "web.static_dir {} is no directory",
                 web.static_dir.display()
             ));
+        }
+        if self
+            .web
+            .as_ref()
+            .is_some_and(|web| web.send_deadline_secs == 0)
+        {
+            return Err("web.send_deadline_secs must be at least 1".to_owned());
         }
         self.validate_limits()?;
         self.validate_lobby()?;

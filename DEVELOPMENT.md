@@ -63,6 +63,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `tls_cert`, `tls_key` | | PEM chain and key, reread on SIGHUP |
 | `game_ports` | | `"first-last"` host ports, one per running match; at least `game_capacity` |
 | `web.static_dir` | none | static files served read-only on the listener's origin (`GET`/`HEAD`, no listings, `index.html` at `/`, `.br`/`.gz` siblings), so a web client and the service share one URL |
+| `web.send_deadline_secs` | `600` | seconds a page has to be sent whole, TLS close included (the largest, the client's ~125 MB module, at ~210 KiB/s); a slower peer is cut off |
 | `max_connections` | `2048` | connections at once, logged in or not |
 | `server_name` | `radovid` | the name in `Welcome` |
 | `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes; lower only for tests |

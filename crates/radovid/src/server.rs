@@ -247,11 +247,15 @@ async fn handle(
         };
         match web::parse(&head) {
             Some(request) if !request.upgrade => {
-                // The page keeps its source's place until it is sent: a peer that reads it at a
-                // crawl would otherwise hold one of the service's connections for every request
-                // it makes, all of them in the end.
-                let _ = web::serve(&mut tls, &web.static_dir, &request).await;
-                let _ = tls.shutdown().await;
+                // The page keeps its source's place until it is sent, within its deadline: a peer
+                // that reads it at a crawl would otherwise hold one of the service's connections
+                // for every request it makes, all of them in the end.
+                let sent = async {
+                    let _ = web::serve(&mut tls, &web.static_dir, &request).await;
+                    let _ = tls.shutdown().await;
+                };
+                let deadline = Duration::from_secs(web.send_deadline_secs);
+                let _ = tokio::time::timeout(deadline, sent).await;
                 return;
             }
             Some(_) => {}

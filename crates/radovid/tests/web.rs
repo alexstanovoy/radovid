@@ -39,7 +39,10 @@ fn site() -> std::path::PathBuf {
 fn served(root: &std::path::Path) -> Env {
     let root = root.to_owned();
     start_configured(rules(), move |config| {
-        config.web = Some(WebConfig { static_dir: root });
+        config.web = Some(WebConfig {
+            static_dir: root,
+            send_deadline_secs: radovid::config::PAGE_SEND_DEADLINE_SECS,
+        });
     })
 }
 
@@ -177,6 +180,7 @@ fn a_source_stalling_page_downloads_holds_its_own_places_and_no_more() {
     let env = start_configured(rules(), |config| {
         config.web = Some(WebConfig {
             static_dir: root.clone(),
+            send_deadline_secs: radovid::config::PAGE_SEND_DEADLINE_SECS,
         });
         listen_on_both_families(config);
     });
@@ -206,5 +210,67 @@ fn a_source_stalling_page_downloads_holds_its_own_places_and_no_more() {
     assert_eq!(status(&head), "HTTP/1.1 200 OK", "{head}");
     assert_eq!(body, b"<h1>page</h1>");
     drop(stalled);
+    let _ = std::fs::remove_dir_all(root.parent().expect("base"));
+}
+
+/// A page has a while to be sent whole, however it is read: a peer reading at a crawl, never
+/// slow enough for one write to time out, is cut off at the deadline, and its place goes to the
+/// next.
+#[test]
+fn a_page_read_at_a_crawl_is_cut_off_at_its_deadline() {
+    use std::io::Read;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = site();
+    std::fs::File::create(root.join("huge.bin"))
+        .and_then(|file| file.set_len(1 << 30))
+        .expect("a huge file");
+    let env = start_configured(rules(), |config| {
+        config.web = Some(WebConfig {
+            static_dir: root.clone(),
+            send_deadline_secs: 1,
+        });
+    });
+    let done = Arc::new(AtomicBool::new(false));
+    let crawlers: Vec<_> = (0..radovid_client::proto::MAX_UNAUTHENTICATED_PER_IP)
+        .map(|_| {
+            let mut stream = env.https_stream(b"GET /huge.bin HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let done = Arc::clone(&done);
+            std::thread::spawn(move || {
+                let mut read = 0usize;
+                let mut buf = [0u8; 1024];
+                while !done.load(Ordering::Relaxed) {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => read += n,
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                read
+            })
+        })
+        .collect();
+    // The hang guard only: a healthy service frees the places within its deadline.
+    let guard = std::time::Instant::now();
+    let served = loop {
+        let (head, _) = get(&env, "/", "");
+        if status(&head) == "HTTP/1.1 200 OK" {
+            break true;
+        }
+        if guard.elapsed() > std::time::Duration::from_secs(60) {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    done.store(true, Ordering::Relaxed);
+    let read: Vec<usize> = crawlers
+        .into_iter()
+        .map(|crawler| crawler.join().expect("a crawler"))
+        .collect();
+    assert!(served, "the crawlers kept their places past the deadline");
+    assert!(
+        read.iter().all(|read| *read < 1 << 30),
+        "a crawler read the whole page"
+    );
     let _ = std::fs::remove_dir_all(root.parent().expect("base"));
 }
