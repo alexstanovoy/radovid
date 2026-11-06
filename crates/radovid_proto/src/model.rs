@@ -119,7 +119,7 @@ pub struct RulesetInfo {
     /// The game's own description of the rules, opaque to radovid.
     pub info: Vec<u8>,
     /// Games in flight an account of the caller's kind may have to queue or
-    /// sit here (a human's before login).
+    /// sit here (a human's before login). Zero means unlimited.
     pub games_per_account: u8,
     /// Who may queue and sit here; the service lists a ruleset to the kinds it admits only.
     pub audience: Audience,
@@ -134,7 +134,7 @@ pub struct RulesetInfo {
 /// What bounds an account's play, as it applies to the caller.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Games in flight at once: queue entries, lobbies and unfinished matches.
+    /// Games in flight at once: queue entries, lobbies and unfinished matches. Zero means unlimited.
     pub games_per_account: u8,
     /// Milliseconds to accept a proposal; silence counts as a decline.
     pub accept_timeout_ms: u32,

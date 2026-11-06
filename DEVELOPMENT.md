@@ -68,7 +68,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `server_name` | `radovid` | the name in `Welcome` |
 | `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes; lower only for tests |
 | `password.max_waiting` | `64` | password checks waiting for a hash slot; more are answered `Throttled` |
-| `limits.games_per_account` | `{ human = 2, bot = 8 }` | games in flight per account: queue entries, lobbies, unfinished matches |
+| `limits.games_per_account` | `{ human = 0, bot = 0 }` | games in flight per account: queue entries, lobbies, unfinished matches; 0 means unlimited (source and service limits still apply) |
 | `limits.games_per_source` | `8` | the same for all accounts of an IPv4 address or IPv6 /64 |
 | `limits.accept_timeout_secs` | `30` | to accept a proposal (1 to 600); silence declines |
 | `limits.decline_cooldown_secs` | `120` | out of the queues after a decline or silence (at most a day) |
@@ -77,7 +77,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `limits.queue_capacity` | `256` | queue entries across rulesets; past it `QueueFull` |
 | `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the cap, are deleted hourly |
 | `limits.artifact_max_mib` | `64` | the most one artifact may have; a docker game cannot write more, a longer file is not served |
-| `lobby_teams` | `[5, 5]` | the slots of every lobby, at most 10 seats; no ruleset caps how many sit on a side |
+| `lobby_teams` | `[1, 1]` | the slots of every lobby, at most 10 seats; no ruleset caps how many sit on a side |
 | `lobby_ruleset` | the first `[[ruleset]]` (a warning at start when there are several) | the ruleset a new lobby is of until its owner chooses another (`RulesetInfo.lobby_default`); set it whenever there is more than one ruleset, e.g. `"full"` |
 | `artifacts.save_replays` | `false` | whether replays are kept and served at all; off, no game is asked to write one |
 | `ruleset.id` | | `[a-z0-9_]`, 1 to 32 bytes, never reused for other rules |

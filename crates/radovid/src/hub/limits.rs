@@ -44,7 +44,7 @@ impl Hub {
             return Err(Error::AudienceMismatch);
         }
         let limit = ruleset.games_per_account(&self.config.limits, account.info.kind);
-        if account.in_flight() >= usize::from(limit) {
+        if limit != 0 && account.in_flight() >= usize::from(limit) {
             return Err(Error::TooManyGames { limit });
         }
         let per_source = self.config.limits.games_per_source;

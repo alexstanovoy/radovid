@@ -85,7 +85,7 @@ fn default_send_deadline_secs() -> u64 {
 }
 
 fn default_lobby_teams() -> Vec<u8> {
-    vec![5, 5]
+    vec![1, 1]
 }
 
 fn default_max_connections() -> usize {
@@ -168,7 +168,7 @@ impl PerKindOrBoth {
 #[serde(deny_unknown_fields, default)]
 pub struct LimitsConfig {
     /// Games in flight per account: queue entries, lobbies and unfinished
-    /// matches.
+    /// matches. Zero means no per-account limit; source and service limits still apply.
     pub games_per_account: PerKind,
     /// Games in flight of all accounts of one source (an IPv4 address or an
     /// IPv6 /64).
@@ -196,7 +196,7 @@ pub struct LimitsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         LimitsConfig {
-            games_per_account: PerKind { human: 2, bot: 8 },
+            games_per_account: PerKind { human: 0, bot: 0 },
             games_per_source: 8,
             accept_timeout_secs: 30,
             decline_cooldown_secs: 120,
@@ -317,7 +317,7 @@ pub enum ArtifactAccess {
     /// The accounts that sat in the match.
     #[default]
     Seats,
-    /// Every account the ruleset's audience admits, as Dota lets anyone watch a match by its id.
+    /// Every account the ruleset's audience admits.
     Audience,
 }
 
@@ -719,9 +719,6 @@ impl Config {
 
     fn validate_limits(&self) -> Result<(), String> {
         let limits = &self.limits;
-        if limits.games_per_account.human == 0 || limits.games_per_account.bot == 0 {
-            return Err("limits.games_per_account must be at least 1".to_owned());
-        }
         if limits.games_per_source == 0 || limits.queue_capacity == 0 {
             return Err("limits.games_per_source and queue_capacity must be at least 1".to_owned());
         }
@@ -934,11 +931,6 @@ fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {
     }
     if ruleset.max_duration_secs == 0 {
         return Err("max_duration_secs must be at least 1".to_owned());
-    }
-    if let Some(per) = ruleset.games_per_account.map(PerKindOrBoth::per_kind)
-        && (per.human == 0 || per.bot == 0)
-    {
-        return Err("games_per_account must be at least 1".to_owned());
     }
     validate_launcher(&ruleset.launcher, ruleset.seats())
 }
