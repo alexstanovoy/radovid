@@ -33,6 +33,7 @@ pub enum End {
 pub struct Supervisor {
     pub match_id: MatchId,
     pub ruleset: RulesetConfig,
+    pub rated: bool,
     pub spec: LaunchSpec,
     pub hub: mpsc::Sender<Cmd>,
 }
@@ -108,7 +109,7 @@ impl Supervisor {
         match line {
             Line::Result(result)
                 if result.winner.is_none_or(|team| {
-                    usize::from(team) < self.ruleset.teams.len()
+                    (!self.rated && usize::from(team) < self.ruleset.teams.len())
                         || self.spec.seats.iter().any(|seat| seat.team == team)
                 }) && self.leaver_lost(&result) =>
             {
@@ -156,5 +157,35 @@ async fn exit_end(game: &mut GameProcess) -> End {
     match code {
         Some(EXIT_ABANDONED) => End::Abandoned,
         code => End::Crashed(format!("exited ({code:?}) without a result")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radovid_proto::{AccountKind, Ticket};
+    use crate::template::SeatSpec;
+
+    /// Guard-only: queue formation currently fills every side, but the result
+    /// boundary must remain safe if that internal guarantee changes.
+    #[test]
+    fn a_rated_result_cannot_name_a_side_without_a_reserved_seat() {
+        let ruleset: RulesetConfig = toml::from_str(r#"
+            id = "guard"
+            name = "Guard"
+            game = "test"
+            game_fingerprint = "0123456789abcdef"
+            teams = [1, 1]
+            rated = true
+            [launcher]
+            kind = "local"
+            binary = "/bin/true"
+            public_url = "tcp://127.0.0.1:{port}"
+        "#).expect("rules");
+        let spec = LaunchSpec { match_id: MatchId(1), port: 1, cheats: false,
+            seats: vec![SeatSpec { ticket: Ticket([0; 32]), team: 0, name: "seat".into(), kind: AccountKind::Human }], artifacts: Vec::new() };
+        let supervisor = Supervisor { match_id: MatchId(1), ruleset, rated: true, spec, hub: mpsc::channel(1).0 };
+        let result = GameResult { winner: Some(1), duration_ms: 1, report: Vec::new(), left: None, artifact_truncated: false };
+        assert!(matches!(supervisor.end_of(Line::Result(result)), End::Crashed(_)));
     }
 }

@@ -108,6 +108,7 @@ impl Hub {
         let supervisor = Supervisor {
             match_id,
             ruleset: ruleset.clone(),
+            rated: state.rated,
             spec,
             hub: self.me.clone(),
         };

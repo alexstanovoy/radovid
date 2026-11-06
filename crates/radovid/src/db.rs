@@ -714,6 +714,7 @@ fn rate(tx: &Transaction<'_>, finish: &Finish) -> rusqlite::Result<Vec<RatingCha
     if finish.outcome == Outcome::Null {
         return Ok(Vec::new());
     }
+    validate_rated_match(finish, finish.seats.len())?;
     let mut standing = Vec::new();
     for seat in &finish.seats {
         let row: Option<RatingRow> = tx
@@ -730,12 +731,11 @@ fn rate(tx: &Transaction<'_>, finish: &Finish) -> rusqlite::Result<Vec<RatingCha
             row.glicko.after_idle(idle_ms as f64 / 86_400_000.0)
         }));
     }
-    Ok(rate_teams(finish, &standing))
+    rate_teams(finish, &standing)
 }
 
-fn rate_teams(finish: &Finish, standing: &[Glicko]) -> Vec<RatingChange> {
-    assert!(finish.seats.len() <= MAX_SEATS, "validated match size");
-    assert_eq!(finish.seats.len(), standing.len());
+fn rate_teams(finish: &Finish, standing: &[Glicko]) -> rusqlite::Result<Vec<RatingChange>> {
+    validate_rated_match(finish, standing.len())?;
     let mut teams = std::collections::BTreeMap::<u8, Vec<Glicko>>::new();
     for (seat, rating) in finish.seats.iter().zip(standing) {
         teams.entry(seat.team).or_default().push(*rating);
@@ -779,13 +779,32 @@ fn rate_teams(finish: &Finish, standing: &[Glicko]) -> Vec<RatingChange> {
                     (rating, score)
                 })
                 .collect();
-            RatingChange {
+            Ok(RatingChange {
                 account: seat.account,
                 before,
                 after: before.updated(&games),
-            }
+            })
         })
         .collect()
+}
+
+fn validate_rated_match(finish: &Finish, standing_count: usize) -> rusqlite::Result<()> {
+    let fail = |message: &str| Err(rusqlite::Error::InvalidParameterName(message.into()));
+    if !(2..=MAX_SEATS).contains(&finish.seats.len()) || finish.seats.len() != standing_count {
+        return fail("rated match needs 2 to 10 matching seats and ratings");
+    }
+    if let Outcome::Winner { team } = finish.outcome
+        && !finish.seats.iter().any(|seat| seat.team == team) {
+        return fail("rated match winner has no seat");
+    }
+    let mut accounts = std::collections::BTreeSet::new();
+    let mut teams = std::collections::BTreeSet::new();
+    for seat in &finish.seats {
+        if !accounts.insert(seat.account) { return fail("rated match repeats an account"); }
+        teams.insert(seat.team);
+    }
+    if teams.len() < 2 { return fail("rated match needs at least two seated sides"); }
+    Ok(())
 }
 
 fn write_finish(
@@ -1024,7 +1043,7 @@ mod tests {
             (Outcome::Draw, [(0.5, 0.5); 3]),
         ] {
             let finish = finish(&[0, 0, 1, 1, 2], outcome);
-            let changes = rate_teams(&finish, &before);
+            let changes = rate_teams(&finish, &before).expect("valid match");
             let expected = [
                 before[0].updated(&[(b, scores[0].0), (c, scores[0].1)]),
                 before[1].updated(&[(b, scores[0].0), (c, scores[0].1)]),
@@ -1046,7 +1065,7 @@ mod tests {
             (Outcome::Winner { team: 1 }, 0.0),
             (Outcome::Draw, 0.5),
         ] {
-            let changes = rate_teams(&finish(&[0, 1], outcome), &before);
+            let changes = rate_teams(&finish(&[0, 1], outcome), &before).expect("valid match");
             assert_eq!(changes[0].after, before[0].updated(&[(before[1], score)]));
             assert_eq!(
                 changes[1].after,
@@ -1058,7 +1077,7 @@ mod tests {
     #[test]
     fn ten_sides_produce_one_finite_update_per_account() {
         let teams: Vec<_> = (0..MAX_SEATS as u8).collect();
-        let changes = rate_teams(&finish(&teams, Outcome::Draw), &[Glicko::NEW; MAX_SEATS]);
+        let changes = rate_teams(&finish(&teams, Outcome::Draw), &[Glicko::NEW; MAX_SEATS]).expect("valid match");
         assert_eq!(changes.len(), MAX_SEATS);
         for change in changes {
             assert_eq!(change.after.rating, 1500.0);
@@ -1066,4 +1085,15 @@ mod tests {
             assert!(change.after.volatility.is_finite());
         }
     }
+    #[test]
+    fn malformed_rated_finish_returns_an_error_without_unwinding_the_transaction() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection.execute_batch(SCHEMA).expect("schema");
+        let tx = connection.transaction().expect("transaction");
+        let invalid = finish(&[0, 1], Outcome::Winner { team: 2 });
+        let error = rate(&tx, &invalid).expect_err("unseated winner must be rejected");
+        assert_eq!(error.to_string(), "Invalid parameter name: rated match winner has no seat");
+        assert_eq!(tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0)).expect("transaction remains usable"), 1);
+    }
+
 }
