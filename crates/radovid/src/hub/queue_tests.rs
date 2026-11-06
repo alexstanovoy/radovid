@@ -12,26 +12,54 @@ use crate::hub::{self, Attach, Cmd, HubHandle};
 
 struct Fixture {
     hub: HubHandle,
-    task: tokio::task::JoinHandle<()>,
+    task: Option<tokio::task::JoinHandle<()>>,
     db: Db,
     config: Config,
     receivers: Vec<mpsc::Receiver<ServerMsg>>,
+    _directory: Scratch,
 }
 
-impl Fixture {
-    async fn new(capacity: u32) -> Self {
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new() -> Self {
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut config = Config::load(&root.join("radovid.example.toml")).expect("configuration");
-        let directory = root.join(format!(
-            "target/audience-queues-{}-{}",
+        let directory = std::env::temp_dir().join(format!(
+            "radovid_queue_{}_{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir_all(&directory).expect("scratch directory");
-        config.database = directory.join("hub.db");
+        std::fs::create_dir(&directory).expect("scratch directory");
+        Self(directory)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl Fixture {
+    fn new(capacity: u32) -> Self {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut config = Config::load(&root.join("radovid.example.toml")).expect("configuration");
+        let directory = Scratch::new();
+        config.database = directory.0.join("hub.db");
         config.rulesets.truncate(1);
         config.rulesets[0].id = "duel".into();
+        config.artifacts.save_replays = false;
+        config.rulesets[0].artifacts.clear();
+        // Acceptance is tested before launch; no game process is needed for these assertions.
+        config.rulesets[0].launcher.binary = Some(directory.0.join("no_game_process"));
         config.limits.queue_capacity = capacity;
         config.limits.games_per_account.human = 1;
         config.limits.games_per_account.bot = 1;
@@ -39,10 +67,11 @@ impl Fixture {
         let (hub, task) = hub::spawn(Arc::new(config.clone()), db.clone());
         Self {
             hub,
-            task,
+            task: Some(task),
             db,
             config,
             receivers: Vec::new(),
+            _directory: directory,
         }
     }
 
@@ -95,12 +124,13 @@ impl Fixture {
         answer.await.expect("answer")
     }
 
-    async fn finish(self) {
+    async fn finish(mut self) {
         self.hub.tx.send(Cmd::Shutdown).await.expect("shutdown");
-        self.task.await.expect("stopped");
-        let directory = self.config.database.parent().expect("directory").to_owned();
-        drop(self.db);
-        std::fs::remove_dir_all(directory).expect("cleanup");
+        self.task
+            .take()
+            .expect("running task")
+            .await
+            .expect("stopped");
     }
 }
 
@@ -118,9 +148,148 @@ fn joined(reply: Result<Reply, Error>) -> Vec<QueueEntry> {
     }
 }
 
+fn queue_lefts(
+    receiver: &mut mpsc::Receiver<ServerMsg>,
+) -> Vec<(QueueEntryId, QueueLeftReason, u32)> {
+    let mut left = Vec::new();
+    for _ in 0..hub::EVENT_QUEUE {
+        match receiver.try_recv() {
+            Ok(ServerMsg::Event(Event::QueueLeft {
+                entry,
+                reason,
+                cooldown_ms,
+            })) => left.push((entry, reason, cooldown_ms)),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    left.sort_by_key(|(entry, ..)| entry.0);
+    left
+}
+
+#[tokio::test]
+async fn accepting_a_linked_search_announces_and_consumes_both_places() {
+    let mut fixture = Fixture::new(16);
+    let (human, session) = fixture.account("human", AccountKind::Human).await;
+    let (_, peer) = fixture.account("peer", AccountKind::Human).await;
+    let entries = joined(
+        fixture
+            .ask(session, join(&[Audience::HumansOnly, Audience::Everyone]))
+            .await,
+    );
+    joined(fixture.ask(peer, join(&[Audience::HumansOnly])).await);
+    let proposal = fixture.attach(human.clone()).await.1.proposals[0].proposal;
+    fixture
+        .ask(session, ClientMsg::MatchAccept { proposal })
+        .await
+        .expect("first accept");
+    fixture
+        .ask(peer, ClientMsg::MatchAccept { proposal })
+        .await
+        .expect("second accept");
+    assert!(
+        fixture.attach(human).await.1.queued.is_empty(),
+        "acceptance consumes both raw queue places"
+    );
+    assert_eq!(
+        queue_lefts(&mut fixture.receivers[0]),
+        entries
+            .iter()
+            .map(|entry| (entry.entry, QueueLeftReason::Matched, 0))
+            .collect::<Vec<_>>()
+    );
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn a_proposal_timeout_announces_and_removes_both_places() {
+    let mut fixture = Fixture::new(16);
+    let (human, session) = fixture.account("human", AccountKind::Human).await;
+    let (_, peer) = fixture.account("peer", AccountKind::Human).await;
+    let entries = joined(
+        fixture
+            .ask(session, join(&[Audience::HumansOnly, Audience::Everyone]))
+            .await,
+    );
+    joined(fixture.ask(peer, join(&[Audience::HumansOnly])).await);
+    let proposal = fixture.attach(human.clone()).await.1.proposals[0].proposal;
+    fixture
+        .hub
+        .tx
+        .send(Cmd::ProposalDeadline { proposal })
+        .await
+        .expect("deadline");
+    assert!(
+        fixture.attach(human).await.1.queued.is_empty(),
+        "timeout removes both raw places"
+    );
+    let cooldown_ms = fixture.config.limits.decline_cooldown_secs * 1000;
+    assert_eq!(
+        queue_lefts(&mut fixture.receivers[0]),
+        entries
+            .iter()
+            .map(|entry| (entry.entry, QueueLeftReason::TimedOut, cooldown_ms))
+            .collect::<Vec<_>>()
+    );
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn another_live_session_keeps_both_search_places_after_disconnect() {
+    let mut fixture = Fixture::new(16);
+    let (human, session) = fixture.account("human", AccountKind::Human).await;
+    fixture.attach(human.clone()).await;
+    let entries = joined(
+        fixture
+            .ask(session, join(&[Audience::HumansOnly, Audience::Everyone]))
+            .await,
+    );
+    fixture
+        .hub
+        .tx
+        .send(Cmd::Detach { session })
+        .await
+        .expect("first session closes");
+    let snapshot = fixture.attach(human).await.1;
+    assert_eq!(
+        snapshot
+            .queued
+            .iter()
+            .map(|entry| entry.entry)
+            .collect::<Vec<_>>(),
+        entries.iter().map(|entry| entry.entry).collect::<Vec<_>>(),
+        "a second session keeps the entire search alive"
+    );
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn a_panicking_queue_test_cleans_its_scratch_directory() {
+    let fixture = Fixture::new(16);
+    let directory = fixture
+        .config
+        .database
+        .parent()
+        .expect("directory")
+        .to_owned();
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _fixture = fixture;
+        panic!("intentional fixture unwind");
+    }));
+    assert!(panicked.is_err());
+    let leaked = directory.exists();
+    if leaked {
+        std::fs::remove_dir_all(&directory).expect("clean the red reproduction's own directory");
+    }
+    assert!(
+        !leaked,
+        "a fixture panic must not leave its scratch directory"
+    );
+}
+
 #[tokio::test]
 async fn humans_and_everyone_are_separate_and_bots_cannot_join_humans() {
-    let mut fixture = Fixture::new(16).await;
+    let mut fixture = Fixture::new(16);
     let (human, human_session) = fixture.account("human", AccountKind::Human).await;
     let (bot, bot_session) = fixture.account("bot", AccountKind::Bot).await;
     let humans = joined(
@@ -144,7 +313,7 @@ async fn humans_and_everyone_are_separate_and_bots_cannot_join_humans() {
 
 #[tokio::test]
 async fn a_linked_search_counts_as_one_game_and_can_be_reserved_by_only_one_proposal() {
-    let mut fixture = Fixture::new(16).await;
+    let mut fixture = Fixture::new(16);
     let (human, human_session) = fixture.account("human", AccountKind::Human).await;
     let (_, peer_session) = fixture.account("peer", AccountKind::Human).await;
     let (bot, bot_session) = fixture.account("bot", AccountKind::Bot).await;
@@ -190,7 +359,7 @@ async fn a_linked_search_counts_as_one_game_and_can_be_reserved_by_only_one_prop
 
 #[tokio::test]
 async fn leaving_either_entry_removes_the_entire_linked_search() {
-    let mut fixture = Fixture::new(16).await;
+    let mut fixture = Fixture::new(16);
     let (human, session) = fixture.account("human", AccountKind::Human).await;
     let entries = joined(
         fixture
@@ -214,7 +383,7 @@ async fn leaving_either_entry_removes_the_entire_linked_search() {
 
 #[tokio::test]
 async fn leaving_the_reserved_sibling_cancels_the_proposed_search() {
-    let mut fixture = Fixture::new(16).await;
+    let mut fixture = Fixture::new(16);
     let (human, session) = fixture.account("human", AccountKind::Human).await;
     let (_, peer) = fixture.account("peer", AccountKind::Human).await;
     let entries = joined(
@@ -247,7 +416,7 @@ async fn leaving_the_reserved_sibling_cancels_the_proposed_search() {
 
 #[tokio::test]
 async fn changing_a_queued_human_to_a_bot_cancels_its_humans_proposal() {
-    let mut fixture = Fixture::new(16).await;
+    let mut fixture = Fixture::new(16);
     let (mut admin, _) = fixture.account("admin", AccountKind::Human).await;
     admin.admin = true;
     let admin_session = fixture.attach(admin).await.0;
@@ -291,7 +460,7 @@ async fn changing_a_queued_human_to_a_bot_cancels_its_humans_proposal() {
 
 #[tokio::test]
 async fn a_failed_proposal_restores_both_original_places() {
-    let mut fixture = Fixture::new(16).await;
+    let mut fixture = Fixture::new(16);
     let (human, session) = fixture.account("human", AccountKind::Human).await;
     let (_, peer) = fixture.account("peer", AccountKind::Human).await;
     let (_, bot) = fixture.account("bot", AccountKind::Bot).await;
@@ -326,7 +495,7 @@ async fn a_failed_proposal_restores_both_original_places() {
 
 #[tokio::test]
 async fn losing_the_last_session_removes_both_queue_entries() {
-    let mut fixture = Fixture::new(16).await;
+    let mut fixture = Fixture::new(16);
     let (human, session) = fixture.account("human", AccountKind::Human).await;
     joined(
         fixture
@@ -345,7 +514,7 @@ async fn losing_the_last_session_removes_both_queue_entries() {
 
 #[tokio::test]
 async fn dual_admission_is_atomic_and_rejects_unsupported_or_repeated_audiences() {
-    let mut fixture = Fixture::new(1).await;
+    let mut fixture = Fixture::new(1);
     let (human, session) = fixture.account("human", AccountKind::Human).await;
     assert!(matches!(
         fixture

@@ -9,6 +9,10 @@ Each rated ruleset has two FIFO queues: **humans** (`Audience::HumansOnly`) and 
 still apply to either queue. Lobbies retain their independent audience settings, including
 `BotsOnly`; there is no bots-only queue.
 
+Here **humans** means accounts registered or classified as `AccountKind::Human`, not proof that
+a person is operating the client. `Register { kind }` is self-declared. Administrators may
+reclassify an account; reclassification cancels its outstanding searches and proposals.
+
 `QueueJoinAudiences { ruleset, audiences }` starts one search in one or two distinct queues.
 The service rejects an empty, repeated, oversized or bots-only selection. It admits all
 entries together or none: global `queue_capacity` counts the actual entries, while account

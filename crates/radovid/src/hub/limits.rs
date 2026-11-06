@@ -11,7 +11,7 @@ use super::{Hub, SessionId, millis_until};
 use crate::config::RulesetConfig;
 
 /// What `QueueFull` suggests waiting.
-const QUEUE_FULL_RETRY_MS: u32 = 10_000;
+pub(super) const QUEUE_FULL_RETRY_MS: u32 = 10_000;
 
 /// The cooldowns of one account; forgotten once nothing in it counts.
 #[derive(Default)]

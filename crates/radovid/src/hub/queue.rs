@@ -69,7 +69,7 @@ impl Hub {
             > (config.limits.queue_capacity as usize).saturating_sub(self.entries.len())
         {
             return Err(Error::QueueFull {
-                retry_after_ms: 10_000,
+                retry_after_ms: super::limits::QUEUE_FULL_RETRY_MS,
             });
         }
         let (account, source) = self
@@ -95,7 +95,10 @@ impl Hub {
         if audiences.is_empty()
             || audiences.len() > MAX_QUEUE_AUDIENCES
             || audiences.contains(&Audience::BotsOnly)
-            || (audiences.len() == 2 && audiences[0] == audiences[1])
+            || audiences
+                .iter()
+                .enumerate()
+                .any(|(index, audience)| audiences[..index].contains(audience))
         {
             return Err(Error::BadQueueAudiences);
         }
