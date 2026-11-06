@@ -55,6 +55,16 @@ impl Glicko {
     /// The standing after one rating period of games against `opponents`, each
     /// with the score of the player (1 win, 0.5 draw, 0 loss).
     pub fn updated(self, opponents: &[(Glicko, f64)]) -> Glicko {
+        self.updated_weighted(opponents, 1.0)
+    }
+
+    /// One match: opposing sides divide one observation's information and gain.
+    pub fn updated_match(self, opponents: &[(Glicko, f64)]) -> Glicko {
+        if opponents.len() <= 1 { return self.updated(opponents); }
+        self.updated_weighted(opponents, 1.0 / opponents.len() as f64)
+    }
+
+    fn updated_weighted(self, opponents: &[(Glicko, f64)], weight: f64) -> Glicko {
         let mu = (self.rating - INITIAL_RATING) / SCALE;
         let phi = self.deviation / SCALE;
         if opponents.is_empty() {
@@ -73,6 +83,8 @@ impl Glicko {
             inverse_v += g * g * e * (1.0 - e);
             gain += g * (score - e);
         }
+        inverse_v *= weight;
+        gain *= weight;
         let v = 1.0 / inverse_v;
         let delta = v * gain;
         let sigma = new_volatility(phi, v, delta, self.volatility);

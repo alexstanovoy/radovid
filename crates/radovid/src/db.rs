@@ -782,7 +782,7 @@ fn rate_teams(finish: &Finish, standing: &[Glicko]) -> rusqlite::Result<Vec<Rati
             Ok(RatingChange {
                 account: seat.account,
                 before,
-                after: before.updated(&games),
+                after: before.updated_match(&games),
             })
         })
         .collect()
@@ -1045,11 +1045,11 @@ mod tests {
             let finish = finish(&[0, 0, 1, 1, 2], outcome);
             let changes = rate_teams(&finish, &before).expect("valid match");
             let expected = [
-                before[0].updated(&[(b, scores[0].0), (c, scores[0].1)]),
-                before[1].updated(&[(b, scores[0].0), (c, scores[0].1)]),
-                before[2].updated(&[(a, scores[1].0), (c, scores[1].1)]),
-                before[3].updated(&[(a, scores[1].0), (c, scores[1].1)]),
-                before[4].updated(&[(a, scores[2].0), (b, scores[2].1)]),
+                before[0].updated_match(&[(b, scores[0].0), (c, scores[0].1)]),
+                before[1].updated_match(&[(b, scores[0].0), (c, scores[0].1)]),
+                before[2].updated_match(&[(a, scores[1].0), (c, scores[1].1)]),
+                before[3].updated_match(&[(a, scores[1].0), (c, scores[1].1)]),
+                before[4].updated_match(&[(a, scores[2].0), (b, scores[2].1)]),
             ];
             for (change, expected) in changes.iter().zip(expected) {
                 assert_eq!(change.after, expected);
@@ -1094,6 +1094,18 @@ mod tests {
         let error = rate(&tx, &invalid).expect_err("unseated winner must be rejected");
         assert_eq!(error.to_string(), "Invalid parameter name: rated match winner has no seat");
         assert_eq!(tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0)).expect("transaction remains usable"), 1);
+    }
+
+    #[test]
+    fn one_ffa_match_carries_the_same_information_as_one_duel() {
+        let duel = rate_teams(&finish(&[0, 1], Outcome::Draw), &[Glicko::NEW; 2]).expect("duel");
+        for sides in 3..=MAX_SEATS {
+            let teams: Vec<_> = (0..sides as u8).collect();
+            let ffa = rate_teams(&finish(&teams, Outcome::Draw), &vec![Glicko::NEW; sides]).expect("FFA");
+            assert!((ffa[0].after.deviation - duel[0].after.deviation).abs() < 1e-10,
+                "{sides}-side FFA RD {} versus duel {}", ffa[0].after.deviation, duel[0].after.deviation);
+            assert!((ffa[0].after.volatility - duel[0].after.volatility).abs() < 1e-12);
+        }
     }
 
 }

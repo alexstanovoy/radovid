@@ -158,7 +158,9 @@ A null changes nothing. Custom lobbies remain unrated.
 
 For two or more sides, each team is represented by its members' mean rating and deviation
 `sqrt(sum(member_deviation²)) / team_size`. Each member receives one Glicko-2 period against each opposing team
-once, regardless of that team's size. The winning side scores 1 against every other side; losing sides score 0
+once, regardless of that team's size. Each opposing-side contribution to Glicko-2 information and
+rating gain has weight `1 / (side_count - 1)`: the information budget is one game per match, not one game per
+opponent. Volatility is updated once using those weighted totals. The winning side scores 1 against every other side; losing sides score 0
 against the winner and ½ against each other. A whole-match draw gives every pairing ½. One-player teams preserve
 the original 1v1 formula exactly. Volatility belongs to each member, never to a persistent team record.
 
