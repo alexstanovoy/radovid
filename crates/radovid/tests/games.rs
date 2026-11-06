@@ -163,7 +163,7 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
         let row = rows.iter().find(|r| r.account == seat.account).expect("one position per account");
         assert_eq!(Some(row.rating), seat.after);
         let Reply::Matches { list } = accounts[0].ask(ClientMsg::RecentMatches { account: seat.account, limit: 1 }).expect("history") else { panic!("history reply") };
-        assert_eq!(list, [result.clone()]);
+        assert_eq!(list.as_slice(), std::slice::from_ref(&result));
     }
     let Reply::ArtifactNamed { data: bytes, total, .. } = accounts[0].ask(ClientMsg::MatchArtifactNamed {
         match_id: result.match_id, name: "record".into(), offset: 0,
@@ -243,6 +243,7 @@ fn play_grid(handoffs: &[Handoff], winner: Option<u8>) {
     std::thread::scope(|scope| {
             let threads: Vec<_> = clients.into_iter().zip(handoffs).map(|(mut client, handoff)| scope.spawn(move || {
                 let mut reconnected = false;
+                let mut sent = 0;
                 for _ in 0..20000 {
                     let message = client.line();
                     if message.starts_with("END ") { return; }
@@ -258,7 +259,10 @@ fn play_grid(handoffs: &[Handoff], winner: Option<u8>) {
                         client = GameClient::connect(handoff);
                         reconnected = true;
                     }
-                    client.send(if Some(handoff.team) == winner { "INPUT 2" } else { "INPUT 1" });
+                    if sent < 8 {
+                        client.send(if Some(handoff.team) == winner { "INPUT 2" } else { "INPUT 1" });
+                        sent += 1;
+                    }
                 }
                 panic!("game never ended")
             })).collect();
