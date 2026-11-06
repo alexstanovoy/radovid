@@ -917,9 +917,6 @@ fn validate_ruleset(ruleset: &RulesetConfig) -> Result<(), String> {
     if ruleset.instant_solo && ruleset.rated {
         return Err("an instant_solo ruleset is unrated".to_owned());
     }
-    if ruleset.rated && ruleset.teams != [1, 1] {
-        return Err("a rated ruleset is two teams of one: teams = [1, 1]".to_owned());
-    }
     if ruleset.info.len() > MAX_RULESET_INFO_LEN {
         return Err(format!("info is over {MAX_RULESET_INFO_LEN} bytes"));
     }
@@ -1053,7 +1050,7 @@ mod tests {
     }
 
     /// A ruleset that does not say how long its matches may last is given room for a long one
-    /// (Dota's run 60 to 90 minutes and more), not a half-hour cut.
+    /// rather than imposing a short game clock on every game.
     #[test]
     fn a_ruleset_without_a_time_limit_gets_room_for_a_long_match() {
         let ruleset: RulesetConfig = toml::from_str(

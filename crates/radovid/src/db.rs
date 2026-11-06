@@ -518,7 +518,7 @@ impl Db {
     }
 
     /// Records the end of a match and, for a rated one, the Glicko-2 update
-    /// of both seats against each other's rating as stored now, in one
+    /// of every member against the opposing teams as stored now, in one
     /// transaction (DEVELOPMENT.md "Ratings"). Returns the rating changes.
     pub async fn finish_match(&self, finish: Finish) -> DbResult<Vec<RatingChange>> {
         self.run(move |c| {
@@ -708,20 +708,12 @@ fn rating_row_at(row: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<RatingR
     })
 }
 
-/// Both seats of a rated match against each other: the deviation grown for
-/// idle time from the stored `last_played`, then one Glicko-2 period.
+/// Snapshot every member before calculating any update: concurrent games use
+/// arrival order, while teammates in this transaction see the same opponents.
 fn rate(tx: &Transaction<'_>, finish: &Finish) -> rusqlite::Result<Vec<RatingChange>> {
-    let score_of_first = match (finish.outcome, finish.seats.as_slice()) {
-        (Outcome::Winner { team }, [first, _]) => {
-            if team == first.team {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        (Outcome::Draw, [_, _]) => 0.5,
-        _ => return Ok(Vec::new()),
-    };
+    if finish.outcome == Outcome::Null {
+        return Ok(Vec::new());
+    }
     let mut standing = Vec::new();
     for seat in &finish.seats {
         let row: Option<RatingRow> = tx
@@ -738,19 +730,37 @@ fn rate(tx: &Transaction<'_>, finish: &Finish) -> rusqlite::Result<Vec<RatingCha
             row.glicko.after_idle(idle_ms as f64 / 86_400_000.0)
         }));
     }
-    let (a, b) = (standing[0], standing[1]);
-    Ok(vec![
-        RatingChange {
-            account: finish.seats[0].account,
-            before: a,
-            after: a.updated(&[(b, score_of_first)]),
-        },
-        RatingChange {
-            account: finish.seats[1].account,
-            before: b,
-            after: b.updated(&[(a, 1.0 - score_of_first)]),
-        },
-    ])
+    Ok(rate_teams(finish, &standing))
+}
+
+fn rate_teams(finish: &Finish, standing: &[Glicko]) -> Vec<RatingChange> {
+    assert!(finish.seats.len() <= MAX_SEATS, "validated match size");
+    assert_eq!(finish.seats.len(), standing.len());
+    let mut teams = std::collections::BTreeMap::<u8, Vec<Glicko>>::new();
+    for (seat, rating) in finish.seats.iter().zip(standing) {
+        teams.entry(seat.team).or_default().push(*rating);
+    }
+    let opponents: Vec<_> = teams.into_iter().map(|(team, members)| {
+        if members.len() == 1 { return (team, members[0]); }
+        let count = members.len() as f64;
+        (team, Glicko {
+            rating: members.iter().map(|r| r.rating).sum::<f64>() / count,
+            deviation: members.iter().map(|r| r.deviation.powi(2)).sum::<f64>().sqrt() / count,
+            volatility: crate::rating::INITIAL_VOLATILITY,
+        })
+    }).collect();
+    finish.seats.iter().zip(standing).map(|(seat, &before)| {
+        let games: Vec<_> = opponents.iter().filter(|(team, _)| *team != seat.team)
+            .map(|&(team, rating)| {
+                let score = match finish.outcome {
+                    Outcome::Winner { team: winner } if winner == seat.team => 1.0,
+                    Outcome::Winner { team: winner } if winner == team => 0.0,
+                    _ => 0.5,
+                };
+                (rating, score)
+            }).collect();
+        RatingChange { account: seat.account, before, after: before.updated(&games) }
+    }).collect()
 }
 
 fn write_finish(
@@ -930,5 +940,75 @@ fn reason_of(code: i64) -> EndReason {
         3 => EndReason::Crashed,
         5 => EndReason::Left,
         _ => EndReason::Stopped,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn standing(rating: f64, deviation: f64) -> Glicko {
+        Glicko { rating, deviation, ..Glicko::NEW }
+    }
+
+    fn finish(teams: &[u8], outcome: Outcome) -> Finish {
+        Finish {
+            match_id: MatchId(1), ruleset: RulesetId("test".into()), rate: true,
+            outcome, reason: EndReason::Decided, duration_ms: 1, report: Vec::new(),
+            seats: teams.iter().enumerate().map(|(slot, &team)| NewSeat {
+                account: AccountId(slot as u64 + 1), slot: slot as u8, team,
+            }).collect(), finished_at: UnixMs(0),
+        }
+    }
+
+    #[test]
+    fn unequal_teams_rate_each_member_against_each_opposing_mean_once() {
+        // These form means of 1600/RD50, 1500/RD100 and 1800/RD200.
+        // In particular, the two losing sides draw each other, never lose twice.
+        let before = [standing(2200.0, 60.0), standing(1000.0, 80.0),
+            standing(1400.0, 120.0), standing(1600.0, 160.0), standing(1800.0, 200.0)];
+        let a = standing(1600.0, 50.0);
+        let b = standing(1500.0, 100.0);
+        let c = standing(1800.0, 200.0);
+        for (outcome, scores) in [
+            (Outcome::Winner { team: 1 }, [(0.0, 0.5), (1.0, 1.0), (0.5, 0.0)]),
+            (Outcome::Draw, [(0.5, 0.5); 3]),
+        ] {
+            let finish = finish(&[0, 0, 1, 1, 2], outcome);
+            let changes = rate_teams(&finish, &before);
+            let expected = [
+                before[0].updated(&[(b, scores[0].0), (c, scores[0].1)]),
+                before[1].updated(&[(b, scores[0].0), (c, scores[0].1)]),
+                before[2].updated(&[(a, scores[1].0), (c, scores[1].1)]),
+                before[3].updated(&[(a, scores[1].0), (c, scores[1].1)]),
+                before[4].updated(&[(a, scores[2].0), (b, scores[2].1)]),
+            ];
+            for (change, expected) in changes.iter().zip(expected) {
+                assert_eq!(change.after, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn one_on_one_rating_is_identical_to_the_existing_formula() {
+        let before = [standing(1743.258, 83.649), standing(1302.115, 312.872)];
+        for (outcome, score) in [(Outcome::Winner { team: 0 }, 1.0),
+            (Outcome::Winner { team: 1 }, 0.0), (Outcome::Draw, 0.5)] {
+            let changes = rate_teams(&finish(&[0, 1], outcome), &before);
+            assert_eq!(changes[0].after, before[0].updated(&[(before[1], score)]));
+            assert_eq!(changes[1].after, before[1].updated(&[(before[0], 1.0 - score)]));
+        }
+    }
+
+    #[test]
+    fn ten_sides_produce_one_finite_update_per_account() {
+        let teams: Vec<_> = (0..MAX_SEATS as u8).collect();
+        let changes = rate_teams(&finish(&teams, Outcome::Draw), &[Glicko::NEW; MAX_SEATS]);
+        assert_eq!(changes.len(), MAX_SEATS);
+        for change in changes {
+            assert_eq!(change.after.rating, 1500.0);
+            assert!(change.after.deviation.is_finite());
+            assert!(change.after.volatility.is_finite());
+        }
     }
 }
