@@ -28,7 +28,7 @@ fn fixture(game: &str, teams: &[u8], clock_ms: u32) -> RulesetConfig {
     rules.game_fingerprint = fingerprint(game);
     rules.teams = teams.to_vec();
     rules.info = format!("{game}:clock={clock_ms}").into_bytes();
-    rules.launcher.binary = Some("/usr/bin/python3".into());
+    rules.launcher.binary = Some("python3".into());
     rules.launcher.public_url = "tcp://127.0.0.1:{port}".into();
     rules.launcher.args = vec![
         script.display().to_string(),
@@ -526,4 +526,10 @@ fn a_lobby_result_uses_its_actual_sides_instead_of_the_queue_layout() {
     for account in &mut accounts[1..] {
         assert_eq!(account.wait_result(), result);
     }
+}
+
+#[test]
+fn fixture_interpreter_is_resolved_through_path() {
+    let rules = fixture("ttt", &[1, 1], 200);
+    assert_eq!(rules.launcher.binary.as_deref(), Some(std::path::Path::new("python3")));
 }

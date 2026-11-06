@@ -59,7 +59,7 @@ connect to `wss://localhost:4460` and trust the development certificate. A game'
 handoff and connects directly to the game server.
 
 The [game E2Es](crates/radovid/tests/games.rs) are executable integration examples: tic-tac-toe, a turn clock,
-and a fixed-tick grid race, each launched as a separate process. They require Python 3 at `/usr/bin/python3` and run
+and a fixed-tick grid race, each launched as a separate process. They require `python3` on `PATH` and run
 with `cargo test --profile test-release -p radovid --test games`. They are test fixtures, never part of the service
 binary. See [the generality audit](docs/generality.md) for guarantees and remaining boundaries.
 

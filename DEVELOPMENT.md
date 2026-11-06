@@ -209,6 +209,6 @@ fractional scores. In FFA, the winner-versus-others decomposition therefore trea
 `tests/games.rs` also launches independent Python 3 game processes and plays them through real socket clients:
 rated tic-tac-toe, clock expiry, fixed-tick team and free-for-all games, and a custom lobby. The fixtures bind
 loopback only, cap input/connection/work budgets, and validate opaque seat tickets in constant time. Python 3 at
-`/usr/bin/python3` is a required test dependency; a missing interpreter fails the tests and gate. A game's own client
+`python3` on `PATH` is a required test dependency; a missing interpreter fails the tests and gate. A game's own client
 library carries the tests against its real server. `tools/gate.sh` is the merge gate: clippy, the wasm check, the
 tests, the docker launcher test against a real docker, the fuzz targets' type check, `cargo deny check` and fmt.
