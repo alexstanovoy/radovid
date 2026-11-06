@@ -158,9 +158,10 @@ are the values around that transaction, so two matches of one account finishing 
   strangers can't lock an owner out; a right password after the delay always works.
 - Session tokens are random, stored as SHA-256, expire after 30 days idle, and a password change revokes them all; an
   account keeps its newest 32 stored, a login past them drops the oldest.
-- Bounded: message size and rate, unauthenticated connections per source (a page download counts until it is sent),
-  handshakes (10 s), sessions per account, lobbies, list sizes, registrations per hour per source, game servers' output
-  lines.
+- Bounded: message size and rate, unauthenticated connections per source (16 per IPv4 address and per IPv6 /64, 64
+  per IPv6 /48; a page download counts until it is sent, within `web.send_deadline_secs`), handshakes (10 s), sessions
+  per account, lobbies, list sizes, registrations per hour per source, game servers' output lines. Behind a reverse
+  proxy every peer counts as the proxy's address: `X-Forwarded-For`, which any peer could forge, is not read.
 - Tickets reach game servers only by environment; logs carry match ids and errors, never logins, passwords, tokens or
   tickets.
 - Stored: per account login, nickname, password hash, kind, admin and ban flags, bot version, creation time; per session

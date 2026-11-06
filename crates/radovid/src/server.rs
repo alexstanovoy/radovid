@@ -1,7 +1,6 @@
 //! The listener: TLS (its certificate swapped on reload), the WebSocket
 //! upgrade, and `/control`.
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -23,7 +22,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::hub::HubHandle;
 use crate::password::Passwords;
-use crate::throttle::{LoginThrottle, Windowed, source};
+use crate::throttle::{LoginThrottle, Place, Places, Windowed, source};
 use crate::web;
 
 /// Seconds a peer has for the TLS and WebSocket handshakes.
@@ -89,7 +88,7 @@ pub struct Shared {
     throttle: Mutex<LoginThrottle>,
     /// Registrations seen per address in the last hour.
     registrations: Mutex<Windowed<IpAddr>>,
-    unauthenticated: Mutex<HashMap<IpAddr, usize>>,
+    unauthenticated: Places,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -111,7 +110,7 @@ impl Shared {
             passwords,
             throttle: Mutex::new(LoginThrottle::new()),
             registrations: Mutex::new(Windowed::new()),
-            unauthenticated: Mutex::new(HashMap::new()),
+            unauthenticated: Places::default(),
         }
     }
 }
@@ -145,46 +144,21 @@ impl Shared {
     }
 }
 
-/// Holds one of an address's places for unauthenticated connections.
-pub struct Unauthenticated {
-    shared: Arc<Shared>,
-    ip: IpAddr,
-    held: bool,
-}
+/// Holds one of an address's places for unauthenticated connections, in every group it counts
+/// in ([`groups`](crate::throttle::groups)).
+pub struct Unauthenticated(Option<Place>);
 
 impl Unauthenticated {
-    fn take(shared: &Arc<Shared>, ip: IpAddr) -> Option<Unauthenticated> {
-        let mut map = lock(&shared.unauthenticated);
-        let count = map.entry(ip).or_insert(0);
-        if *count >= MAX_UNAUTHENTICATED_PER_IP {
-            return None;
-        }
-        *count += 1;
-        Some(Unauthenticated {
-            shared: Arc::clone(shared),
-            ip,
-            held: true,
-        })
+    fn take(shared: &Shared, ip: IpAddr) -> Option<Unauthenticated> {
+        shared
+            .unauthenticated
+            .take(ip)
+            .map(|place| Unauthenticated(Some(place)))
     }
 
     /// The connection authenticated: its place is free for the next one.
     pub fn release(&mut self) {
-        if self.held {
-            self.held = false;
-            let mut map = lock(&self.shared.unauthenticated);
-            if let Some(count) = map.get_mut(&self.ip) {
-                *count -= 1;
-                if *count == 0 {
-                    map.remove(&self.ip);
-                }
-            }
-        }
-    }
-}
-
-impl Drop for Unauthenticated {
-    fn drop(&mut self) {
-        self.release();
+        self.0 = None;
     }
 }
 
@@ -209,7 +183,7 @@ pub async fn serve(
             continue;
         };
         let source = source(peer.ip());
-        let Some(guard) = Unauthenticated::take(&shared, source) else {
+        let Some(guard) = Unauthenticated::take(&shared, peer.ip()) else {
             continue;
         };
         let current = certificates

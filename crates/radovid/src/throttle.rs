@@ -4,9 +4,10 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv6Addr};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use radovid_proto::valid_login;
+use radovid_proto::{MAX_UNAUTHENTICATED_PER_IP, valid_login};
 
 /// Failures forgotten after this long without one.
 const DECAY: Duration = Duration::from_secs(3600);
@@ -52,6 +53,95 @@ pub fn source(ip: IpAddr) -> IpAddr {
             Some(v4) => IpAddr::V4(v4),
             None => IpAddr::V6(Ipv6Addr::from_bits(v6.to_bits() & !u128::from(u64::MAX))),
         },
+    }
+}
+
+/// Unauthenticated connections one IPv6 /48 may hold: a site, or one host of a provider, holds a
+/// whole /48 and could take a fresh /64 for every connection.
+pub const MAX_UNAUTHENTICATED_PER_48: usize = 64;
+
+/// A group of addresses a bound on unauthenticated connections counts: its prefix, and how many
+/// bits long the prefix is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Group {
+    prefix: IpAddr,
+    bits: u8,
+}
+
+/// The groups an address counts in for the bounds on unauthenticated connections, each with its
+/// bound: an IPv4 address (also one mapped into IPv6) alone; an IPv6 address in its /64 and in
+/// its /48.
+pub fn groups(ip: IpAddr) -> Vec<(Group, usize)> {
+    let cut = |v6: Ipv6Addr, bits: u8| Group {
+        prefix: IpAddr::V6(Ipv6Addr::from_bits(
+            v6.to_bits() & (u128::MAX << (128 - u32::from(bits))),
+        )),
+        bits,
+    };
+    match source(ip) {
+        IpAddr::V4(v4) => vec![(
+            Group {
+                prefix: IpAddr::V4(v4),
+                bits: 32,
+            },
+            MAX_UNAUTHENTICATED_PER_IP,
+        )],
+        IpAddr::V6(v6) => vec![
+            (cut(v6, 64), MAX_UNAUTHENTICATED_PER_IP),
+            (cut(v6, 48), MAX_UNAUTHENTICATED_PER_48),
+        ],
+    }
+}
+
+/// How many places each group holds of the unauthenticated connections.
+#[derive(Clone, Default)]
+pub struct Places(Arc<Mutex<HashMap<Group, usize>>>);
+
+impl Places {
+    fn lock(&self) -> MutexGuard<'_, HashMap<Group, usize>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A place in every group of `ip`, held until the [`Place`] is dropped; none when any of
+    /// them holds its bound already.
+    pub fn take(&self, ip: IpAddr) -> Option<Place> {
+        let groups = groups(ip);
+        let mut held = self.lock();
+        if groups
+            .iter()
+            .any(|(group, most)| held.get(group).is_some_and(|count| count >= most))
+        {
+            return None;
+        }
+        for (group, _) in &groups {
+            *held.entry(*group).or_insert(0) += 1;
+        }
+        Some(Place {
+            places: self.clone(),
+            groups: groups.into_iter().map(|(group, _)| group).collect(),
+        })
+    }
+}
+
+/// One connection's places, given back on drop.
+pub struct Place {
+    places: Places,
+    groups: Vec<Group>,
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let mut held = self.places.lock();
+        for group in &self.groups {
+            if let Some(count) = held.get_mut(group) {
+                *count -= 1;
+                if *count == 0 {
+                    held.remove(group);
+                }
+            }
+        }
     }
 }
 
@@ -265,6 +355,23 @@ mod tests {
             Duration::ZERO
         );
         assert_eq!(counters.wait(&"b", start), Duration::ZERO);
+    }
+
+    #[test]
+    fn unauthenticated_places_are_bounded_per_ipv6_48_too() {
+        let places = Places::default();
+        let held: Vec<Place> = (0..MAX_UNAUTHENTICATED_PER_48)
+            .map(|n| {
+                let ip: IpAddr = format!("2001:db8:1:{n:x}::1").parse().expect("address");
+                places.take(ip).expect("room in the /48")
+            })
+            .collect();
+        let same_48: IpAddr = "2001:db8:1:ffff::1".parse().expect("address");
+        let other_48: IpAddr = "2001:db8:2::1".parse().expect("address");
+        assert!(places.take(same_48).is_none(), "the /48 is full");
+        assert!(places.take(other_48).is_some(), "another /48 is not");
+        drop(held);
+        assert!(places.take(same_48).is_some(), "the places are given back");
     }
 
     #[test]
