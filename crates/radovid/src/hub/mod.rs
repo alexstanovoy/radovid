@@ -275,6 +275,10 @@ impl Hub {
             reply,
         } = attach;
         let id = account.id;
+        if let Err(error) = self.admit_session_lobbies(id, game_fingerprint) {
+            let _ = reply.send(Err(error));
+            return;
+        }
         let existing = self.accounts.get(&id).map_or(0, |a| a.sessions.len());
         if existing >= MAX_SESSIONS_PER_ACCOUNT {
             let _ = reply.send(Err(Error::TooManySessions));
@@ -305,6 +309,17 @@ impl Hub {
         entry.sessions.push(session);
         let activities = self.activities(id);
         let _ = reply.send(Ok((session, activities)));
+    }
+
+    fn admit_session_lobbies(&self, id: AccountId, game_fingerprint: u64) -> Result<(), Error> {
+        let Some(account) = self.accounts.get(&id) else { return Ok(()); };
+        for lobby in account.lobbies.iter().filter_map(|id| self.lobbies.get(id)) {
+            let rules = self.config.ruleset(&lobby.ruleset).ok_or(Error::Internal)?;
+            if rules.game_fingerprint != game_fingerprint {
+                return Err(Error::GameVersionMismatch { server: rules.game_fingerprint });
+            }
+        }
+        Ok(())
     }
 
     /// Everything an account has in flight, as `LoggedIn` shows it.

@@ -622,3 +622,24 @@ fn a_new_socket_past_its_share_is_refused() {
         "the session goes on"
     );
 }
+
+#[test]
+fn lobby_members_can_login_and_resume_only_with_the_lobbys_game_wire() {
+    let env = start(rules());
+    let mut owner = env.human("owner");
+    let mut guest = env.human("guest");
+    let Reply::Lobby { state } = owner.ask(ClientMsg::LobbyCreate {
+        ruleset: solo(), name: "Wire contract".into(), audience: Audience::Everyone, password: None,
+    }).expect("lobby") else { panic!("lobby reply") };
+    guest.ask(ClientMsg::LobbyJoin { lobby: state.id, password: None }).expect("join");
+    for account in [&owner, &guest] {
+        let mut wrong = Client::connect(&env.url, &env.tls, FINGERPRINT ^ 1).expect("other game client");
+        assert_eq!(refused(wrong.login(&account.me.login, PASSWORD, ClientInfo::default())),
+            Error::GameVersionMismatch { server: FINGERPRINT });
+        assert_eq!(refused(wrong.resume(account.token, ClientInfo::default())),
+            Error::GameVersionMismatch { server: FINGERPRINT });
+        let mut correct = env.connect();
+        let logged = correct.resume(account.token, ClientInfo::default()).expect("same wire resumes");
+        assert_eq!(logged.activities.lobbies, [state.id]);
+    }
+}
