@@ -126,7 +126,13 @@ impl Hub {
     }
 
     fn sources_in_flight(&self, matches: impl Fn(IpAddr) -> bool) -> usize {
-        let entries = self.entries.values().filter(|e| matches(e.source)).count();
+        let entries = self
+            .entries
+            .values()
+            .filter(|e| matches(e.source))
+            .map(|e| e.search)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         let lobbies: usize = self
             .lobbies
             .values()

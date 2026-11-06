@@ -10,7 +10,7 @@ mod proposal;
 mod queue;
 mod slots;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -106,6 +106,7 @@ struct Account {
     bot_version: Option<String>,
     sessions: Vec<SessionId>,
     entries: Vec<QueueEntryId>,
+    searches: HashSet<QueueEntryId>,
     lobbies: Vec<LobbyId>,
     /// Unfinished matches: waiting for a slot, starting or running.
     matches: Vec<MatchId>,
@@ -114,7 +115,7 @@ struct Account {
 impl Account {
     /// Games in flight: what the per-account limit counts.
     fn in_flight(&self) -> usize {
-        self.entries.len() + self.lobbies.len() + self.matches.len()
+        self.searches.len() + self.lobbies.len() + self.matches.len()
     }
 
     fn is_idle(&self) -> bool {
@@ -139,7 +140,7 @@ pub struct Hub {
     next_session: SessionId,
     entries: HashMap<QueueEntryId, queue::Entry>,
     /// Entry ids per ruleset, oldest first.
-    queues: HashMap<RulesetId, Vec<QueueEntryId>>,
+    queues: HashMap<(RulesetId, Audience), Vec<QueueEntryId>>,
     next_entry: u32,
     proposals: HashMap<ProposalId, proposal::ProposalState>,
     next_proposal: u32,
@@ -301,6 +302,7 @@ impl Hub {
             bot_version: None,
             sessions: Vec::new(),
             entries: Vec::new(),
+            searches: HashSet::new(),
             lobbies: Vec::new(),
             matches: Vec::new(),
         });
@@ -494,6 +496,9 @@ impl Hub {
             }),
             ClientMsg::Limits { ruleset } => self.limits(id, ruleset),
             ClientMsg::QueueJoin { ruleset } => self.queue_join(session, ruleset),
+            ClientMsg::QueueJoinAudiences { ruleset, audiences } => {
+                self.queue_join_audiences(session, ruleset, audiences)
+            }
             ClientMsg::QueueLeave { entry } => self.queue_leave(id, entry),
             ClientMsg::MatchAccept { proposal } => self.match_accept(id, proposal).await,
             ClientMsg::MatchDecline { proposal } => self.match_decline(id, proposal),

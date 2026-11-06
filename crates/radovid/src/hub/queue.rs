@@ -1,4 +1,4 @@
-//! The queues: one per rated ruleset, entries in the order they joined. An
+//! The humans and everyone queues of each rated ruleset, in arrival order. An
 //! entry keeps its place while it sits in a proposal and after a proposal
 //! fails; the pairer forms proposals from the oldest free entries.
 
@@ -17,6 +17,8 @@ pub(super) struct Entry {
     pub since: Instant,
     pub source: IpAddr,
     pub proposal: Option<ProposalId>,
+    pub audience: Audience,
+    pub search: QueueEntryId,
     /// What the account was last told of the entry's standing, and when.
     told: (Standing, Instant),
 }
@@ -36,14 +38,89 @@ impl Hub {
         session: SessionId,
         ruleset: RulesetId,
     ) -> Result<Reply, Error> {
+        let mut entries = self.join_queues(session, ruleset, &[Audience::Everyone])?;
+        Ok(Reply::Queued {
+            entry: entries.remove(0),
+        })
+    }
+
+    pub(super) fn queue_join_audiences(
+        &mut self,
+        session: SessionId,
+        ruleset: RulesetId,
+        audiences: Vec<Audience>,
+    ) -> Result<Reply, Error> {
+        Ok(Reply::QueuesJoined {
+            entries: self.join_queues(session, ruleset, &audiences)?,
+        })
+    }
+
+    fn join_queues(
+        &mut self,
+        session: SessionId,
+        ruleset: RulesetId,
+        audiences: &[Audience],
+    ) -> Result<Vec<QueueEntry>, Error> {
+        self.check_queue_audiences(session, audiences)?;
         let config = Arc::clone(&self.config);
         let rules = config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?;
         self.admit_queue(session, rules)?;
+        if audiences.len()
+            > (config.limits.queue_capacity as usize).saturating_sub(self.entries.len())
+        {
+            return Err(Error::QueueFull {
+                retry_after_ms: 10_000,
+            });
+        }
         let (account, source) = self
             .sessions
             .get(&session)
             .map(|s| (s.account, s.source))
             .ok_or(Error::NotLoggedIn)?;
+        let search = QueueEntryId(self.next_entry);
+        let mut entries = Vec::with_capacity(audiences.len());
+        for &audience in audiences {
+            let id = self.insert_queue_entry(account, source, ruleset.clone(), audience, search);
+            entries.push(self.entry_status(id).ok_or(Error::Internal)?);
+        }
+        self.pair_all();
+        Ok(entries)
+    }
+
+    fn check_queue_audiences(
+        &self,
+        session: SessionId,
+        audiences: &[Audience],
+    ) -> Result<(), Error> {
+        if audiences.is_empty()
+            || audiences.len() > MAX_QUEUE_AUDIENCES
+            || audiences.contains(&Audience::BotsOnly)
+            || (audiences.len() == 2 && audiences[0] == audiences[1])
+        {
+            return Err(Error::BadQueueAudiences);
+        }
+        let session = self.sessions.get(&session).ok_or(Error::NotLoggedIn)?;
+        let account = self
+            .accounts
+            .get(&session.account)
+            .ok_or(Error::NotLoggedIn)?;
+        if audiences
+            .iter()
+            .any(|audience| !audience.admits(account.info.kind))
+        {
+            return Err(Error::AudienceMismatch);
+        }
+        Ok(())
+    }
+
+    fn insert_queue_entry(
+        &mut self,
+        account: AccountId,
+        source: IpAddr,
+        ruleset: RulesetId,
+        audience: Audience,
+        search: QueueEntryId,
+    ) -> QueueEntryId {
         let id = QueueEntryId(self.next_entry);
         self.next_entry = self.next_entry.wrapping_add(1).max(1);
         let now = Instant::now();
@@ -64,19 +141,23 @@ impl Hub {
                 since: now,
                 source,
                 proposal: None,
+                audience,
+                search,
                 told: never,
             },
         );
-        self.queues.entry(ruleset).or_default().push(id);
+        self.queues.entry((ruleset, audience)).or_default().push(id);
         if let Some(a) = self.accounts.get_mut(&account) {
             a.entries.push(id);
+            a.searches.insert(search);
         }
-        let status = self.entry_status(id).ok_or(Error::Internal)?;
+        let status = self
+            .entry_status(id)
+            .expect("the inserted queue entry exists");
         if let Some(entry) = self.entries.get_mut(&id) {
             entry.told = (standing(&status), now);
         }
-        self.pair_all();
-        Ok(Reply::Queued { entry: status })
+        id
     }
 
     pub(super) fn queue_leave(
@@ -107,16 +188,40 @@ impl Hub {
             return;
         }
         let account = e.account;
-        self.remove_entry(entry);
-        self.notify(
-            account,
-            Event::QueueLeft {
-                entry,
-                reason,
-                cooldown_ms: 0,
-            },
-        );
+        self.remove_search(entry, reason, 0);
         self.forget_if_idle(account);
+    }
+
+    /// Consume exactly this search, leaving independent concurrent searches alone.
+    pub(super) fn remove_search(
+        &mut self,
+        entry: QueueEntryId,
+        reason: QueueLeftReason,
+        cooldown_ms: u32,
+    ) {
+        let Some(e) = self.entries.get(&entry) else {
+            return;
+        };
+        let (account, search) = (e.account, e.search);
+        let entries: Vec<_> = self
+            .accounts
+            .get(&account)
+            .into_iter()
+            .flat_map(|account| &account.entries)
+            .filter(|id| self.entries.get(id).is_some_and(|e| e.search == search))
+            .copied()
+            .collect();
+        for entry in entries {
+            self.remove_entry(entry);
+            self.notify(
+                account,
+                Event::QueueLeft {
+                    entry,
+                    reason,
+                    cooldown_ms,
+                },
+            );
+        }
     }
 
     /// Forgets an entry everywhere; the caller tells whom it concerns.
@@ -124,18 +229,25 @@ impl Hub {
         let Some(e) = self.entries.remove(&entry) else {
             return;
         };
-        if let Some(queue) = self.queues.get_mut(&e.ruleset) {
+        if let Some(queue) = self.queues.get_mut(&(e.ruleset, e.audience)) {
             queue.retain(|id| *id != entry);
         }
         if let Some(account) = self.accounts.get_mut(&e.account) {
             account.entries.retain(|id| *id != entry);
+            if !account.entries.iter().any(|id| {
+                self.entries
+                    .get(id)
+                    .is_some_and(|other| other.search == e.search)
+            }) {
+                account.searches.remove(&e.search);
+            }
         }
     }
 
     /// Where an entry stands.
     pub(super) fn entry_status(&self, entry: QueueEntryId) -> Option<QueueEntry> {
         let e = self.entries.get(&entry)?;
-        let queue = self.queues.get(&e.ruleset)?;
+        let queue = self.queues.get(&(e.ruleset.clone(), e.audience))?;
         let position = queue.iter().position(|id| *id == entry)? as u32 + 1;
         Some(QueueEntry {
             entry,
@@ -145,6 +257,8 @@ impl Hub {
             waiting: queue.len() as u32,
             overloaded: self.pairing_paused(),
             games_waiting: self.waiting.len() as u32,
+            audience: e.audience,
+            search: e.search,
         })
     }
 
@@ -163,21 +277,25 @@ impl Hub {
     pub(super) fn pair_all(&mut self) {
         let config = Arc::clone(&self.config);
         for ruleset in config.rulesets.iter().filter(|r| r.rated) {
-            while !self.pairing_paused() {
-                let Some(picked) = self.pick(&ruleset.ruleset_id(), ruleset.seats()) else {
-                    break;
-                };
-                self.propose(ruleset.ruleset_id(), picked);
+            for audience in [Audience::HumansOnly, Audience::Everyone] {
+                while !self.pairing_paused() {
+                    let Some(picked) =
+                        self.pick(&(ruleset.ruleset_id(), audience), ruleset.seats())
+                    else {
+                        break;
+                    };
+                    self.propose(ruleset.ruleset_id(), picked);
+                }
             }
         }
     }
 
     /// The oldest free entries that fill `seats`: never one account twice,
     /// and an entry from a source already picked only when no other fits.
-    fn pick(&self, ruleset: &RulesetId, seats: usize) -> Option<Vec<QueueEntryId>> {
+    fn pick(&self, queue: &(RulesetId, Audience), seats: usize) -> Option<Vec<QueueEntryId>> {
         let free: Vec<(QueueEntryId, &Entry)> = self
             .queues
-            .get(ruleset)?
+            .get(queue)?
             .iter()
             .filter_map(|id| self.entries.get(id).map(|e| (*id, e)))
             .filter(|(_, e)| e.proposal.is_none())
@@ -237,3 +355,7 @@ fn standing(status: &QueueEntry) -> Standing {
         games_waiting: status.games_waiting,
     }
 }
+
+#[cfg(test)]
+#[path = "queue_tests.rs"]
+mod tests;

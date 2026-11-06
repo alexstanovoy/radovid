@@ -1,5 +1,8 @@
 # Protocol 14 coordination
 
+This records the version-14 upgrade. The current queue-audience boundary is
+[protocol 15](protocol_15.md).
+
 The service and every control client must use protocol 14 (`MIN_PROTO_VERSION = PROTO_VERSION = 14`). Older
 binaries receive `ProtoMismatch` during `Hello`, before any catalog or account record. There is no rolling
 compatibility window: nested records gained appended fields that older decoders cannot safely interpret.

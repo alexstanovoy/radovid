@@ -89,3 +89,73 @@ fn a_lobby_state_of_version_12_keeps_its_bytes_with_every_cheats_value() {
         assert_eq!(read, msg, "the frozen bytes read back");
     }
 }
+
+fn linked_entries() -> Vec<QueueEntry> {
+    [Audience::HumansOnly, Audience::Everyone]
+        .into_iter()
+        .enumerate()
+        .map(|(index, audience)| QueueEntry {
+            entry: QueueEntryId(index as u32 + 1),
+            ruleset: RulesetId("duel".into()),
+            for_ms: 0,
+            position: 1,
+            waiting: 1,
+            overloaded: false,
+            games_waiting: 0,
+            audience,
+            search: QueueEntryId(1),
+        })
+        .collect()
+}
+
+fn decode_linked_entries(entries: Vec<QueueEntry>) -> Result<ServerMsg, CodecError> {
+    let frame = encode_frame_to_vec(&ServerMsg::Reply {
+        seq: 1,
+        reply: Reply::QueuesJoined { entries },
+    })
+    .expect("frame");
+    decode_payload(whole_frame(&frame, MAX_SERVER_PAYLOAD_LEN).expect("payload"))
+}
+
+#[test]
+fn linked_queue_replies_decode_one_or_two_consistent_entries() {
+    assert!(decode_linked_entries(linked_entries()[..1].to_vec()).is_ok());
+    assert!(decode_linked_entries(linked_entries()).is_ok());
+}
+
+#[test]
+fn linked_queue_replies_reject_oversized_or_inconsistent_batches_before_clients_fold_them() {
+    let entries = linked_entries();
+    let mut oversized = entries.clone();
+    oversized.push(entries[0].clone());
+    let mut wrong_search = entries.clone();
+    wrong_search[1].search = QueueEntryId(3);
+    let mut wrong_ruleset = entries.clone();
+    wrong_ruleset[1].ruleset = RulesetId("other".into());
+    let mut repeated_id = entries.clone();
+    repeated_id[1].entry = repeated_id[0].entry;
+    let mut repeated_audience = entries.clone();
+    repeated_audience[1].audience = repeated_audience[0].audience;
+    let mut unsupported = entries.clone();
+    unsupported[0].audience = Audience::BotsOnly;
+    let mut wrong_anchor = entries.clone();
+    wrong_anchor
+        .iter_mut()
+        .for_each(|entry| entry.search = QueueEntryId(5));
+    for (name, invalid) in [
+        ("oversized", oversized),
+        ("empty", vec![]),
+        ("search", wrong_search),
+        ("ruleset", wrong_ruleset),
+        ("duplicate ID", repeated_id),
+        ("duplicate audience", repeated_audience),
+        ("unsupported audience", unsupported),
+        ("anchor", wrong_anchor),
+    ] {
+        assert_eq!(
+            decode_linked_entries(invalid),
+            Err(CodecError::Malformed),
+            "{name}"
+        );
+    }
+}

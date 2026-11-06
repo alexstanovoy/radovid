@@ -11,8 +11,8 @@ pub enum AccountKind {
     Bot,
 }
 
-/// Who may sit in a lobby.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+/// Who may sit in a lobby or enter a queue. Queues support Everyone and HumansOnly.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Audience {
     Everyone,
     HumansOnly,
@@ -182,6 +182,10 @@ pub struct QueueEntry {
     pub overloaded: bool,
     /// Accepted matches waiting for a game slot.
     pub games_waiting: u32,
+    /// The audience of this queue: HumansOnly or Everyone.
+    pub audience: Audience,
+    /// The first entry of this linked search. Leaving either entry cancels that search.
+    pub search: QueueEntryId,
 }
 
 /// A pairing waiting for its players' answers. The opponents are not named.
@@ -195,6 +199,8 @@ pub struct Proposal {
     pub accept_by_ms: u32,
     pub accepted: u8,
     pub of: u8,
+    pub audience: Audience,
+    pub search: QueueEntryId,
 }
 
 /// Everything an account has in flight.
@@ -213,12 +219,14 @@ pub struct Activities {
     pub retired_asking: Vec<LobbyId>,
 }
 
-/// Why a queue entry is gone without a match.
+/// Why a queue entry ended.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueueLeftReason {
     Cancelled,
     Declined,
     TimedOut,
+    /// This linked search was consumed by an accepted match.
+    Matched,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]

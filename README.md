@@ -62,7 +62,8 @@ cargo test --profile test-release -p radovid --test games
 For your own game, configure its executable or container image, wire fingerprint, arguments and public address
 according to the [launcher contract](DEVELOPMENT.md#launcher-contract). The game owns its rules, network protocol
 and client library; the service never imports them. The [generality audit](docs/generality.md) records guarantees
-and remaining boundaries. [Protocol 14 coordination](docs/protocol_14.md) describes the client upgrade boundary.
+and remaining boundaries. [Protocol 15 coordination](docs/protocol_15.md) describes the client upgrade boundary
+and the linked humans/everyone queues.
 
 ## For developers
 

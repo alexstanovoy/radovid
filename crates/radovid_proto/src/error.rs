@@ -121,6 +121,8 @@ pub enum Error {
     TooManyGamesFromIpv6Site {
         limit: u32,
     },
+    /// Choose one or two distinct queue audiences: HumansOnly or Everyone.
+    BadQueueAudiences,
 }
 
 impl core::fmt::Display for Error {

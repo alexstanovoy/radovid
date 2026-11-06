@@ -220,6 +220,12 @@ pub enum ClientMsg {
         lobby: LobbyId,
         on: bool,
     },
+    /// Atomically starts one search in one or both queues. One or two distinct audiences,
+    /// HumansOnly or Everyone; bots may request Everyone only. Reply: QueuesJoined.
+    QueueJoinAudiences {
+        ruleset: RulesetId,
+        audiences: Vec<Audience>,
+    },
 }
 
 impl ClientMsg {
@@ -299,6 +305,68 @@ pub enum Reply {
         total: u64,
         data: Vec<u8>,
     },
+    /// Every entry of one linked search, admitted together.
+    QueuesJoined {
+        #[serde(deserialize_with = "linked_queue_entries")]
+        entries: Vec<QueueEntry>,
+    },
+}
+
+/// Bound the new batch before client caches see it, including direct protocol decoders.
+fn linked_queue_entries<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<QueueEntry>, D::Error> {
+    struct Entries;
+    impl<'de> serde::de::Visitor<'de> for Entries {
+        type Value = Vec<QueueEntry>;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            formatter.write_str("one or two distinct entries of one linked search")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> Result<Self::Value, A::Error> {
+            if let Some(length) = sequence.size_hint()
+                && !(1..=crate::MAX_QUEUE_AUDIENCES).contains(&length)
+            {
+                return Err(serde::de::Error::invalid_length(length, &self));
+            }
+            let mut entries = Vec::with_capacity(crate::MAX_QUEUE_AUDIENCES);
+            for _ in 0..=crate::MAX_QUEUE_AUDIENCES {
+                let Some(entry) = sequence.next_element::<QueueEntry>()? else {
+                    break;
+                };
+                if entries.len() == crate::MAX_QUEUE_AUDIENCES {
+                    return Err(serde::de::Error::invalid_length(entries.len() + 1, &self));
+                }
+                entries.push(entry);
+            }
+            if !consistent_queue_entries(&entries) {
+                return Err(serde::de::Error::custom(
+                    "inconsistent linked queue entries",
+                ));
+            }
+            Ok(entries)
+        }
+    }
+    deserializer.deserialize_seq(Entries)
+}
+
+fn consistent_queue_entries(entries: &[QueueEntry]) -> bool {
+    let Some(first) = entries.first() else {
+        return false;
+    };
+    first.search == first.entry
+        && entries.iter().enumerate().all(|(index, entry)| {
+            entry.search == first.search
+                && entry.ruleset == first.ruleset
+                && entry.audience != Audience::BotsOnly
+                && entries[..index].iter().all(|previous| {
+                    previous.entry != entry.entry && previous.audience != entry.audience
+                })
+        })
 }
 
 /// Unsolicited news.

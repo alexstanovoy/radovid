@@ -491,3 +491,16 @@ variant Error 55 TooManyGamesFromIpv6Site {}
 field Error::TooManyGamesFromIpv6Site 0 limit: u32
 field Limits 8 custom_match_capacity: u32
 field Limits 9 games_per_ipv6_48: u32
+
+# Version 15: linked searches in humans and everyone queues.
+variant ClientMsg 40 QueueJoinAudiences {}
+field ClientMsg::QueueJoinAudiences 0 ruleset: RulesetId
+field ClientMsg::QueueJoinAudiences 1 audiences: Vec<Audience>
+variant Error 56 BadQueueAudiences
+field Proposal 6 audience: Audience
+field Proposal 7 search: QueueEntryId
+field QueueEntry 7 audience: Audience
+field QueueEntry 8 search: QueueEntryId
+variant QueueLeftReason 3 Matched
+variant Reply 15 QueuesJoined {}
+field Reply::QueuesJoined 0 entries: Vec<QueueEntry>

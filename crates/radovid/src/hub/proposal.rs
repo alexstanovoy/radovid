@@ -32,8 +32,12 @@ impl Hub {
         self.next_proposal = self.next_proposal.wrapping_add(1).max(1);
         let timeout = Duration::from_secs(u64::from(self.config.limits.accept_timeout_secs));
         let deadline = Instant::now() + timeout;
-        for entry in &entries {
-            if let Some(e) = self.entries.get_mut(entry) {
+        let searches: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| self.entries.get(entry).map(|e| e.search))
+            .collect();
+        for e in self.entries.values_mut() {
+            if searches.contains(&e.search) {
                 e.proposal = Some(id);
             }
         }
@@ -66,6 +70,9 @@ impl Hub {
         let e = self.entries.get(&entry)?;
         let id = e.proposal?;
         let p = self.proposals.get(&id)?;
+        if !p.entries.contains(&entry) {
+            return None;
+        }
         Some(Proposal {
             proposal: id,
             entry,
@@ -73,6 +80,8 @@ impl Hub {
             accept_by_ms: millis_until(p.deadline),
             accepted: p.accepted_count(),
             of: p.entries.len() as u8,
+            audience: e.audience,
+            search: e.search,
         })
     }
 
@@ -167,28 +176,25 @@ impl Hub {
         let Some(p) = self.proposals.remove(&proposal) else {
             return;
         };
+        let out_searches: Vec<_> = out
+            .iter()
+            .filter_map(|entry| self.entries.get(entry).map(|e| e.search))
+            .collect();
         for entry in p.entries {
             let Some(account) = self.entries.get(&entry).map(|e| e.account) else {
                 continue;
             };
-            if out.contains(&entry) {
-                self.remove_entry(entry);
+            if out_searches.contains(&self.entries[&entry].search) {
                 let cooldown_ms = if cooldown {
                     self.decline_cooldown(account)
                 } else {
                     0
                 };
-                self.notify(
-                    account,
-                    Event::QueueLeft {
-                        entry,
-                        reason,
-                        cooldown_ms,
-                    },
-                );
+                self.remove_search(entry, reason, cooldown_ms);
                 self.forget_if_idle(account);
             } else {
-                if let Some(e) = self.entries.get_mut(&entry) {
+                let search = self.entries[&entry].search;
+                for e in self.entries.values_mut().filter(|e| e.search == search) {
                     e.proposal = None;
                 }
                 self.notify(
@@ -222,7 +228,7 @@ impl Hub {
             Ok(_) => {
                 self.proposals.remove(&proposal);
                 for entry in entries {
-                    self.remove_entry(entry);
+                    self.remove_search(entry, QueueLeftReason::Matched, 0);
                 }
                 self.try_launch();
                 self.pair_all();

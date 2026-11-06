@@ -220,8 +220,15 @@ impl Hub {
         self.require_admin(admin)?;
         self.require_account(target).await?;
         self.db.set_kind(target, kind).await.map_err(internal)?;
-        if let Some(account) = self.accounts.get_mut(&target) {
+        let changed = if let Some(account) = self.accounts.get_mut(&target) {
+            let changed = account.info.kind != kind;
             account.info.kind = kind;
+            changed
+        } else {
+            false
+        };
+        if changed {
+            self.drop_entries(target, false);
         }
         Ok(Reply::Done)
     }
