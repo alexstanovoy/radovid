@@ -26,10 +26,16 @@ impl Penalty {
 }
 
 impl Hub {
-    pub(super) fn check_game_wire(&self, session: SessionId, ruleset: &RulesetConfig) -> Result<(), Error> {
+    pub(super) fn check_game_wire(
+        &self,
+        session: SessionId,
+        ruleset: &RulesetConfig,
+    ) -> Result<(), Error> {
         let live = self.sessions.get(&session).ok_or(Error::NotLoggedIn)?;
         if live.game_fingerprint != ruleset.game_fingerprint {
-            return Err(Error::GameVersionMismatch { server: ruleset.game_fingerprint });
+            return Err(Error::GameVersionMismatch {
+                server: ruleset.game_fingerprint,
+            });
         }
         Ok(())
     }

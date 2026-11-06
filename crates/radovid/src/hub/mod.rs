@@ -312,11 +312,15 @@ impl Hub {
     }
 
     fn admit_session_lobbies(&self, id: AccountId, game_fingerprint: u64) -> Result<(), Error> {
-        let Some(account) = self.accounts.get(&id) else { return Ok(()); };
+        let Some(account) = self.accounts.get(&id) else {
+            return Ok(());
+        };
         for lobby in account.lobbies.iter().filter_map(|id| self.lobbies.get(id)) {
             let rules = self.config.ruleset(&lobby.ruleset).ok_or(Error::Internal)?;
             if rules.game_fingerprint != game_fingerprint {
-                return Err(Error::GameVersionMismatch { server: rules.game_fingerprint });
+                return Err(Error::GameVersionMismatch {
+                    server: rules.game_fingerprint,
+                });
             }
         }
         Ok(())

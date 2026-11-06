@@ -121,9 +121,12 @@ impl Hub {
 
     fn check_lobby_wire(&self, session: SessionId, msg: &ClientMsg) -> Result<(), Error> {
         let lobby = match msg {
-            ClientMsg::LobbyJoin { lobby, .. } | ClientMsg::LobbyKick { lobby, .. }
-            | ClientMsg::LobbyReady { lobby, .. } | ClientMsg::LobbySlot { lobby, .. }
-            | ClientMsg::LobbyConfigure { lobby, .. } | ClientMsg::LobbyCheats { lobby, .. }
+            ClientMsg::LobbyJoin { lobby, .. }
+            | ClientMsg::LobbyKick { lobby, .. }
+            | ClientMsg::LobbyReady { lobby, .. }
+            | ClientMsg::LobbySlot { lobby, .. }
+            | ClientMsg::LobbyConfigure { lobby, .. }
+            | ClientMsg::LobbyCheats { lobby, .. }
             | ClientMsg::LobbyLeave { lobby } => lobby,
             _ => return Ok(()),
         };
@@ -133,7 +136,11 @@ impl Hub {
     }
 
     fn admit_lobby(&self, session: SessionId, rules: &RulesetConfig) -> Result<(), Error> {
-        let id = self.sessions.get(&session).ok_or(Error::NotLoggedIn)?.account;
+        let id = self
+            .sessions
+            .get(&session)
+            .ok_or(Error::NotLoggedIn)?
+            .account;
         self.admit_session_lobbies(id, rules.game_fingerprint)?;
         self.admit_game(session, rules)
     }

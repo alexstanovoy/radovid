@@ -628,18 +628,42 @@ fn lobby_members_can_login_and_resume_only_with_the_lobbys_game_wire() {
     let env = start(rules());
     let mut owner = env.human("owner");
     let mut guest = env.human("guest");
-    let Reply::Lobby { state } = owner.ask(ClientMsg::LobbyCreate {
-        ruleset: solo(), name: "Wire contract".into(), audience: Audience::Everyone, password: None,
-    }).expect("lobby") else { panic!("lobby reply") };
-    guest.ask(ClientMsg::LobbyJoin { lobby: state.id, password: None }).expect("join");
+    let Reply::Lobby { state } = owner
+        .ask(ClientMsg::LobbyCreate {
+            ruleset: solo(),
+            name: "Wire contract".into(),
+            audience: Audience::Everyone,
+            password: None,
+        })
+        .expect("lobby")
+    else {
+        panic!("lobby reply")
+    };
+    guest
+        .ask(ClientMsg::LobbyJoin {
+            lobby: state.id,
+            password: None,
+        })
+        .expect("join");
     for account in [&owner, &guest] {
-        let mut wrong = Client::connect(&env.url, &env.tls, FINGERPRINT ^ 1).expect("other game client");
-        assert_eq!(refused(wrong.login(&account.me.login, PASSWORD, ClientInfo::default())),
-            Error::GameVersionMismatch { server: FINGERPRINT });
-        assert_eq!(refused(wrong.resume(account.token, ClientInfo::default())),
-            Error::GameVersionMismatch { server: FINGERPRINT });
+        let mut wrong =
+            Client::connect(&env.url, &env.tls, FINGERPRINT ^ 1).expect("other game client");
+        assert_eq!(
+            refused(wrong.login(&account.me.login, PASSWORD, ClientInfo::default())),
+            Error::GameVersionMismatch {
+                server: FINGERPRINT
+            }
+        );
+        assert_eq!(
+            refused(wrong.resume(account.token, ClientInfo::default())),
+            Error::GameVersionMismatch {
+                server: FINGERPRINT
+            }
+        );
         let mut correct = env.connect();
-        let logged = correct.resume(account.token, ClientInfo::default()).expect("same wire resumes");
+        let logged = correct
+            .resume(account.token, ClientInfo::default())
+            .expect("same wire resumes");
         assert_eq!(logged.activities.lobbies, [state.id]);
     }
 }
@@ -649,13 +673,36 @@ fn a_session_opened_before_joining_cannot_use_a_lobby_of_another_wire() {
     let env = start(rules());
     let mut owner = env.human("owner");
     let mut wrong = Client::connect(&env.url, &env.tls, FINGERPRINT ^ 1).expect("other wire");
-    wrong.login("owner", PASSWORD, ClientInfo::default()).expect("no lobby yet");
-    let Reply::Lobby { state } = owner.ask(ClientMsg::LobbyCreate {
-        ruleset: solo(), name: "Wire contract".into(), audience: Audience::Everyone, password: None,
-    }).expect("lobby") else { panic!("lobby reply") };
-    for request in [ClientMsg::LobbyJoin { lobby: state.id, password: None },
-        ClientMsg::LobbyReady { lobby: state.id, ready: true }] {
-        assert_eq!(refused(wrong.request(request)), Error::GameVersionMismatch { server: FINGERPRINT });
+    wrong
+        .login("owner", PASSWORD, ClientInfo::default())
+        .expect("no lobby yet");
+    let Reply::Lobby { state } = owner
+        .ask(ClientMsg::LobbyCreate {
+            ruleset: solo(),
+            name: "Wire contract".into(),
+            audience: Audience::Everyone,
+            password: None,
+        })
+        .expect("lobby")
+    else {
+        panic!("lobby reply")
+    };
+    for request in [
+        ClientMsg::LobbyJoin {
+            lobby: state.id,
+            password: None,
+        },
+        ClientMsg::LobbyReady {
+            lobby: state.id,
+            ready: true,
+        },
+    ] {
+        assert_eq!(
+            refused(wrong.request(request)),
+            Error::GameVersionMismatch {
+                server: FINGERPRINT
+            }
+        );
     }
 }
 
@@ -666,13 +713,37 @@ fn a_lobby_cannot_change_to_rules_of_another_wire_on_the_same_connection() {
     other.launcher.version_probe[1] = format!("{:016x}", other.game_fingerprint);
     let env = start(vec![ruleset("solo", true, "team0", "0"), other]);
     let mut owner = env.human("owner");
-    let Reply::Lobby { state } = owner.ask(ClientMsg::LobbyCreate {
-        ruleset: solo(), name: "Wire contract".into(), audience: Audience::Everyone, password: None,
-    }).expect("lobby") else { panic!("lobby reply") };
-    assert_eq!(owner.ask(ClientMsg::LobbyConfigure {
-        lobby: state.id, ruleset: RulesetId("other".into()), audience: Audience::Everyone, password: None,
-    }), Err(Error::GameVersionMismatch { server: FINGERPRINT ^ 1 }));
-    let Reply::Lobby { state: unchanged } = owner.ask(ClientMsg::LobbyJoin { lobby: state.id, password: None }).expect("still joined") else { panic!("lobby reply") };
+    let Reply::Lobby { state } = owner
+        .ask(ClientMsg::LobbyCreate {
+            ruleset: solo(),
+            name: "Wire contract".into(),
+            audience: Audience::Everyone,
+            password: None,
+        })
+        .expect("lobby")
+    else {
+        panic!("lobby reply")
+    };
+    assert_eq!(
+        owner.ask(ClientMsg::LobbyConfigure {
+            lobby: state.id,
+            ruleset: RulesetId("other".into()),
+            audience: Audience::Everyone,
+            password: None,
+        }),
+        Err(Error::GameVersionMismatch {
+            server: FINGERPRINT ^ 1
+        })
+    );
+    let Reply::Lobby { state: unchanged } = owner
+        .ask(ClientMsg::LobbyJoin {
+            lobby: state.id,
+            password: None,
+        })
+        .expect("still joined")
+    else {
+        panic!("lobby reply")
+    };
     assert_eq!(unchanged.ruleset, solo());
 }
 
@@ -685,19 +756,65 @@ fn preopened_sessions_cannot_create_or_join_lobbies_with_conflicting_wires() {
     let env = start(vec![ruleset("solo", true, "team0", "0"), other]);
     let mut owner = env.human("owner");
     let mut wrong = Client::connect(&env.url, &env.tls, other_wire).expect("other wire");
-    wrong.login("owner", PASSWORD, ClientInfo::default()).expect("no lobby yet");
-    let Reply::Lobby { state } = owner.ask(ClientMsg::LobbyCreate {
-        ruleset: solo(), name: "First game".into(), audience: Audience::Everyone, password: None,
-    }).expect("first lobby") else { panic!("lobby reply") };
-    assert_eq!(refused(wrong.request(ClientMsg::LobbyCreate {
-        ruleset: RulesetId("other".into()), name: "Second game".into(), audience: Audience::Everyone, password: None,
-    })), Error::GameVersionMismatch { server: FINGERPRINT });
+    wrong
+        .login("owner", PASSWORD, ClientInfo::default())
+        .expect("no lobby yet");
+    let Reply::Lobby { state } = owner
+        .ask(ClientMsg::LobbyCreate {
+            ruleset: solo(),
+            name: "First game".into(),
+            audience: Audience::Everyone,
+            password: None,
+        })
+        .expect("first lobby")
+    else {
+        panic!("lobby reply")
+    };
+    assert_eq!(
+        refused(wrong.request(ClientMsg::LobbyCreate {
+            ruleset: RulesetId("other".into()),
+            name: "Second game".into(),
+            audience: Audience::Everyone,
+            password: None,
+        })),
+        Error::GameVersionMismatch {
+            server: FINGERPRINT
+        }
+    );
     let mut host = Client::connect(&env.url, &env.tls, other_wire).expect("other game host");
-    host.register("host_b", PASSWORD, AccountKind::Human, ClientInfo::default()).expect("host");
-    let Reply::Lobby { state: target } = host.request(ClientMsg::LobbyCreate {
-        ruleset: RulesetId("other".into()), name: "Other host".into(), audience: Audience::Everyone, password: None,
-    }).expect("other lobby") else { panic!("lobby reply") };
-    assert_eq!(refused(wrong.request(ClientMsg::LobbyJoin { lobby: target.id, password: None })),
-        Error::GameVersionMismatch { server: FINGERPRINT });
-    assert_eq!(env.connect().resume(owner.token, ClientInfo::default()).expect("original wire still works").activities.lobbies, [state.id]);
+    host.register(
+        "host_b",
+        PASSWORD,
+        AccountKind::Human,
+        ClientInfo::default(),
+    )
+    .expect("host");
+    let Reply::Lobby { state: target } = host
+        .request(ClientMsg::LobbyCreate {
+            ruleset: RulesetId("other".into()),
+            name: "Other host".into(),
+            audience: Audience::Everyone,
+            password: None,
+        })
+        .expect("other lobby")
+    else {
+        panic!("lobby reply")
+    };
+    assert_eq!(
+        refused(wrong.request(ClientMsg::LobbyJoin {
+            lobby: target.id,
+            password: None
+        })),
+        Error::GameVersionMismatch {
+            server: FINGERPRINT
+        }
+    );
+    assert_eq!(
+        env.connect()
+            .resume(owner.token, ClientInfo::default())
+            .expect("original wire still works")
+            .activities
+            .lobbies,
+        [state.id]
+    );
 }
