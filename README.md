@@ -18,7 +18,7 @@ own output. It never carries game traffic, and clients can't report outcomes, so
   step. Slots by team,
   spectators, and a game mode the owner chooses, which changes the rules but never how many may play.
 - **Glicko-2 ratings** and a ladder; a draw is half a win, a crashed or abandoned match changes nothing.
-- **Several games per account** at once (queues, lobbies, running matches), within per-account and per-address limits.
+- **Several games per account** at once (queues, lobbies, running matches), with no per-account cap by default; operators may set account and source limits.
 - **Game capacity:** a fixed number of servers run at once, and formed matches wait their turn in order.
 - **Replays and other match files** kept for a set time and fetched by the players who sat in the match (or everyone,
   if you choose).
@@ -31,70 +31,37 @@ own output. It never carries game traffic, and clients can't report outcomes, so
 Clients speak WebSocket over TLS on one port; `radovid_client` is the Rust client library (blocking, a background
 thread, or the browser's WebSocket). It can also serve a web client's static files on the same origin.
 
-What is missing: password recovery and e-mail, rated matches with more than one player a side (rated rulesets are
-1v1), a ladder across several hosts (one process, one SQLite file), and rolling protocol compatibility (clients and
+Rated queues support two or more sides of any size, up to ten seats, including free-for-all and draws. Each
+account has one rating and ladder position per ruleset, shared across its concurrent matches.
+
+What is missing: password recovery and e-mail, ranked placements or partial scores, a ladder across several hosts (one process, one SQLite file), and rolling protocol compatibility (clients and
 service update together).
 
 ## Get started: a development setup on one machine
 
-No docker and no domain needed. This uses bota's game server as the game; any game that honours the
-[launcher contract](DEVELOPMENT.md#launcher-contract) works the same way.
+Any server that honours the [launcher contract](DEVELOPMENT.md#launcher-contract) can be configured. The service
+never imports a game's protocol or client library. Start with [radovid.example.toml](radovid.example.toml) and supply
+your game's image, fingerprint, arguments and public address. [examples/bota.toml](examples/bota.toml) is one
+replaceable integration example.
 
-1. Build radovid and the game server (in the bota checkout, `cargo build --release -p bota_server`), make a
-   development certificate, and ask the game for its wire fingerprint:
+For local development, build radovid, create a certificate, and change a ruleset's launcher to `kind = "local"`,
+`binary = "/absolute/path/to/your_server"` and a loopback `public_url`. Keep tickets in its environment:
 
-   ```sh
-   cargo build --release -p radovid
-   mkdir dev && target/release/radovid dev-cert dev/        # cert.pem and key.pem for localhost; development only
-   GAME=../bota/target/release/bota_server
-   $GAME --wire-fingerprint                                  # 16 hex digits for game_fingerprint below
-   ```
+```sh
+cargo build --release -p radovid
+mkdir dev
+target/release/radovid dev-cert dev/
+target/release/radovid serve --config dev/radovid.toml
+```
 
-2. Write `dev/radovid.toml`. A `local` launcher runs the game as a child process on loopback:
+Set the configuration's listener to `127.0.0.1:4460` and TLS paths to `dev/cert.pem` and `dev/key.pem`. Clients
+connect to `wss://localhost:4460` and trust the development certificate. A game's own client reads the opaque
+handoff and connects directly to the game server.
 
-   ```toml
-   listen = "127.0.0.1:4460"
-   database = "dev/radovid.db"
-   tls_cert = "dev/cert.pem"
-   tls_key = "dev/key.pem"
-   game_ports = "20000-20010"
-
-   [[ruleset]]
-   id = "solo_mid"
-   name = "1x1 Mid Only"
-   game = "bota"
-   game_fingerprint = "<the digits above>"
-   teams = [1, 1]
-   rated = true
-
-   [ruleset.launcher]
-   kind = "local"
-   binary = "<absolute path of bota_server>"
-   public_url = "ws://127.0.0.1:{port}"
-   version_probe = ["--wire-fingerprint"]
-   args = ["--map", "2", "--match-id", "{match_id}", "--bind", "127.0.0.1", "--port", "0",
-           "--ws-port", "{port}", "--heroes", "1", "--start-after-secs", "60",
-           "--abandon-unjoined", "--empty-after-secs", "120"]
-   env = { BOTA_SEATS = "{seats}" }
-   artifact = "/abs/dev/replays/replay-{match_id}.brp"    # the replay the game writes; players fetch it afterwards
-   artifact_args = ["--replay", "{artifact}"]             # used only with [artifacts] save_replays = true
-   ```
-
-3. Run it:
-
-   ```sh
-   target/release/radovid serve --config dev/radovid.toml
-   target/release/radovid admin --config dev/radovid.toml <login>   # make an existing account an admin
-   ```
-
-Clients connect to `wss://localhost:4460` and trust `dev/cert.pem` (dbota: `--trust-cert dev/cert.pem`). A bot
-registers its own account of kind `bot` on first login. If matches end as crashes, look at the service's stderr
-(`radovid: match N: ...`).
-
-For production, start from `radovid.example.toml`: a `docker` launcher runs one container per match, `public_url`
-must be `wss://` for anything but loopback, `lobby_ruleset` names the rules a new lobby starts with when there are
-several, and SIGHUP reloads the certificate. `sqlite3 radovid.db ".backup copy.db"`
-takes a consistent backup while the service runs.
+The [game E2Es](crates/radovid/tests/games.rs) are executable integration examples: tic-tac-toe, a turn clock,
+and a fixed-tick grid race, each launched as a separate process. They require Python 3 at `/usr/bin/python3` and run
+with `cargo test --profile test-release -p radovid --test games`. They are test fixtures, never part of the service
+binary. See [the generality audit](docs/generality.md) for guarantees and remaining boundaries.
 
 ## For developers
 

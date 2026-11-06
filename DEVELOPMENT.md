@@ -78,12 +78,12 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the cap, are deleted hourly |
 | `limits.artifact_max_mib` | `64` | the most one artifact may have; a docker game cannot write more, a longer file is not served |
 | `lobby_teams` | `[1, 1]` | the slots of every lobby, at most 10 seats; no ruleset caps how many sit on a side |
-| `lobby_ruleset` | the first `[[ruleset]]` (a warning at start when there are several) | the ruleset a new lobby is of until its owner chooses another (`RulesetInfo.lobby_default`); set it whenever there is more than one ruleset, e.g. `"full"` |
+| `lobby_ruleset` | the first `[[ruleset]]` (a warning at start when there are several) | the ruleset a new lobby is of until its owner chooses another (`RulesetInfo.lobby_default`); set it whenever there is more than one ruleset, e.g. `"duel"` |
 | `artifacts.save_replays` | `false` | whether replays are kept and served at all; off, no game is asked to write one |
 | `ruleset.id` | | `[a-z0-9_]`, 1 to 32 bytes, never reused for other rules |
 | `ruleset.name`, `ruleset.game` | | display name (1 to 64 bytes); the game's label (1 to 32) |
 | `ruleset.game_fingerprint` | | 16 hex digits: the wire clients and servers must speak |
-| `ruleset.teams` | | team sizes; a rated ruleset is `[1, 1]` |
+| `ruleset.teams` | | team sizes, two or more sides of any size, at most 10 seats |
 | `ruleset.rated` | | queue and ladder |
 | `ruleset.info` | `""` | hex bytes shown to clients, the game's own meaning |
 | `ruleset.max_duration_secs` | `7200` | a longer match is killed (a null) |
@@ -113,7 +113,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 Artifacts: radovid creates each artifact file empty before the game starts. Keep the directory above it closed to
 other users, since the file is world-writable for the container's user. A file that is a link, or over its limit, is
 never served. radovid never reads the bytes: a game's durable files (metadata, a PGN, a log) are kept as long as the
-operator says. `radovid.example.toml` shows a full deployment, including a one-player `demo` ruleset
+operator says. `radovid.example.toml` shows a full deployment, including a one-player practice ruleset
 (`instant_solo`, cheats in the game's own arguments).
 
 Operation: SIGHUP rereads the certificate and key (a bad pair keeps the old one); SIGINT or SIGTERM stops every match
@@ -124,7 +124,7 @@ Operation: SIGHUP rereads the certificate and key (a bad pair keeps the old one)
 With `[web] static_dir`, the service sends the files of a web client on its own origin. Each page holds a place of a
 connection not logged in until it is sent, so `web.send_deadline_secs` bounds how long a slow reader may hold one. Size
 it to the largest file a client may fetch uncompressed over the slowest connection you mean to serve: the default, 600
-seconds, sends the bota client's ~125 MB WebAssembly module at ~210 KiB/s. Serve `.br`/`.gz` siblings so most clients
+seconds, sends a 125 MB WebAssembly module at ~210 KiB/s. Serve `.br`/`.gz` siblings so most clients
 fetch far less. A shorter deadline is stricter with slow readers; past 3600 seconds it is refused at startup.
 
 ## Protocol
@@ -151,11 +151,25 @@ most 64 KiB from a client, 4 MiB from the service.
 
 ## Ratings
 
-Glicko-2 (1500, 350, 0.06, tau 0.5), one rating period per game, the deviation grown for idle days first; a draw is
-half a win; a null changes nothing. Results apply one at a time, in the order radovid reads their `RESULT` lines: each
-is one SQLite transaction that reads both seats' ratings as stored at that moment (not at the match start), grows
-their deviations for the time since each one's last game, and writes both back. `before` and `after` in `MatchResult`
-are the values around that transaction, so two matches of one account finishing together apply in arrival order.
+Glicko-2 (1500, 350, 0.06, tau 0.5), one rating period per game, with deviation grown for idle days first.
+Each account has one rating per ruleset ladder. Concurrent games update that same rating in result-arrival order,
+in one SQLite transaction per result. Every member's `before` is read before any member's `after` is written.
+A null changes nothing. Custom lobbies remain unrated.
+
+For two or more sides, each team is represented by its members' mean rating and deviation
+`sqrt(sum(member_deviation²)) / team_size`. Each member receives one Glicko-2 period against each opposing team
+once, regardless of that team's size. The winning side scores 1 against every other side; losing sides score 0
+against the winner and ½ against each other. A whole-match draw gives every pairing ½. One-player teams preserve
+the original 1v1 formula exactly. Volatility belongs to each member, never to a persistent team record.
+
+Teams are processed in team-index order, with at most ten seats and fewer than 100 member/opponent comparisons.
+All arithmetic is deterministic for the same stored ratings and result order; concurrent completion order is
+intentionally part of the input. No account may hold two seats in one match. A player's own rating determines its
+expected score against the opposing mean: adding low-rated teammates does not amplify that player's update.
+Only the launched server supplies outcomes. Deliberate sandbagging or collusion still requires moderation.
+
+The result protocol expresses a single winner or a whole-match draw, not placements, shared first places, or
+fractional scores. In FFA, the winner-versus-others decomposition therefore treats non-winning sides as tied.
 
 ## Security
 
@@ -182,7 +196,10 @@ are the values around that transaction, so two matches of one account finishing 
 
 ## Tests
 
-`cargo test` runs the end-to-end tests over real WebSockets; the game server is `crates/radovid/tests/fake_game.sh`,
-which honours the launcher contract and plays nothing (its report echoes how it was started). A game's own client
+`cargo test` runs the end-to-end tests over real WebSockets; the launcher-contract tests use `crates/radovid/tests/fake_game.sh` (its report echoes how it was started).
+`tests/games.rs` also launches independent Python 3 game processes and plays them through real socket clients:
+rated tic-tac-toe, clock expiry, fixed-tick team and free-for-all games, and a custom lobby. The fixtures bind
+loopback only, cap input/connection/work budgets, and validate opaque seat tickets in constant time. Python 3 at
+`/usr/bin/python3` is a required test dependency; a missing interpreter fails the tests and gate. A game's own client
 library carries the tests against its real server. `tools/gate.sh` is the merge gate: clippy, the wasm check, the
 tests, the docker launcher test against a real docker, the fuzz targets' type check, `cargo deny check` and fmt.

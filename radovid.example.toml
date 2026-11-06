@@ -1,129 +1,81 @@
-# radovid: the least a service needs; every other key and its default is in DEVELOPMENT.md.
-# Run: radovid serve --config radovid.toml
-
+# A service hosts replaceable game servers implementing DEVELOPMENT.md's launcher contract.
+# Image names, fingerprints and arguments below are examples: supply your games' own values.
 listen = "0.0.0.0:4460"
-database = "radovid.db"                    # created 0600
-tls_cert = "/etc/radovid/play-cert/fullchain.pem"
-tls_key = "/etc/radovid/play-cert/privkey.pem"   # refused if every user may read it
-game_ports = "20000-20100"                 # one host port per running match
-lobby_ruleset = "full"                     # a new lobby is of these rules until its host chooses others; absent: the first [[ruleset]]
+database = "radovid.db"
+tls_cert = "/etc/radovid/cert.pem"
+tls_key = "/etc/radovid/key.pem"
+game_ports = "20000-20100"
+lobby_ruleset = "duel"
+# lobby_teams = [1, 1]                     # explicit layout shared by custom lobbies
 
-# [artifacts]
-# save_replays = false                     # keep and serve each match's artifact (its replay); off by default
+# [limits]
+# games_per_account = { human = 0, bot = 0 } # 0: no account cap; source/service capacities still apply
+# games_per_source = 8
 
 # [web]
-# static_dir = "/srv/radovid/page"          # a web client served on this origin, beside /control
-# send_deadline_secs = 600                  # seconds a page has to be sent whole (1 to 3600); a slower peer is cut off
+# static_dir = "/srv/radovid/page"
+# send_deadline_secs = 600
 
-# bota's full game: the default of a lobby (lobby_ruleset above). Ten slots, five a side, for
-# lobbies only (not rated, no queue); a lobby starts with the players it has.
 [[ruleset]]
-id = "full"
-name = "Full rules"
-game = "bota"
+id = "duel"
+name = "Board duel"
+game = "example_board"
 game_fingerprint = "0123456789abcdef"
-teams = [5, 5]
-rated = false
-
-[ruleset.launcher]
-kind = "docker"
-image = "bota_server:7f6489e"
-container_port = 4456
-public_url = "wss://game.example.org:{port}"
-mounts = ["/etc/radovid/game-cert:/certs:ro"]
-version_probe = ["--wire-fingerprint"]
-args = ["--map", "0", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
-        "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
-        "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300"]
-env = { BOTA_SEATS = "{seats}" }
-artifact = "/var/lib/radovid/replays/replay-{match_id}.brp"
-artifact_args = ["--replay", "{artifact}"]
-cheats_args = ["--lobby-cheats"]           # a lobby's owner may turn the game's cheats on (never in a queued match)
-
-# bota's solo mid, one docker container per match. Its server speaks wss:// on 4456 inside the
-# container; plain TCP stays on the container's loopback.
-[[ruleset]]
-id = "solo_mid"
-name = "1x1 Mid Only"
-game = "bota"
-game_fingerprint = "0123456789abcdef"      # what `bota_server --wire-fingerprint` prints
 teams = [1, 1]
 rated = true
-# lobby_min_players = 1                    # a lobby starts with its host alone by default (the empty seats stay empty)
-max_duration_secs = 1800                   # a match running longer is killed (a null); absent: 7200, room for a long one of any game
-# audience = "everyone"                    # or "humans_only" / "bots_only"
+# info = "0102"                            # opaque game parameters for its clients
+max_duration_secs = 10800                  # operational deadline, independent of the game's clock
 
 [ruleset.launcher]
 kind = "docker"
-image = "bota_server:7f6489e"
-container_port = 4456
-public_url = "wss://game.example.org:{port}"
-mounts = ["/etc/radovid/game-cert:/certs:ro"]
+image = "example_board_server:latest"
+container_port = 9000
+public_url = "wss://board.example.org:{port}"
 version_probe = ["--wire-fingerprint"]
-# --heroes 1: the pool is Shadow Fiend alone, a forced pick (each seat is given it, ready: nobody chooses)
-args = ["--map", "2", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
-        "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
-        "--heroes", "1", "--start-after-secs", "60", "--abandon-unjoined", "--empty-after-secs", "300"]
-env = { BOTA_SEATS = "{seats}" }           # tickets go into the environment only; each seat is ticket:team:name:kind (bot|human, the account's own)
+args = ["--port", "9000", "--match-id", "{match_id}", "--clock-seconds", "300"]
+env = { GAME_SEATS = "{seats}" }           # tickets only in environment, never arguments
 
-# The replay of each match, kept for its seats when `[artifacts] save_replays = true` (off unless set): radovid
-# makes the file and mounts just that one writable at /artifact in the container, and adds `artifact_args` and
-# `artifact_env` (the only places `{artifact}` is allowed) to the game's command line and environment so that the
-# game writes it where `{artifact}` says. With saving off the game is not told, and a fetch is answered
-# `ArtifactsNotKept`.
-artifact = "/var/lib/radovid/replays/replay-{match_id}.brp"
-artifact_args = ["--replay", "{artifact}"]
+[ruleset.artifacts.record]
+path = "/var/lib/radovid/records/record-{match_id}.pgn"
+args = ["--record", "{artifact}"]
+max_kib = 1024
+access = "seats"
 
-# A further file the game leaves for every match, kept whether or not replays are (radovid never reads it): here
-# the match metadata file, a few KiB, kept a year and open to everyone the ruleset's audience admits. It sits in
-# the ruleset's own table, after the `[ruleset.launcher]` keys of the ruleset it belongs to:
-# [ruleset.artifacts.meta]
-# path = "/var/lib/radovid/meta/meta-{match_id}.meta"
-# args = ["--meta", "{artifact}"]
-# max_kib = 1024
-# access = "audience"
-# retention_days = 365
+[[ruleset]]
+id = "teams"
+name = "Arena teams"
+game = "example_arena"
+game_fingerprint = "fedcba9876543210"
+teams = [2, 2]                            # may also be unequal, or [1, 1, 1] for free-for-all
+rated = true
+max_duration_secs = 1800
 
-# A full-map team game (5v5) runs 60 to 90 minutes and more, and its replay is large (about 80 MB at the hour): the
-# ruleset sets its own time limit and artifact size, and bota_server keeps its replay under that size (it reads the
-# container's file size limit, so the replay is closed whole before the limit).
-# [[ruleset]]
-# id = "full_5v5"
-# name = "5x5"
-# game = "bota"
-# game_fingerprint = "0123456789abcdef"
-# teams = [5, 5]
-# rated = false
-# max_duration_secs = 10800                # three hours
-# artifact_max_mib = 256                   # the most one replay may have; the container's `--ulimit fsize`
-# [ruleset.launcher]                       # the same as solo_mid's, with the full map: args without "--map", "2" and "--heroes"
+[ruleset.launcher]
+kind = "docker"
+image = "example_arena_server:latest"
+container_port = 9000
+public_url = "wss://arena.example.org:{port}"
+version_probe = ["--wire-fingerprint"]
+args = ["--port", "9000", "--match-id", "{match_id}", "--tick-rate", "60"]
+env = { GAME_SEATS = "{seats}" }
 
-# Demo Hero: Dota's demo with cheats, one player, free pick. Nobody queues or makes a lobby for it: `instant_solo` lets
-# one account start a match of it alone at once (`StartSolo`). Only people use it (a bot has no use for cheats).
-# `info` is bota's own flag byte (01: this ruleset is a Demo, which bota_radovid::is_demo reads and dbota opens from its
-# Demo Hero entry); radovid does not read it. --cheats is what makes the game server honour the cheats (it refuses them
-# with two or more seats). The map is the one `--map` value: 0 is the whole Dota map, 1 Dota's small demo map. A match
-# ends a minute after its player left it (--empty-after-secs), and there is no replay to keep.
+# One-player practice is optional and has no queue or ladder.
 [[ruleset]]
 id = "demo"
-name = "Demo Hero"
-game = "bota"
-game_fingerprint = "0123456789abcdef"
+name = "Arena practice"
+game = "example_arena"
+game_fingerprint = "fedcba9876543210"
 teams = [1, 1]
 rated = false
-audience = "humans_only"
 instant_solo = true
-info = "01"
 max_duration_secs = 7200
 
 [ruleset.launcher]
 kind = "docker"
-image = "bota_server:7f6489e"
-container_port = 4456
-public_url = "wss://game.example.org:{port}"
-mounts = ["/etc/radovid/game-cert:/certs:ro"]
+image = "example_arena_server:latest"
+container_port = 9000
+public_url = "wss://arena.example.org:{port}"
 version_probe = ["--wire-fingerprint"]
-args = ["--map", "0", "--match-id", "{match_id}", "--bind", "0.0.0.0", "--ws-port", "4456",
-        "--tls-cert", "/certs/fullchain.pem", "--tls-key", "/certs/privkey.pem",
-        "--cheats", "--tactical-secs", "0", "--abandon-unjoined", "--empty-after-secs", "60"]
-env = { BOTA_SEATS = "{seats}" }
+args = ["--port", "9000", "--practice"]
+env = { GAME_SEATS = "{seats}" }
+cheats_args = ["--cheats"]
