@@ -77,6 +77,9 @@ CREATE INDEX match_seats_account ON match_seats(account, match_id);
 /// What a deleted account is shown as.
 pub const DELETED_NICKNAME: &str = "deleted";
 
+/// Session tokens one account keeps stored at most; a login past it drops the oldest.
+pub const MAX_STORED_SESSIONS: usize = 32;
+
 /// Sessions unused this long are gone.
 const SESSION_TTL_MS: u64 = 30 * 24 * 3600 * 1000;
 
@@ -371,14 +374,25 @@ impl Db {
         .await
     }
 
+    /// Stores a fresh session of the account, and lets go of its oldest past
+    /// [`MAX_STORED_SESSIONS`] and of its expired ones: every login stores one, so without this
+    /// a script that logs in again and again would grow the file without end.
     pub async fn create_session(&self, account: AccountId, token_hash: [u8; 32]) -> DbResult<()> {
-        let now = now_ms().0 as i64;
+        let now = now_ms().0;
+        let expired_before = now.saturating_sub(SESSION_TTL_MS) as i64;
         self.run(move |c| {
-            c.execute(
+            let tx = c.transaction()?;
+            tx.execute(
                 "INSERT INTO sessions(token_hash, account, last_used) VALUES(?1, ?2, ?3)",
-                params![token_hash.as_slice(), account.0 as i64, now],
-            )
-            .map(|_| ())
+                params![token_hash.as_slice(), account.0 as i64, now as i64],
+            )?;
+            tx.execute(
+                "DELETE FROM sessions WHERE account = ?1 AND (last_used < ?2 OR rowid NOT IN
+                     (SELECT rowid FROM sessions WHERE account = ?1
+                      ORDER BY last_used DESC, rowid DESC LIMIT ?3))",
+                params![account.0 as i64, expired_before, MAX_STORED_SESSIONS as i64],
+            )?;
+            tx.commit()
         })
         .await
     }

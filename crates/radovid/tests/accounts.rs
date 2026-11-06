@@ -520,3 +520,48 @@ fn hostile_input_closes_that_connection_and_nothing_else() {
     drop(healthy);
     env.account("frank", AccountKind::Human);
 }
+
+/// Every login stores a session token; an account keeps its newest few, so logging in again and
+/// again (refused logins past the live sessions an account may hold among them) cannot grow the
+/// database without end. The oldest token goes first.
+#[test]
+fn an_account_keeps_only_its_newest_stored_sessions() {
+    use radovid::db::{Db, MAX_STORED_SESSIONS};
+    let dir = test_dir();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let db = Db::open(&dir.join("radovid.db")).expect("database");
+        let account = db
+            .create_account(
+                "hoarder".to_owned(),
+                "hash".to_owned(),
+                AccountKind::Human,
+                None,
+            )
+            .await
+            .expect("account");
+        let token = |n: usize| {
+            let mut hash = [0u8; 32];
+            hash[..8].copy_from_slice(&(n as u64).to_le_bytes());
+            hash
+        };
+        for n in 0..=MAX_STORED_SESSIONS {
+            db.create_session(account, token(n)).await.expect("session");
+        }
+        assert_eq!(
+            db.resume_session(token(0)).await.expect("resume"),
+            None,
+            "the oldest session is gone"
+        );
+        for n in 1..=MAX_STORED_SESSIONS {
+            assert_eq!(
+                db.resume_session(token(n)).await.expect("resume"),
+                Some(account),
+                "session {n} is kept"
+            );
+        }
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}

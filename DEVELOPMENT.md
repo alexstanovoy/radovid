@@ -155,7 +155,8 @@ are the values around that transaction, so two matches of one account finishing 
 - argon2id, at most four hashes at once and one per source; a full waiting line answers `Throttled`. An unknown login
   costs a hash too. Failed logins grow a delay per source, per (login, source) pair and per login across sources, so
   strangers can't lock an owner out; a right password after the delay always works.
-- Session tokens are random, stored as SHA-256, expire after 30 days idle, and a password change revokes them all.
+- Session tokens are random, stored as SHA-256, expire after 30 days idle, and a password change revokes them all; an
+  account keeps its newest 32 stored, a login past them drops the oldest.
 - Bounded: message size and rate, unauthenticated connections per source (a page download counts until it is sent),
   handshakes (10 s), sessions per account, lobbies, list sizes, registrations per hour per source, game servers' output
   lines.
