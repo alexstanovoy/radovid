@@ -47,6 +47,7 @@ class Game:
         self.connected = {}
         self.visits = [0] * len(self.seats)
         self.moves = [0] * len(self.seats)
+        self.pending = [[] for _ in self.seats]
         self.positions = [0] * len(self.seats)
         self.board = ["."] * 9
         self.turn = 0
@@ -102,9 +103,8 @@ class Game:
         elif self.options.game == "grid":
             if line not in ("INPUT 1", "INPUT 2"):
                 self.send(peer, "INVALID")
-            elif self.moves[slot] < 8:
-                self.moves[slot] += 1
-                self.positions[slot] += int(line[-1])
+            elif self.moves[slot] + len(self.pending[slot]) < 8:
+                self.pending[slot].append(int(line[-1]))
         else:
             self.move(peer, slot, line)
 
@@ -161,8 +161,12 @@ class Game:
         if self.options.game == "grid" and now >= self.next_tick:
             self.tick += 1
             self.next_tick += 0.01
+            for slot, moves in enumerate(self.pending):
+                self.positions[slot] += sum(moves)
+                self.moves[slot] += len(moves)
+                moves.clear()
             for peer in list(self.connected.values()):
-                self.send(peer, f"TICK {self.tick}")
+                self.send(peer, f"TICK {self.tick} {','.join(map(str, self.positions))}")
             if min(self.moves) >= 8 and self.visits[0] >= 2:
                 scores = {}
                 for slot, seat in enumerate(self.seats):
@@ -195,7 +199,7 @@ class Game:
         assert self.outcome is not None, "fixture operation budget"
         report = (f"game={self.options.game};clock_ms={self.options.clock_ms};"
                   f"moves={sum(self.moves)};reconnects={sum(max(0, n - 1) for n in self.visits)};"
-                  f"ticks={self.tick};pid={os.getpid()};board={''.join(self.board)}").encode()
+                  f"ticks={self.tick};distances={','.join(map(str, self.positions))};pid={os.getpid()};board={''.join(self.board)}").encode()
         if "GAME_RECORD" in os.environ:
             Path(os.environ["GAME_RECORD"]).write_bytes(report)
         for peer in list(self.connected.values()):

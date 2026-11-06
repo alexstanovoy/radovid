@@ -232,6 +232,8 @@ fn fixed_tick_clients_play_rated_teams_and_ffa_and_reconnect() {
         let report = String::from_utf8_lossy(&result.game_report);
         assert!(report.contains("reconnects=1;"));
         assert!(!report.contains("ticks=0;"));
+        let distances = handoffs.iter().map(|h| if h.team == 1 { "16" } else { "8" }).collect::<Vec<_>>().join(",");
+        assert!(report.contains(&format!("distances={distances};")));
         assert!(report.contains(&format!("moves={};", count * 8)));
     }
 }
@@ -313,6 +315,7 @@ fn unrelated_games_coexist_on_one_service_without_protocol_dependencies() {
         finished(&mut accounts, outcome, game);
     }
 }
+
 #[test]
 fn a_lobby_result_uses_its_actual_sides_instead_of_the_queue_layout() {
     let mut rules = fixture("grid", &[1, 1], 200);
