@@ -473,3 +473,13 @@ field ClientMsg::LobbyCheats 0 lobby: LobbyId
 field ClientMsg::LobbyCheats 1 on: bool
 variant Error 53 NoCheats
 field LobbyState 11 cheats: Option<bool>
+
+# Version 13: retire numeric account limits and append explicit finite/unlimited values.
+retired field Limits 0 games_per_account: u8
+field Limits 0 retired_games_per_account: u8
+retired field RulesetInfo 7 games_per_account: u8
+field RulesetInfo 7 retired_games_per_account: u8
+variant AccountGameLimit 0 Limited(u8)
+variant AccountGameLimit 1 Unlimited
+field Limits 7 games_per_account: AccountGameLimit
+field RulesetInfo 11 games_per_account: AccountGameLimit

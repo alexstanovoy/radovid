@@ -148,6 +148,10 @@ most 64 KiB from a client, 4 MiB from the service.
   Version 11 retired the lobby join requests and the per-ruleset team cap and serves no older client.
   Version 12 added lobby cheats (`LobbyCheats`, `NoCheats`, `LobbyState.cheats`) and serves no older client: a
   client of 11 could not be told that a lobby it sits in plays with cheats.
+  Version 13 retires the numeric per-account fields without reusing their positions and appends typed
+  `AccountGameLimit::Limited(n)` / `Unlimited` fields. It serves no older client because catalog entries are
+  nested on the wire. Old binaries receive `ProtoMismatch`; consumers must rebuild and read the explicit limit.
+  Zero remains only a configuration spelling, never an active numeric wire limit.
 
 ## Ratings
 

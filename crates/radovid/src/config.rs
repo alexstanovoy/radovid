@@ -494,7 +494,8 @@ impl RulesetConfig {
             teams: self.teams.clone(),
             rated: self.rated,
             info: self.info.clone(),
-            games_per_account: self.games_per_account(limits, kind),
+            retired_games_per_account: 0,
+            games_per_account: wire_account_limit(self.games_per_account(limits, kind)),
             audience: self.audience.into(),
             lobby_min_players: self.lobby_min_players(),
             lobby_default,
@@ -818,9 +819,10 @@ impl Config {
     pub fn limits_for(&self, kind: AccountKind, ruleset: Option<&RulesetConfig>) -> Limits {
         let limits = &self.limits;
         Limits {
-            games_per_account: ruleset.map_or(limits.games_per_account.of(kind), |r| {
+            retired_games_per_account: 0,
+            games_per_account: wire_account_limit(ruleset.map_or(limits.games_per_account.of(kind), |r| {
                 r.games_per_account(limits, kind)
-            }),
+            })),
             accept_timeout_ms: limits.accept_timeout_secs * 1000,
             decline_cooldown_ms: limits.decline_cooldown_secs * 1000,
             queue_capacity: limits.queue_capacity,
@@ -1076,4 +1078,8 @@ public_url = "wss://x.example:{port}"
         assert_eq!(ruleset.max_duration_secs, DEFAULT_MAX_DURATION_SECS);
         assert!(ruleset.max_duration_secs >= 2 * 60 * 60);
     }
+}
+
+fn wire_account_limit(value: u8) -> AccountGameLimit {
+    match value { 0 => AccountGameLimit::Unlimited, finite => AccountGameLimit::Limited(finite) }
 }

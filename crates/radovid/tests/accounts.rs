@@ -60,7 +60,7 @@ fn accounts_register_log_in_resume_and_change_their_data() {
             list[0].teams.as_slice(),
             list[0].games_per_account
         ),
-        ("testgame", &[1u8, 1][..], 2)
+        ("testgame", &[1u8, 1][..], AccountGameLimit::Limited(2))
     );
     let Ok(Reply::Limits { limits }) = other.request(ClientMsg::Limits { ruleset: None }) else {
         panic!("limits");
@@ -71,7 +71,7 @@ fn accounts_register_log_in_resume_and_change_their_data() {
             limits.decline_cooldown_ms,
             limits.accept_timeout_ms
         ),
-        (2, 120_000, 30_000)
+        (AccountGameLimit::Limited(2), 120_000, 30_000)
     );
     assert_eq!(
         refused(other.request(ClientMsg::QueueJoin { ruleset: solo() })),

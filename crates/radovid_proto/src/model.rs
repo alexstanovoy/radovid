@@ -118,9 +118,9 @@ pub struct RulesetInfo {
     pub rated: bool,
     /// The game's own description of the rules, opaque to radovid.
     pub info: Vec<u8>,
-    /// Games in flight an account of the caller's kind may have to queue or
-    /// sit here (a human's before login). Zero means unlimited.
-    pub games_per_account: u8,
+    /// Retired numeric limit; its wire position is reserved and always zero.
+    #[doc(hidden)]
+    pub retired_games_per_account: u8,
     /// Who may queue and sit here; the service lists a ruleset to the kinds it admits only.
     pub audience: Audience,
     /// Players a lobby of it needs before its host may start it: the seats, unless the
@@ -129,13 +129,23 @@ pub struct RulesetInfo {
     /// The ruleset a new lobby is of unless its host chooses another (the service's
     /// `lobby_ruleset`); one ruleset of the catalog at most.
     pub lobby_default: bool,
+    /// Games in flight for this ruleset, as they apply to the caller.
+    pub games_per_account: AccountGameLimit,
+}
+
+/// An explicit per-account cap. No numeric value is repurposed as unlimited.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountGameLimit {
+    Limited(u8),
+    Unlimited,
 }
 
 /// What bounds an account's play, as it applies to the caller.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Games in flight at once: queue entries, lobbies and unfinished matches. Zero means unlimited.
-    pub games_per_account: u8,
+    /// Retired numeric limit; its wire position is reserved and always zero.
+    #[doc(hidden)]
+    pub retired_games_per_account: u8,
     /// Milliseconds to accept a proposal; silence counts as a decline.
     pub accept_timeout_ms: u32,
     /// Milliseconds out of the queues after a decline or a silence.
@@ -148,6 +158,8 @@ pub struct Limits {
     pub lobby_games_max: u32,
     /// Games in flight of all accounts of one network at once.
     pub games_per_source: u8,
+    /// Games in flight at once: queue entries, lobbies and unfinished matches.
+    pub games_per_account: AccountGameLimit,
 }
 
 /// One queue entry and where it stands.

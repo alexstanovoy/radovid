@@ -123,6 +123,7 @@ fn trace_wire() -> Registry {
     trace::<Reply>(&mut tracer, &mut enums);
     trace::<Event>(&mut tracer, &mut enums);
     trace::<Error>(&mut tracer, &mut enums);
+    trace::<AccountGameLimit>(&mut tracer, &mut enums);
     trace::<AccountKind>(&mut tracer, &mut enums);
     trace::<Audience>(&mut tracer, &mut enums);
     trace::<Outcome>(&mut tracer, &mut enums);

@@ -29,7 +29,10 @@ fn unlimited_account_default_is_queryable_and_explicit_limits_still_apply() {
     else {
         panic!("limits reply")
     };
-    assert_eq!(limits.games_per_account, 0, "zero means unlimited");
+    assert_eq!(limits.games_per_account, AccountGameLimit::Unlimited);
+    assert_eq!(limits.retired_games_per_account, 0);
+    let Reply::Rulesets { list } = account.ask(ClientMsg::Rulesets).expect("catalog") else { panic!("catalog") };
+    assert_eq!(list[0].games_per_account, AccountGameLimit::Unlimited);
     for _ in 0..12 {
         account.queue(&solo());
     }
@@ -42,7 +45,7 @@ fn unlimited_account_default_is_queryable_and_explicit_limits_still_apply() {
     else {
         panic!("limits reply")
     };
-    assert_eq!(limits.games_per_account, 2);
+    assert_eq!(limits.games_per_account, AccountGameLimit::Limited(2));
     assert_eq!(
         account.ask(ClientMsg::QueueJoin { ruleset: limited }),
         Err(Error::TooManyGames { limit: 2 })
@@ -123,4 +126,11 @@ fn every_shipped_example_configuration_loads() {
     }
     paths.sort();
     for path in paths { Config::load(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display())); }
+}
+
+#[test]
+fn version_twelve_clients_are_refused_before_receiving_typed_limits() {
+    let env = start(vec![ruleset("solo", true, "team0", "0")]);
+    let result = radovid_client::Client::connect_as(&env.url, &env.tls, 12, FINGERPRINT);
+    assert!(matches!(result, Err(radovid_client::ClientError::Refused(Error::ProtoMismatch { .. }))));
 }

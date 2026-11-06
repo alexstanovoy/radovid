@@ -298,7 +298,7 @@ fn an_account_plays_several_games_at_once_up_to_its_limit() {
     }) else {
         panic!("limits");
     };
-    assert_eq!(limits.games_per_account, 3);
+    assert_eq!(limits.games_per_account, AccountGameLimit::Limited(3));
 
     // Nobody plays himself: two opponents take two of the entries.
     other.queue(&solo());
