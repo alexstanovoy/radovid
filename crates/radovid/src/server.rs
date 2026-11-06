@@ -22,7 +22,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::hub::HubHandle;
 use crate::password::Passwords;
-use crate::throttle::{LoginThrottle, Place, Places, Windowed, source};
+use crate::throttle::{self, LoginThrottle, Place, Places, Share, Windowed, source};
 use crate::web;
 
 /// Seconds a peer has for the TLS and WebSocket handshakes.
@@ -89,7 +89,18 @@ pub struct Shared {
     /// Registrations seen per address in the last hour.
     registrations: Mutex<Windowed<IpAddr>>,
     unauthenticated: Places,
+    /// Connections not logged in, pages among them, all sources together: half the
+    /// connections at most, so that the sessions logged in keep the other half.
+    unlogged: Share,
+    /// Pages being sent: a quarter of the connections at most, so that pages held open by many
+    /// sources leave the connections not logged in room to log in.
+    pages: Share,
 }
+
+/// The share of `max_connections` the connections not logged in may hold.
+const UNLOGGED_SHARE_DIVISOR: usize = 2;
+/// The share of `max_connections` the pages being sent may hold.
+const PAGES_SHARE_DIVISOR: usize = 4;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|p| p.into_inner())
@@ -104,13 +115,15 @@ fn throttled(wait: Duration) -> Error {
 impl Shared {
     pub fn new(config: Arc<Config>, db: Db, hub: HubHandle, passwords: Passwords) -> Shared {
         Shared {
-            config,
             db,
             hub,
             passwords,
             throttle: Mutex::new(LoginThrottle::new()),
             registrations: Mutex::new(Windowed::new()),
             unauthenticated: Places::default(),
+            unlogged: Share::new((config.max_connections / UNLOGGED_SHARE_DIVISOR).max(1)),
+            pages: Share::new((config.max_connections / PAGES_SHARE_DIVISOR).max(1)),
+            config,
         }
     }
 }
@@ -146,14 +159,13 @@ impl Shared {
 
 /// Holds one of an address's places for unauthenticated connections, in every group it counts
 /// in ([`groups`](crate::throttle::groups)).
-pub struct Unauthenticated(Option<Place>);
+pub struct Unauthenticated(Option<(Place, throttle::Shared)>);
 
 impl Unauthenticated {
     fn take(shared: &Shared, ip: IpAddr) -> Option<Unauthenticated> {
-        shared
-            .unauthenticated
-            .take(ip)
-            .map(|place| Unauthenticated(Some(place)))
+        let share = shared.unlogged.take()?;
+        let place = shared.unauthenticated.take(ip)?;
+        Some(Unauthenticated(Some((place, share))))
     }
 
     /// The connection authenticated: its place is free for the next one.
@@ -224,8 +236,12 @@ async fn handle(
                 // The page keeps its source's place until it is sent, within its deadline: a peer
                 // that reads it at a crawl would otherwise hold one of the service's connections
                 // for every request it makes, all of them in the end.
+                let page = shared.pages.take();
                 let sent = async {
-                    let _ = web::serve(&mut tls, &web.static_dir, &request).await;
+                    let _ = match page {
+                        Some(_) => web::serve(&mut tls, &web.static_dir, &request).await,
+                        None => web::busy(&mut tls).await,
+                    };
                     let _ = tls.shutdown().await;
                 };
                 let deadline = Duration::from_secs(web.send_deadline_secs);

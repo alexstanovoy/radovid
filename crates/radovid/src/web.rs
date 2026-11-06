@@ -153,6 +153,12 @@ async fn plain<W: AsyncWrite + Unpin>(
     send(out, body).await
 }
 
+/// Answers that no page is sent now: the pages being sent hold their whole share of the
+/// connections.
+pub async fn busy<W: AsyncWrite + Unpin>(out: &mut W) -> std::io::Result<()> {
+    plain(out, "503 Service Unavailable", "Retry-After: 5\r\n").await
+}
+
 /// Answers one request from the files under `root` and leaves the connection to be closed.
 pub async fn serve<W: AsyncWrite + Unpin>(
     out: &mut W,

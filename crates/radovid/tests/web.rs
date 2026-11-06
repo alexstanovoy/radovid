@@ -274,3 +274,53 @@ fn a_page_read_at_a_crawl_is_cut_off_at_its_deadline() {
     );
     let _ = std::fs::remove_dir_all(root.parent().expect("base"));
 }
+
+/// Pages and logins share the places of connections not logged in, so pages may take only a
+/// share of them: downloads held by many sources leave room to log in.
+#[test]
+fn pages_held_open_leave_room_to_log_in() {
+    use std::io::Read;
+    let root = site();
+    std::fs::File::create(root.join("huge.bin"))
+        .and_then(|file| file.set_len(1 << 30))
+        .expect("a huge file");
+    let env = start_configured(rules(), |config| {
+        config.web = Some(WebConfig {
+            static_dir: root.clone(),
+            send_deadline_secs: radovid::config::PAGE_SEND_DEADLINE_SECS,
+        });
+        // A quarter of sixteen: four pages at once.
+        config.max_connections = 16;
+        listen_on_both_families(config);
+    });
+    let stalled: Vec<_> = (0..4)
+        .map(|_| {
+            let mut stream = env.https_stream(b"GET /huge.bin HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let mut start = [0u8; 15];
+            stream.read_exact(&mut start).expect("the answer begins");
+            assert_eq!(&start, b"HTTP/1.1 200 OK");
+            stream
+        })
+        .collect();
+    let port = env.url.rsplit(':').next().expect("a port");
+    let mut more = env.https_stream_to(
+        &format!("[::1]:{port}"),
+        b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    );
+    let mut answer = Vec::new();
+    let _ = more.read_to_end(&mut answer);
+    let (head, _) = split(answer);
+    assert_eq!(
+        status(&head),
+        "HTTP/1.1 503 Service Unavailable",
+        "a page past the pages' share: {head}"
+    );
+    let mut account = env.human("roomy");
+    assert!(
+        account
+            .ask(radovid_client::proto::ClientMsg::MyMatches)
+            .is_ok()
+    );
+    drop(stalled);
+    let _ = std::fs::remove_dir_all(root.parent().expect("base"));
+}

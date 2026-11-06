@@ -160,7 +160,10 @@ are the values around that transaction, so two matches of one account finishing 
   account keeps its newest 32 stored, a login past them drops the oldest.
 - Bounded: message size and rate, unauthenticated connections per source (16 per IPv4 address and per IPv6 /64, 64
   per IPv6 /48; a page download counts until it is sent, within `web.send_deadline_secs`), handshakes (10 s), sessions
-  per account, lobbies, list sizes, registrations per hour per source, game servers' output lines. Behind a reverse
+  per account, lobbies, list sizes, registrations per hour per source, game servers' output lines. Connections not logged
+  in, pages among them, hold half of `max_connections` at most, so the sessions logged in keep the other half; pages
+  being sent hold a quarter at most, so pages held open by many sources leave room to log in (one past it is answered
+  `503 Service Unavailable` with `Retry-After`). Behind a reverse
   proxy every peer counts as the proxy's address: `X-Forwarded-For`, which any peer could forge, is not read.
 - Tickets reach game servers only by environment; logs carry match ids and errors, never logins, passwords, tokens or
   tickets.

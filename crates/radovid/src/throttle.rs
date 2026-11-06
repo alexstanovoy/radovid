@@ -145,6 +145,41 @@ impl Drop for Place {
     }
 }
 
+/// Places of something held at most `most` at once, all sources together.
+pub struct Share {
+    held: Arc<std::sync::atomic::AtomicUsize>,
+    most: usize,
+}
+
+impl Share {
+    pub fn new(most: usize) -> Share {
+        Share {
+            held: Arc::default(),
+            most,
+        }
+    }
+
+    /// One place, held until the [`Shared`] is dropped; none when all are taken.
+    pub fn take(&self) -> Option<Shared> {
+        use std::sync::atomic::Ordering;
+        self.held
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |held| {
+                (held < self.most).then_some(held + 1)
+            })
+            .ok()
+            .map(|_| Shared(Arc::clone(&self.held)))
+    }
+}
+
+/// One place of a [`Share`], given back on drop.
+pub struct Shared(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 /// Failure counters per key, with the delay the spec asks for: after `free`
 /// failures (three by default) the next attempt waits `min(2^(failures-free),
 /// 300)` seconds from the last failure. Nothing locks: a correct password

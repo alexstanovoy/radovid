@@ -307,8 +307,9 @@ fn failed_resumes_hold_up_nobody() {
 #[test]
 fn connections_past_the_limit_are_closed_and_their_places_come_back() {
     let env = start_configured(rules(), |config| config.max_connections = 2);
-    let first = env.connect();
-    let _second = env.connect();
+    // Logged in, as half the connections at most may not be.
+    let first = env.human("first");
+    let _second = env.human("second");
     assert!(
         Client::connect(&env.url, &env.tls, FINGERPRINT).is_err(),
         "a third connection was served"
