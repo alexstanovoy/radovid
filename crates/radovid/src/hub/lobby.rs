@@ -12,6 +12,7 @@ use tokio::time::Instant;
 
 use super::matches::Origin;
 use super::{Cmd, Hub, SessionId, internal, millis_until};
+use crate::config::RulesetConfig;
 
 pub(super) struct Member {
     pub account: AccountId,
@@ -70,6 +71,7 @@ impl Hub {
         id: AccountId,
         msg: ClientMsg,
     ) -> Result<Reply, Error> {
+        self.check_lobby_wire(session, &msg)?;
         match msg {
             ClientMsg::LobbyCreate {
                 ruleset,
@@ -104,7 +106,7 @@ impl Hub {
                 ruleset,
                 audience,
                 password,
-            } => self.lobby_configure(id, lobby, ruleset, audience, password),
+            } => self.lobby_configure(session, id, lobby, ruleset, audience, password),
             ClientMsg::LobbyCheats { lobby, on } => self.lobby_cheats(id, lobby, on),
             ClientMsg::LobbyLeave { lobby } => {
                 self.member_of(id, lobby)?;
@@ -115,6 +117,25 @@ impl Hub {
             // `Hub::request` sends only the lobby messages here.
             _ => Err(Error::Internal),
         }
+    }
+
+    fn check_lobby_wire(&self, session: SessionId, msg: &ClientMsg) -> Result<(), Error> {
+        let lobby = match msg {
+            ClientMsg::LobbyJoin { lobby, .. } | ClientMsg::LobbyKick { lobby, .. }
+            | ClientMsg::LobbyReady { lobby, .. } | ClientMsg::LobbySlot { lobby, .. }
+            | ClientMsg::LobbyConfigure { lobby, .. } | ClientMsg::LobbyCheats { lobby, .. }
+            | ClientMsg::LobbyLeave { lobby } => lobby,
+            _ => return Ok(()),
+        };
+        let lobby = self.lobbies.get(lobby).ok_or(Error::UnknownLobby)?;
+        let rules = self.config.ruleset(&lobby.ruleset).ok_or(Error::Internal)?;
+        self.check_game_wire(session, rules)
+    }
+
+    fn admit_lobby(&self, session: SessionId, rules: &RulesetConfig) -> Result<(), Error> {
+        let id = self.sessions.get(&session).ok_or(Error::NotLoggedIn)?.account;
+        self.admit_session_lobbies(id, rules.game_fingerprint)?;
+        self.admit_game(session, rules)
     }
 
     fn member_view(
@@ -214,7 +235,7 @@ impl Hub {
         {
             return Err(Error::BadLobbyPassword);
         }
-        self.admit_game(session, rules)?;
+        self.admit_lobby(session, rules)?;
         let (id, source) = self
             .sessions
             .get(&session)
@@ -341,7 +362,7 @@ impl Hub {
             (Some(given), Some(set)) if same_secret(given, set) => {}
             (Some(_), Some(_)) => return Err(Error::BadLobbyPassword),
         }
-        self.admit_game(session, rules)?;
+        self.admit_lobby(session, rules)?;
         let rating = self.rating_for(id, &rules.ruleset_id()).await;
         let state = self.seat_member(lobby, id, rating, source)?;
         Ok(Reply::Lobby { state })
@@ -459,6 +480,7 @@ impl Hub {
     /// who may sit, the password. Everyone is unreadied.
     fn lobby_configure(
         &mut self,
+        session: SessionId,
         id: AccountId,
         lobby: LobbyId,
         ruleset: RulesetId,
@@ -469,6 +491,7 @@ impl Hub {
         self.not_starting(lobby)?;
         let config = Arc::clone(&self.config);
         let rules = config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?;
+        self.check_game_wire(session, rules)?;
         if password
             .as_ref()
             .is_some_and(|p| !valid_lobby_password(&p.0))

@@ -26,6 +26,14 @@ impl Penalty {
 }
 
 impl Hub {
+    pub(super) fn check_game_wire(&self, session: SessionId, ruleset: &RulesetConfig) -> Result<(), Error> {
+        let live = self.sessions.get(&session).ok_or(Error::NotLoggedIn)?;
+        if live.game_fingerprint != ruleset.game_fingerprint {
+            return Err(Error::GameVersionMismatch { server: ruleset.game_fingerprint });
+        }
+        Ok(())
+    }
+
     /// Whether the caller may start one more game of `ruleset` (queue it,
     /// open or join a lobby for it).
     pub(super) fn admit_game(
@@ -33,12 +41,8 @@ impl Hub {
         session: SessionId,
         ruleset: &RulesetConfig,
     ) -> Result<(), Error> {
+        self.check_game_wire(session, ruleset)?;
         let s = self.sessions.get(&session).ok_or(Error::NotLoggedIn)?;
-        if s.game_fingerprint != ruleset.game_fingerprint {
-            return Err(Error::GameVersionMismatch {
-                server: ruleset.game_fingerprint,
-            });
-        }
         let account = self.accounts.get(&s.account).ok_or(Error::NotLoggedIn)?;
         if !ruleset.admits(account.info.kind) {
             return Err(Error::AudienceMismatch);
