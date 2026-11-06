@@ -6,6 +6,7 @@ database = "radovid.db"                    # created 0600
 tls_cert = "/etc/radovid/play-cert/fullchain.pem"
 tls_key = "/etc/radovid/play-cert/privkey.pem"   # refused if every user may read it
 game_ports = "20000-20100"                 # one host port per running match
+lobby_teams = [5, 5]
 lobby_ruleset = "full"                     # a new lobby is of these rules until its host chooses others; absent: the first [[ruleset]]
 
 # [artifacts]

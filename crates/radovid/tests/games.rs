@@ -49,7 +49,8 @@ fn fixture(game: &str, teams: &[u8], clock_ms: u32) -> RulesetConfig {
 }
 
 fn service(rules: RulesetConfig) -> FixtureEnv {
-    service_with_lobby(rules, vec![1, 1])
+    let teams = rules.teams.clone();
+    service_with_lobby(rules, teams)
 }
 
 struct FixtureEnv {
@@ -421,7 +422,7 @@ fn unrelated_games_coexist_on_one_service_without_protocol_dependencies() {
             fixture("clock", &[1, 1], 40),
             fixture("grid", &[1, 1, 1], 200),
         ],
-        vec![1, 1],
+        vec![1, 1, 1],
     );
     for game in ["ttt", "clock", "grid"] {
         let count = if game == "grid" { 3 } else { 2 };

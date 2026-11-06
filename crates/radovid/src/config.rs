@@ -699,6 +699,12 @@ impl Config {
             ));
         }
         for ruleset in &self.rulesets {
+            if ruleset.teams.iter().enumerate().any(|(side, size)| {
+                self.lobby_teams.get(side).is_none_or(|capacity| size > capacity)
+            }) {
+                return Err(format!("ruleset {}: teams {:?} do not fit lobby_teams {:?}; configure lobby_teams explicitly",
+                    ruleset.id, ruleset.teams, self.lobby_teams));
+            }
             if ruleset
                 .lobby_min_players
                 .is_some_and(|n| usize::from(n) > seats)

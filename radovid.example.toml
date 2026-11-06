@@ -5,6 +5,7 @@ database = "radovid.db"
 tls_cert = "/etc/radovid/cert.pem"
 tls_key = "/etc/radovid/key.pem"
 game_ports = "20000-20100"
+lobby_teams = [2, 2]
 lobby_ruleset = "duel"
 # lobby_teams = [1, 1]                     # explicit layout shared by custom lobbies
 

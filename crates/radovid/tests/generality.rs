@@ -7,7 +7,7 @@ use radovid_client::proto::*;
 
 #[test]
 fn default_lobbies_have_one_seat_per_side() {
-    let config: Config = toml::from_str(include_str!("../../../radovid.example.toml"))
+    let config: Config = toml::from_str(&include_str!("../../../radovid.example.toml").replace("lobby_teams = [2, 2]\n", ""))
         .expect("example configuration");
     assert_eq!(config.lobby_teams, [1, 1]);
 }
@@ -50,11 +50,10 @@ fn unlimited_account_default_is_queryable_and_explicit_limits_still_apply() {
 }
 
 #[test]
-fn a_lobby_leaver_is_checked_against_the_actual_side_not_the_queue_slot() {
+fn a_lobby_leaver_cannot_win_on_its_actual_side() {
     let mut rules = ruleset("fun", false, "leave1", "0");
-    rules.teams = vec![2, 2];
     rules.lobby_min_players = Some(2);
-    let env = start_configured(vec![rules], |c| c.lobby_teams = vec![1, 1]);
+    let env = start_configured(vec![rules], |c| c.lobby_teams = vec![2, 2]);
     let mut owner = env.human("owner");
     let mut guest = env.human("guest");
     let Reply::Lobby { state } = owner
@@ -75,6 +74,7 @@ fn a_lobby_leaver_is_checked_against_the_actual_side_not_the_queue_slot() {
         }),
         Ok(Reply::Lobby { .. })
     ));
+    owner.expect_done(ClientMsg::LobbySlot { lobby: state.id, account: Some(guest.me.id), slot: 1 });
     guest.expect_done(ClientMsg::LobbyReady {
         lobby: state.id,
         ready: true,
@@ -84,8 +84,8 @@ fn a_lobby_leaver_is_checked_against_the_actual_side_not_the_queue_slot() {
         ready: true,
     });
     let result = owner.wait_result();
-    assert_eq!(result.outcome, Outcome::Winner { team: 0 });
-    assert_eq!(result.reason, EndReason::Left);
+    assert_eq!(result.outcome, Outcome::Null);
+    assert_eq!(result.reason, EndReason::Crashed);
     assert_eq!(guest.wait_result(), result);
 }
 
@@ -101,4 +101,26 @@ fn an_unoccupied_configured_opponent_can_win_a_solo_game() {
     let result = player.wait_result();
     assert_eq!(result.seats.len(), 1);
     assert_eq!(result.outcome, Outcome::Winner { team: 1 });
+}
+
+#[test]
+fn loading_a_ruleset_that_does_not_fit_lobbies_names_the_configuration_error() {
+    let text = include_str!("../../../examples/bota.toml");
+    let config: Config = toml::from_str(text).expect("configuration syntax");
+    let mut config = config;
+    config.lobby_teams = vec![1, 1];
+    assert_eq!(config.validate().expect_err("5v5 must not silently become 1v1"),
+        "ruleset full: teams [5, 5] do not fit lobby_teams [1, 1]; configure lobby_teams explicitly");
+}
+
+#[test]
+fn every_shipped_example_configuration_loads() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut paths = vec![root.join("radovid.example.toml")];
+    for entry in std::fs::read_dir(root.join("examples")).expect("examples") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_some_and(|extension| extension == "toml") { paths.push(path); }
+    }
+    paths.sort();
+    for path in paths { Config::load(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display())); }
 }
