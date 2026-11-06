@@ -102,13 +102,17 @@ impl Supervisor {
         }
     }
 
-    /// A `RESULT` line, checked against the ruleset's teams.
+    /// A lobby may add sides beyond the queue layout; an unoccupied configured
+    /// side may still win (for instance, the computer opponent in solo practice).
     fn end_of(&self, line: Line) -> End {
         match line {
             Line::Result(result)
                 if result
                     .winner
-                    .is_none_or(|team| usize::from(team) < self.ruleset.teams.len())
+                    .is_none_or(|team| {
+                        usize::from(team) < self.ruleset.teams.len()
+                            || self.spec.seats.iter().any(|seat| seat.team == team)
+                    })
                     && self.leaver_lost(&result) =>
             {
                 if result.artifact_truncated {
@@ -120,9 +124,9 @@ impl Supervisor {
                 End::Result(result)
             }
             Line::Result(result) => End::Crashed(format!(
-                "RESULT names team {:?} of {}",
+                "RESULT names an absent winner or invalid leaver (winner {:?}, {} seats)",
                 result.winner,
-                self.ruleset.teams.len()
+                self.spec.seats.len()
             )),
             Line::Ready | Line::BadResult => End::Crashed("a malformed RESULT line".to_owned()),
         }
@@ -136,17 +140,9 @@ impl Supervisor {
         let Some(slot) = result.left else {
             return true;
         };
-        let mut first = 0usize;
-        for (team, size) in self.ruleset.teams.iter().enumerate() {
-            let end = first + usize::from(*size);
-            if (first..end).contains(&usize::from(slot)) {
-                return result
-                    .winner
-                    .is_some_and(|winner| usize::from(winner) != team);
-            }
-            first = end;
-        }
-        false
+        self.spec.seats.get(usize::from(slot)).is_some_and(|seat| {
+            result.winner.is_some_and(|winner| winner != seat.team)
+        })
     }
 }
 

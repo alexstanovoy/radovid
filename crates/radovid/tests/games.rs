@@ -313,3 +313,27 @@ fn unrelated_games_coexist_on_one_service_without_protocol_dependencies() {
         finished(&mut accounts, outcome, game);
     }
 }
+#[test]
+fn a_lobby_result_uses_its_actual_sides_instead_of_the_queue_layout() {
+    let mut rules = fixture("grid", &[1, 1], 200);
+    rules.lobby_min_players = Some(3);
+    let env = service_with_lobby(rules, vec![1, 1, 1]);
+    let mut accounts: Vec<_> = (0..3).map(|i| account(&env, "grid", &format!("player{i}"))).collect();
+    let Reply::Lobby { state } = accounts[0].ask(ClientMsg::LobbyCreate {
+        ruleset: RulesetId("grid".into()), name: "Three sides".into(),
+        audience: Audience::Everyone, password: None,
+    }).expect("create") else { panic!("lobby") };
+    for account in &mut accounts[1..] {
+        assert!(matches!(account.ask(ClientMsg::LobbyJoin { lobby: state.id, password: None }), Ok(Reply::Lobby { .. })));
+        account.expect_done(ClientMsg::LobbyReady { lobby: state.id, ready: true });
+    }
+    accounts[0].expect_done(ClientMsg::LobbyReady { lobby: state.id, ready: true });
+    let handoffs: Vec<_> = accounts.iter_mut().map(Account::wait_match_found).collect();
+    assert_eq!(handoffs.iter().map(|h| h.team).collect::<Vec<_>>(), [0, 1, 2]);
+    play_grid(&handoffs, Some(2));
+    let result = accounts[0].wait_result();
+    assert_eq!(result.outcome, Outcome::Winner { team: 2 });
+    assert!(!result.rated, "custom lobbies remain unrated");
+    assert!(result.seats.iter().all(|s| s.before.is_none() && s.after.is_none()));
+    for account in &mut accounts[1..] { assert_eq!(account.wait_result(), result); }
+}
