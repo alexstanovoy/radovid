@@ -107,13 +107,10 @@ impl Supervisor {
     fn end_of(&self, line: Line) -> End {
         match line {
             Line::Result(result)
-                if result
-                    .winner
-                    .is_none_or(|team| {
-                        usize::from(team) < self.ruleset.teams.len()
-                            || self.spec.seats.iter().any(|seat| seat.team == team)
-                    })
-                    && self.leaver_lost(&result) =>
+                if result.winner.is_none_or(|team| {
+                    usize::from(team) < self.ruleset.teams.len()
+                        || self.spec.seats.iter().any(|seat| seat.team == team)
+                }) && self.leaver_lost(&result) =>
             {
                 if result.artifact_truncated {
                     eprintln!(
@@ -140,9 +137,10 @@ impl Supervisor {
         let Some(slot) = result.left else {
             return true;
         };
-        self.spec.seats.get(usize::from(slot)).is_some_and(|seat| {
-            result.winner.is_some_and(|winner| winner != seat.team)
-        })
+        self.spec
+            .seats
+            .get(usize::from(slot))
+            .is_some_and(|seat| result.winner.is_some_and(|winner| winner != seat.team))
     }
 }
 

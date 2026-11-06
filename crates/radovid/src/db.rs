@@ -740,27 +740,52 @@ fn rate_teams(finish: &Finish, standing: &[Glicko]) -> Vec<RatingChange> {
     for (seat, rating) in finish.seats.iter().zip(standing) {
         teams.entry(seat.team).or_default().push(*rating);
     }
-    let opponents: Vec<_> = teams.into_iter().map(|(team, members)| {
-        if members.len() == 1 { return (team, members[0]); }
-        let count = members.len() as f64;
-        (team, Glicko {
-            rating: members.iter().map(|r| r.rating).sum::<f64>() / count,
-            deviation: members.iter().map(|r| r.deviation.powi(2)).sum::<f64>().sqrt() / count,
-            volatility: crate::rating::INITIAL_VOLATILITY,
+    let opponents: Vec<_> = teams
+        .into_iter()
+        .map(|(team, members)| {
+            if members.len() == 1 {
+                return (team, members[0]);
+            }
+            let count = members.len() as f64;
+            (
+                team,
+                Glicko {
+                    rating: members.iter().map(|r| r.rating).sum::<f64>() / count,
+                    deviation: members
+                        .iter()
+                        .map(|r| r.deviation.powi(2))
+                        .sum::<f64>()
+                        .sqrt()
+                        / count,
+                    volatility: crate::rating::INITIAL_VOLATILITY,
+                },
+            )
         })
-    }).collect();
-    finish.seats.iter().zip(standing).map(|(seat, &before)| {
-        let games: Vec<_> = opponents.iter().filter(|(team, _)| *team != seat.team)
-            .map(|&(team, rating)| {
-                let score = match finish.outcome {
-                    Outcome::Winner { team: winner } if winner == seat.team => 1.0,
-                    Outcome::Winner { team: winner } if winner == team => 0.0,
-                    _ => 0.5,
-                };
-                (rating, score)
-            }).collect();
-        RatingChange { account: seat.account, before, after: before.updated(&games) }
-    }).collect()
+        .collect();
+    finish
+        .seats
+        .iter()
+        .zip(standing)
+        .map(|(seat, &before)| {
+            let games: Vec<_> = opponents
+                .iter()
+                .filter(|(team, _)| *team != seat.team)
+                .map(|&(team, rating)| {
+                    let score = match finish.outcome {
+                        Outcome::Winner { team: winner } if winner == seat.team => 1.0,
+                        Outcome::Winner { team: winner } if winner == team => 0.0,
+                        _ => 0.5,
+                    };
+                    (rating, score)
+                })
+                .collect();
+            RatingChange {
+                account: seat.account,
+                before,
+                after: before.updated(&games),
+            }
+        })
+        .collect()
 }
 
 fn write_finish(
@@ -948,16 +973,32 @@ mod tests {
     use super::*;
 
     fn standing(rating: f64, deviation: f64) -> Glicko {
-        Glicko { rating, deviation, ..Glicko::NEW }
+        Glicko {
+            rating,
+            deviation,
+            ..Glicko::NEW
+        }
     }
 
     fn finish(teams: &[u8], outcome: Outcome) -> Finish {
         Finish {
-            match_id: MatchId(1), ruleset: RulesetId("test".into()), rate: true,
-            outcome, reason: EndReason::Decided, duration_ms: 1, report: Vec::new(),
-            seats: teams.iter().enumerate().map(|(slot, &team)| NewSeat {
-                account: AccountId(slot as u64 + 1), slot: slot as u8, team,
-            }).collect(), finished_at: UnixMs(0),
+            match_id: MatchId(1),
+            ruleset: RulesetId("test".into()),
+            rate: true,
+            outcome,
+            reason: EndReason::Decided,
+            duration_ms: 1,
+            report: Vec::new(),
+            seats: teams
+                .iter()
+                .enumerate()
+                .map(|(slot, &team)| NewSeat {
+                    account: AccountId(slot as u64 + 1),
+                    slot: slot as u8,
+                    team,
+                })
+                .collect(),
+            finished_at: UnixMs(0),
         }
     }
 
@@ -965,13 +1006,21 @@ mod tests {
     fn unequal_teams_rate_each_member_against_each_opposing_mean_once() {
         // These form means of 1600/RD50, 1500/RD100 and 1800/RD200.
         // In particular, the two losing sides draw each other, never lose twice.
-        let before = [standing(2200.0, 60.0), standing(1000.0, 80.0),
-            standing(1400.0, 120.0), standing(1600.0, 160.0), standing(1800.0, 200.0)];
+        let before = [
+            standing(2200.0, 60.0),
+            standing(1000.0, 80.0),
+            standing(1400.0, 120.0),
+            standing(1600.0, 160.0),
+            standing(1800.0, 200.0),
+        ];
         let a = standing(1600.0, 50.0);
         let b = standing(1500.0, 100.0);
         let c = standing(1800.0, 200.0);
         for (outcome, scores) in [
-            (Outcome::Winner { team: 1 }, [(0.0, 0.5), (1.0, 1.0), (0.5, 0.0)]),
+            (
+                Outcome::Winner { team: 1 },
+                [(0.0, 0.5), (1.0, 1.0), (0.5, 0.0)],
+            ),
             (Outcome::Draw, [(0.5, 0.5); 3]),
         ] {
             let finish = finish(&[0, 0, 1, 1, 2], outcome);
@@ -992,11 +1041,17 @@ mod tests {
     #[test]
     fn one_on_one_rating_is_identical_to_the_existing_formula() {
         let before = [standing(1743.258, 83.649), standing(1302.115, 312.872)];
-        for (outcome, score) in [(Outcome::Winner { team: 0 }, 1.0),
-            (Outcome::Winner { team: 1 }, 0.0), (Outcome::Draw, 0.5)] {
+        for (outcome, score) in [
+            (Outcome::Winner { team: 0 }, 1.0),
+            (Outcome::Winner { team: 1 }, 0.0),
+            (Outcome::Draw, 0.5),
+        ] {
             let changes = rate_teams(&finish(&[0, 1], outcome), &before);
             assert_eq!(changes[0].after, before[0].updated(&[(before[1], score)]));
-            assert_eq!(changes[1].after, before[1].updated(&[(before[0], 1.0 - score)]));
+            assert_eq!(
+                changes[1].after,
+                before[1].updated(&[(before[0], 1.0 - score)])
+            );
         }
     }
 

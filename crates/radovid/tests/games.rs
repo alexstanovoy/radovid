@@ -30,9 +30,21 @@ fn fixture(game: &str, teams: &[u8], clock_ms: u32) -> RulesetConfig {
     rules.info = format!("{game}:clock={clock_ms}").into_bytes();
     rules.launcher.binary = Some("/usr/bin/python3".into());
     rules.launcher.public_url = "tcp://127.0.0.1:{port}".into();
-    rules.launcher.args = vec![script.display().to_string(), "--game".into(), game.into(),
-        "--port".into(), "{port}".into(), "--clock-ms".into(), clock_ms.to_string()];
-    rules.launcher.version_probe = vec![script.display().to_string(), "--game".into(), game.into(), "--probe".into()];
+    rules.launcher.args = vec![
+        script.display().to_string(),
+        "--game".into(),
+        game.into(),
+        "--port".into(),
+        "{port}".into(),
+        "--clock-ms".into(),
+        clock_ms.to_string(),
+    ];
+    rules.launcher.version_probe = vec![
+        script.display().to_string(),
+        "--game".into(),
+        game.into(),
+        "--probe".into(),
+    ];
     rules
 }
 
@@ -47,7 +59,9 @@ struct FixtureEnv {
 
 impl std::ops::Deref for FixtureEnv {
     type Target = Env;
-    fn deref(&self) -> &Env { &self.env }
+    fn deref(&self) -> &Env {
+        &self.env
+    }
 }
 
 static PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
@@ -55,7 +69,12 @@ static PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
 struct PortLease(u16);
 
 impl Drop for PortLease {
-    fn drop(&mut self) { PORTS.lock().expect("port ownership").retain(|&port| port != self.0); }
+    fn drop(&mut self) {
+        PORTS
+            .lock()
+            .expect("port ownership")
+            .retain(|&port| port != self.0);
+    }
 }
 
 fn reserve_port() -> (TcpListener, PortLease) {
@@ -82,13 +101,22 @@ fn service_catalog(rules: Vec<RulesetConfig>, teams: Vec<u8>) -> FixtureEnv {
     let port = lease.0;
     let env = start_configured(rules, move |config| {
         config.lobby_teams = teams;
-        config.game_ports = radovid::config::PortRange { first: port, last: port };
+        config.game_ports = radovid::config::PortRange {
+            first: port,
+            last: port,
+        };
         config.limits.game_capacity = 1;
         config.limits.lobby_games_max = 1;
-        let path = config.database.parent().expect("test directory").join("record-{match_id}.txt");
+        let path = config
+            .database
+            .parent()
+            .expect("test directory")
+            .join("record-{match_id}.txt");
         let record: ArtifactConfig = toml::from_str(&format!(
-            "path = {:?}\nmax_kib = 4\nenv = {{ GAME_RECORD = \"{{artifact}}\" }}", path.display().to_string()
-        )).expect("artifact config");
+            "path = {:?}\nmax_kib = 4\nenv = {{ GAME_RECORD = \"{{artifact}}\" }}",
+            path.display().to_string()
+        ))
+        .expect("artifact config");
         for rules in &mut config.rulesets {
             let mut record = record.clone();
             record.path = record.path.replace("record-", &format!("{}-", rules.id));
@@ -101,8 +129,14 @@ fn service_catalog(rules: Vec<RulesetConfig>, teams: Vec<u8>) -> FixtureEnv {
 
 fn account(env: &Env, game: &str, name: &str) -> Account {
     let mut client = Client::connect(&env.url, &env.tls, fingerprint(game)).expect("control");
-    let logged = client.register(name, PASSWORD, AccountKind::Human, ClientInfo::default()).expect("account");
-    Account { client, me: logged.me, token: logged.session }
+    let logged = client
+        .register(name, PASSWORD, AccountKind::Human, ClientInfo::default())
+        .expect("account");
+    Account {
+        client,
+        me: logged.me,
+        token: logged.session,
+    }
 }
 
 struct GameClient(BufReader<TcpStream>);
@@ -111,14 +145,22 @@ impl GameClient {
     fn connect(handoff: &Handoff) -> Self {
         let mut client = Self::open(&handoff.game_url);
         client.send(&handoff.ticket.to_hex());
-        assert_eq!(client.line(), format!("SEAT {} {}", handoff.slot, handoff.team));
+        assert_eq!(
+            client.line(),
+            format!("SEAT {} {}", handoff.slot, handoff.team)
+        );
         client
     }
 
     fn open(url: &str) -> Self {
-        let stream = TcpStream::connect(url.strip_prefix("tcp://").expect("game scheme")).expect("game connection");
-        stream.set_read_timeout(Some(Duration::from_secs(60))).expect("read guard");
-        stream.set_write_timeout(Some(Duration::from_secs(60))).expect("write guard");
+        let stream = TcpStream::connect(url.strip_prefix("tcp://").expect("game scheme"))
+            .expect("game connection");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .expect("read guard");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(60)))
+            .expect("write guard");
         Self(BufReader::new(stream))
     }
 
@@ -128,15 +170,24 @@ impl GameClient {
 
     fn line(&mut self) -> String {
         let mut line = String::new();
-        let count = self.0.by_ref().take(513).read_line(&mut line).expect("game message");
+        let count = self
+            .0
+            .by_ref()
+            .take(513)
+            .read_line(&mut line)
+            .expect("game message");
         assert!((1..=512).contains(&count), "bounded game message");
         line.trim_end().to_owned()
     }
 }
 
 fn launch(accounts: &mut [Account], game: &str) -> Vec<Handoff> {
-    for account in accounts.iter_mut() { account.queue(&RulesetId(game.into())); }
-    for account in accounts.iter_mut() { account.accept(); }
+    for account in accounts.iter_mut() {
+        account.queue(&RulesetId(game.into()));
+    }
+    for account in accounts.iter_mut() {
+        account.accept();
+    }
     accounts.iter_mut().map(Account::wait_match_found).collect()
 }
 
@@ -144,7 +195,9 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
     let result = accounts[0].wait_result();
     assert!(result.rated);
     assert_eq!(result.outcome, expected);
-    for account in &mut accounts[1..] { assert_eq!(account.wait_result(), result); }
+    for account in &mut accounts[1..] {
+        assert_eq!(account.wait_result(), result);
+    }
     for seat in &result.seats {
         let before = seat.before.expect("before");
         let after = seat.after.expect("after");
@@ -155,24 +208,54 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
             Outcome::Null => panic!("not a played match"),
         }
     }
-    let Reply::LadderPage { rows, total } = accounts[0].ask(ClientMsg::Ladder {
-        ruleset: RulesetId(game.into()), offset: 0, limit: 10,
-    }).expect("ladder") else { panic!("ladder reply") };
+    let Reply::LadderPage { rows, total } = accounts[0]
+        .ask(ClientMsg::Ladder {
+            ruleset: RulesetId(game.into()),
+            offset: 0,
+            limit: 10,
+        })
+        .expect("ladder")
+    else {
+        panic!("ladder reply")
+    };
     assert_eq!(total as usize, accounts.len());
     for seat in &result.seats {
-        let row = rows.iter().find(|r| r.account == seat.account).expect("one position per account");
+        let row = rows
+            .iter()
+            .find(|r| r.account == seat.account)
+            .expect("one position per account");
         assert_eq!(Some(row.rating), seat.after);
-        let Reply::Matches { list } = accounts[0].ask(ClientMsg::RecentMatches { account: seat.account, limit: 1 }).expect("history") else { panic!("history reply") };
+        let Reply::Matches { list } = accounts[0]
+            .ask(ClientMsg::RecentMatches {
+                account: seat.account,
+                limit: 1,
+            })
+            .expect("history")
+        else {
+            panic!("history reply")
+        };
         assert_eq!(list.as_slice(), std::slice::from_ref(&result));
     }
-    let Reply::ArtifactNamed { data: bytes, total, .. } = accounts[0].ask(ClientMsg::MatchArtifactNamed {
-        match_id: result.match_id, name: "record".into(), offset: 0,
-    }).expect("game record") else { panic!("record reply") };
+    let Reply::ArtifactNamed {
+        data: bytes, total, ..
+    } = accounts[0]
+        .ask(ClientMsg::MatchArtifactNamed {
+            match_id: result.match_id,
+            name: "record".into(),
+            offset: 0,
+        })
+        .expect("game record")
+    else {
+        panic!("record reply")
+    };
     assert_eq!(total as usize, bytes.len());
     assert_eq!(bytes, result.game_report);
     let report = String::from_utf8(bytes).expect("report");
     assert!(report.contains(&format!("game={game};")));
-    assert!(!report.contains(&format!("pid={};", std::process::id())), "separate server process");
+    assert!(
+        !report.contains(&format!("pid={};", std::process::id())),
+        "separate server process"
+    );
     result
 }
 
@@ -199,9 +282,14 @@ fn tic_tac_toe_clients_play_a_rated_draw_and_win() {
             clients[turn % 2].send(&format!("MOVE {cell}"));
             assert_eq!(clients[turn % 2].line(), "OK");
         }
-        for client in &mut clients { assert!(client.line().starts_with("END ")); }
+        for client in &mut clients {
+            assert!(client.line().starts_with("END "));
+        }
         let result = finished(&mut accounts, outcome, "ttt");
-        assert!(String::from_utf8_lossy(&result.game_report).contains(&format!("moves={};", moves.len())));
+        assert!(
+            String::from_utf8_lossy(&result.game_report)
+                .contains(&format!("moves={};", moves.len()))
+        );
     }
 }
 
@@ -209,14 +297,29 @@ fn tic_tac_toe_clients_play_a_rated_draw_and_win() {
 fn game_clock_parameters_pass_untouched_and_timeout_is_a_rated_loss() {
     for clock_ms in [30, 90] {
         let env = service(fixture("clock", &[1, 1], clock_ms));
-        let mut accounts = [account(&env, "clock", "alice"), account(&env, "clock", "bob")];
-        let Reply::Rulesets { list: rulesets } = accounts[0].ask(ClientMsg::Rulesets).expect("catalog") else { panic!("catalog reply") };
-        assert_eq!(rulesets[0].info, format!("clock:clock={clock_ms}").as_bytes());
+        let mut accounts = [
+            account(&env, "clock", "alice"),
+            account(&env, "clock", "bob"),
+        ];
+        let Reply::Rulesets { list: rulesets } =
+            accounts[0].ask(ClientMsg::Rulesets).expect("catalog")
+        else {
+            panic!("catalog reply")
+        };
+        assert_eq!(
+            rulesets[0].info,
+            format!("clock:clock={clock_ms}").as_bytes()
+        );
         let handoffs = launch(&mut accounts, "clock");
         let mut clients: Vec<_> = handoffs.iter().map(GameClient::connect).collect();
-        for client in &mut clients { assert_eq!(client.line(), "END 1"); }
+        for client in &mut clients {
+            assert_eq!(client.line(), "END 1");
+        }
         let result = finished(&mut accounts, Outcome::Winner { team: 1 }, "clock");
-        assert!(String::from_utf8_lossy(&result.game_report).contains(&format!("clock_ms={clock_ms};moves=0;")));
+        assert!(
+            String::from_utf8_lossy(&result.game_report)
+                .contains(&format!("clock_ms={clock_ms};moves=0;"))
+        );
     }
 }
 
@@ -225,14 +328,20 @@ fn fixed_tick_clients_play_rated_teams_and_ffa_and_reconnect() {
     for teams in [vec![2, 2], vec![1, 1, 1], vec![1, 2, 1]] {
         let env = service(fixture("grid", &teams, 200));
         let count: usize = teams.iter().map(|&size| usize::from(size)).sum();
-        let mut accounts: Vec<_> = (0..count).map(|i| account(&env, "grid", &format!("player{i}"))).collect();
+        let mut accounts: Vec<_> = (0..count)
+            .map(|i| account(&env, "grid", &format!("player{i}")))
+            .collect();
         let handoffs = launch(&mut accounts, "grid");
         play_grid(&handoffs, Some(1));
         let result = finished(&mut accounts, Outcome::Winner { team: 1 }, "grid");
         let report = String::from_utf8_lossy(&result.game_report);
         assert!(report.contains("reconnects=1;"));
         assert!(!report.contains("ticks=0;"));
-        let distances = handoffs.iter().map(|h| if h.team == 1 { "16" } else { "8" }).collect::<Vec<_>>().join(",");
+        let distances = handoffs
+            .iter()
+            .map(|h| if h.team == 1 { "16" } else { "8" })
+            .collect::<Vec<_>>()
+            .join(",");
         assert!(report.contains(&format!("distances={distances};")));
         assert!(report.contains(&format!("moves={};", count * 8)));
     }
@@ -241,33 +350,50 @@ fn fixed_tick_clients_play_rated_teams_and_ffa_and_reconnect() {
 fn play_grid(handoffs: &[Handoff], winner: Option<u8>) {
     let clients: Vec<_> = handoffs.iter().map(GameClient::connect).collect();
     std::thread::scope(|scope| {
-            let threads: Vec<_> = clients.into_iter().zip(handoffs).map(|(mut client, handoff)| scope.spawn(move || {
-                let mut reconnected = false;
-                let mut sent = 0;
-                for _ in 0..20000 {
-                    let message = client.line();
-                    if message.starts_with("END ") { return; }
-                    assert!(message.starts_with("TICK "));
-                    if handoff.slot == 0 && !reconnected {
-                        client.send("DROP");
-                        // Tick messages may already be buffered ahead of BYE.
-                        let mut goodbye = false;
-                        for _ in 0..20000 {
-                            if client.line() == "BYE" { goodbye = true; break; }
+        let threads: Vec<_> = clients
+            .into_iter()
+            .zip(handoffs)
+            .map(|(mut client, handoff)| {
+                scope.spawn(move || {
+                    let mut reconnected = false;
+                    let mut sent = 0;
+                    for _ in 0..20000 {
+                        let message = client.line();
+                        if message.starts_with("END ") {
+                            return;
                         }
-                        assert!(goodbye, "disconnect barrier");
-                        client = GameClient::connect(handoff);
-                        reconnected = true;
+                        assert!(message.starts_with("TICK "));
+                        if handoff.slot == 0 && !reconnected {
+                            client.send("DROP");
+                            // Tick messages may already be buffered ahead of BYE.
+                            let mut goodbye = false;
+                            for _ in 0..20000 {
+                                if client.line() == "BYE" {
+                                    goodbye = true;
+                                    break;
+                                }
+                            }
+                            assert!(goodbye, "disconnect barrier");
+                            client = GameClient::connect(handoff);
+                            reconnected = true;
+                        }
+                        if sent < 8 {
+                            client.send(if Some(handoff.team) == winner {
+                                "INPUT 2"
+                            } else {
+                                "INPUT 1"
+                            });
+                            sent += 1;
+                        }
                     }
-                    if sent < 8 {
-                        client.send(if Some(handoff.team) == winner { "INPUT 2" } else { "INPUT 1" });
-                        sent += 1;
-                    }
-                }
-                panic!("game never ended")
-            })).collect();
-            for thread in threads { thread.join().expect("game client"); }
-        });
+                    panic!("game never ended")
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("game client");
+        }
+    });
 }
 
 #[test]
@@ -275,7 +401,9 @@ fn rated_team_and_ffa_draws_update_each_accounts_single_ladder_position() {
     for teams in [vec![2, 2], vec![1, 1, 1]] {
         let env = service(fixture("grid", &teams, 200));
         let count: usize = teams.iter().map(|&n| usize::from(n)).sum();
-        let mut accounts: Vec<_> = (0..count).map(|i| account(&env, "grid", &format!("player{i}"))).collect();
+        let mut accounts: Vec<_> = (0..count)
+            .map(|i| account(&env, "grid", &format!("player{i}")))
+            .collect();
         let handoffs = launch(&mut accounts, "grid");
         play_grid(&handoffs, None);
         let result = finished(&mut accounts, Outcome::Draw, "grid");
@@ -285,25 +413,46 @@ fn rated_team_and_ffa_draws_update_each_accounts_single_ladder_position() {
     }
 }
 
-
 #[test]
 fn unrelated_games_coexist_on_one_service_without_protocol_dependencies() {
-    let env = service_catalog(vec![fixture("ttt", &[1, 1], 200),
-        fixture("clock", &[1, 1], 40), fixture("grid", &[1, 1, 1], 200)], vec![1, 1]);
+    let env = service_catalog(
+        vec![
+            fixture("ttt", &[1, 1], 200),
+            fixture("clock", &[1, 1], 40),
+            fixture("grid", &[1, 1, 1], 200),
+        ],
+        vec![1, 1],
+    );
     for game in ["ttt", "clock", "grid"] {
         let count = if game == "grid" { 3 } else { 2 };
-        let mut accounts: Vec<_> = (0..count).map(|i| account(&env, game, &format!("{game}{i}"))).collect();
-        let Reply::Rulesets { list } = accounts[0].ask(ClientMsg::Rulesets).expect("catalog") else { panic!("catalog") };
+        let mut accounts: Vec<_> = (0..count)
+            .map(|i| account(&env, game, &format!("{game}{i}")))
+            .collect();
+        let Reply::Rulesets { list } = accounts[0].ask(ClientMsg::Rulesets).expect("catalog")
+        else {
+            panic!("catalog")
+        };
         assert_eq!(list.len(), 3);
         let other = if game == "ttt" { "grid" } else { "ttt" };
-        assert_eq!(accounts[0].ask(ClientMsg::QueueJoin { ruleset: RulesetId(other.into()) }),
-            Err(Error::GameVersionMismatch { server: fingerprint(other) }));
+        assert_eq!(
+            accounts[0].ask(ClientMsg::QueueJoin {
+                ruleset: RulesetId(other.into())
+            }),
+            Err(Error::GameVersionMismatch {
+                server: fingerprint(other)
+            })
+        );
         let handoffs = launch(&mut accounts, game);
         let outcome = match game {
-            "grid" => { play_grid(&handoffs, Some(1)); Outcome::Winner { team: 1 } }
+            "grid" => {
+                play_grid(&handoffs, Some(1));
+                Outcome::Winner { team: 1 }
+            }
             "clock" => {
                 let mut clients: Vec<_> = handoffs.iter().map(GameClient::connect).collect();
-                for client in &mut clients { assert_eq!(client.line(), "END 1"); }
+                for client in &mut clients {
+                    assert_eq!(client.line(), "END 1");
+                }
                 Outcome::Winner { team: 1 }
             }
             _ => {
@@ -312,7 +461,9 @@ fn unrelated_games_coexist_on_one_service_without_protocol_dependencies() {
                     clients[turn % 2].send(&format!("MOVE {cell}"));
                     assert_eq!(clients[turn % 2].line(), "OK");
                 }
-                for client in &mut clients { assert_eq!(client.line(), "END 0"); }
+                for client in &mut clients {
+                    assert_eq!(client.line(), "END 0");
+                }
                 Outcome::Winner { team: 0 }
             }
         };
@@ -325,22 +476,53 @@ fn a_lobby_result_uses_its_actual_sides_instead_of_the_queue_layout() {
     let mut rules = fixture("grid", &[1, 1], 200);
     rules.lobby_min_players = Some(3);
     let env = service_with_lobby(rules, vec![1, 1, 1]);
-    let mut accounts: Vec<_> = (0..3).map(|i| account(&env, "grid", &format!("player{i}"))).collect();
-    let Reply::Lobby { state } = accounts[0].ask(ClientMsg::LobbyCreate {
-        ruleset: RulesetId("grid".into()), name: "Three sides".into(),
-        audience: Audience::Everyone, password: None,
-    }).expect("create") else { panic!("lobby") };
+    let mut accounts: Vec<_> = (0..3)
+        .map(|i| account(&env, "grid", &format!("player{i}")))
+        .collect();
+    let Reply::Lobby { state } = accounts[0]
+        .ask(ClientMsg::LobbyCreate {
+            ruleset: RulesetId("grid".into()),
+            name: "Three sides".into(),
+            audience: Audience::Everyone,
+            password: None,
+        })
+        .expect("create")
+    else {
+        panic!("lobby")
+    };
     for account in &mut accounts[1..] {
-        assert!(matches!(account.ask(ClientMsg::LobbyJoin { lobby: state.id, password: None }), Ok(Reply::Lobby { .. })));
-        account.expect_done(ClientMsg::LobbyReady { lobby: state.id, ready: true });
+        assert!(matches!(
+            account.ask(ClientMsg::LobbyJoin {
+                lobby: state.id,
+                password: None
+            }),
+            Ok(Reply::Lobby { .. })
+        ));
+        account.expect_done(ClientMsg::LobbyReady {
+            lobby: state.id,
+            ready: true,
+        });
     }
-    accounts[0].expect_done(ClientMsg::LobbyReady { lobby: state.id, ready: true });
+    accounts[0].expect_done(ClientMsg::LobbyReady {
+        lobby: state.id,
+        ready: true,
+    });
     let handoffs: Vec<_> = accounts.iter_mut().map(Account::wait_match_found).collect();
-    assert_eq!(handoffs.iter().map(|h| h.team).collect::<Vec<_>>(), [0, 1, 2]);
+    assert_eq!(
+        handoffs.iter().map(|h| h.team).collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
     play_grid(&handoffs, Some(2));
     let result = accounts[0].wait_result();
     assert_eq!(result.outcome, Outcome::Winner { team: 2 });
     assert!(!result.rated, "custom lobbies remain unrated");
-    assert!(result.seats.iter().all(|s| s.before.is_none() && s.after.is_none()));
-    for account in &mut accounts[1..] { assert_eq!(account.wait_result(), result); }
+    assert!(
+        result
+            .seats
+            .iter()
+            .all(|s| s.before.is_none() && s.after.is_none())
+    );
+    for account in &mut accounts[1..] {
+        assert_eq!(account.wait_result(), result);
+    }
 }
