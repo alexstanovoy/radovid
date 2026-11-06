@@ -89,16 +89,17 @@ pub struct Shared {
     /// Registrations seen per address in the last hour.
     registrations: Mutex<Windowed<IpAddr>>,
     unauthenticated: Places,
-    /// Connections not logged in, pages among them, all sources together: half the
-    /// connections at most, so that the sessions logged in keep the other half.
-    unlogged: Share,
-    /// Pages being sent: a quarter of the connections at most, so that pages held open by many
-    /// sources leave the connections not logged in room to log in.
+    /// New connections that have made no request yet, and control connections not logged in:
+    /// logins to be. A share of their own, which pages never take.
+    fresh: Share,
+    /// Pages being sent: a share of their own, so that pages held open by many sources leave the
+    /// logins to be their room. With [`Shared::fresh`], half the connections at most: the
+    /// sessions logged in keep the other half.
     pages: Share,
 }
 
-/// The share of `max_connections` the connections not logged in may hold.
-const UNLOGGED_SHARE_DIVISOR: usize = 2;
+/// The share of `max_connections` the logins to be may hold.
+const FRESH_SHARE_DIVISOR: usize = 4;
 /// The share of `max_connections` the pages being sent may hold.
 const PAGES_SHARE_DIVISOR: usize = 4;
 
@@ -121,7 +122,7 @@ impl Shared {
             throttle: Mutex::new(LoginThrottle::new()),
             registrations: Mutex::new(Windowed::new()),
             unauthenticated: Places::default(),
-            unlogged: Share::new((config.max_connections / UNLOGGED_SHARE_DIVISOR).max(1)),
+            fresh: Share::new((config.max_connections / FRESH_SHARE_DIVISOR).max(1)),
             pages: Share::new((config.max_connections / PAGES_SHARE_DIVISOR).max(1)),
             config,
         }
@@ -163,9 +164,21 @@ pub struct Unauthenticated(Option<(Place, throttle::Shared)>);
 
 impl Unauthenticated {
     fn take(shared: &Shared, ip: IpAddr) -> Option<Unauthenticated> {
-        let share = shared.unlogged.take()?;
+        let share = shared.fresh.take()?;
         let place = shared.unauthenticated.take(ip)?;
         Some(Unauthenticated(Some((place, share))))
+    }
+
+    /// The connection asked for a page: it takes a place among the pages, if one is free, and
+    /// gives its place among the logins to be back. Whether it took one.
+    fn become_page(&mut self, shared: &Shared) -> bool {
+        let Some(page) = shared.pages.take() else {
+            return false;
+        };
+        if let Some((_, share)) = &mut self.0 {
+            *share = page;
+        }
+        true
     }
 
     /// The connection authenticated: its place is free for the next one.
@@ -216,7 +229,7 @@ async fn handle(
     source: IpAddr,
     acceptor: TlsAcceptor,
     shared: Arc<Shared>,
-    guard: Unauthenticated,
+    mut guard: Unauthenticated,
 ) {
     let _ = stream.set_nodelay(true);
     let deadline = Duration::from_secs(HANDSHAKE_SECS);
@@ -236,11 +249,11 @@ async fn handle(
                 // The page keeps its source's place until it is sent, within its deadline: a peer
                 // that reads it at a crawl would otherwise hold one of the service's connections
                 // for every request it makes, all of them in the end.
-                let page = shared.pages.take();
+                let page = guard.become_page(&shared);
                 let sent = async {
                     let _ = match page {
-                        Some(_) => web::serve(&mut tls, &web.static_dir, &request).await,
-                        None => web::busy(&mut tls).await,
+                        true => web::serve(&mut tls, &web.static_dir, &request).await,
+                        false => web::busy(&mut tls).await,
                     };
                     let _ = tls.shutdown().await;
                 };

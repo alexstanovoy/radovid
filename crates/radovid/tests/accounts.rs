@@ -593,3 +593,32 @@ fn a_login_refused_for_too_many_sessions_stores_no_token() {
     }
     assert_eq!(stored(), before, "a refused login stored a token");
 }
+
+/// New sockets that have made no request yet (logins to be) hold a share of the connections of
+/// their own: a socket past it is refused, and sessions logged in keep their room.
+#[test]
+fn a_new_socket_past_its_share_is_refused() {
+    // A quarter of sixteen: four new sockets at once.
+    let env = start_configured(rules(), |config| config.max_connections = 16);
+    let mut logged_in = env.human("early");
+    let addr = env.url.trim_start_matches("wss://").to_owned();
+    // Sockets that never start their TLS handshake hold their places until its deadline.
+    let _silent: Vec<std::net::TcpStream> = (0..4)
+        .map(|_| std::net::TcpStream::connect(&addr).expect("connect"))
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    // The four are taken in as they are accepted; a fifth socket is turned away.
+    let refused = loop {
+        if Client::connect(&env.url, &env.tls, FINGERPRINT).is_err() {
+            break true;
+        }
+        if Instant::now() > deadline {
+            break false;
+        }
+    };
+    assert!(refused, "a new socket past its share was taken");
+    assert!(
+        logged_in.ask(ClientMsg::MyMatches).is_ok(),
+        "the session goes on"
+    );
+}

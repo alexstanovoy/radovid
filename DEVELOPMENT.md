@@ -64,7 +64,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `game_ports` | | `"first-last"` host ports, one per running match; at least `game_capacity` |
 | `web.static_dir` | none | static files served read-only on the listener's origin (`GET`/`HEAD`, no listings, `index.html` at `/`, `.br`/`.gz` siblings), so a web client and the service share one URL |
 | `web.send_deadline_secs` | `600` | seconds a page has to be sent whole, TLS close included; a slower peer is cut off. 1 to 3600 (see "Serving a web client") |
-| `max_connections` | `2048` | connections at once, logged in or not |
+| `max_connections` | `2048` | connections at once, logged in or not; at least 16, so that each of the quarters the logins to be and the pages being sent hold is a few connections |
 | `server_name` | `radovid` | the name in `Welcome` |
 | `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes; lower only for tests |
 | `password.max_waiting` | `64` | password checks waiting for a hash slot; more are answered `Throttled` |
@@ -169,9 +169,10 @@ are the values around that transaction, so two matches of one account finishing 
 - Bounded: message size and rate, unauthenticated connections per source (16 per IPv4 address and per IPv6 /64, 64
   per IPv6 /48; a page download counts until it is sent, within `web.send_deadline_secs`), handshakes (10 s), sessions
   per account, lobbies, list sizes, registrations per hour per source, game servers' output lines. Connections not logged
-  in, pages among them, hold half of `max_connections` at most, so the sessions logged in keep the other half; pages
-  being sent hold a quarter at most, so pages held open by many sources leave room to log in (one past it is answered
-  `503 Service Unavailable` with `Retry-After`). Behind a reverse proxy every peer counts as the proxy's address:
+  in hold half of `max_connections` at most, in two shares of a quarter each, so the sessions logged in keep the other
+  half: new sockets that have made no request yet and control connections not logged in (logins to be), and pages being
+  sent (one past theirs is answered `503 Service Unavailable` with `Retry-After`). Pages never take the logins' share,
+  nor logins the pages'. Behind a reverse proxy every peer counts as the proxy's address:
   `X-Forwarded-For`, which any peer could forge, is not read.
 - Tickets reach game servers only by environment; logs carry match ids and errors, never logins, passwords, tokens or
   tickets.
