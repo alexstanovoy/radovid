@@ -53,7 +53,9 @@ impl Hub {
         }
         if let Some(site) = crate::throttle::ipv6_site(s.source) {
             let limit = self.config.limits.games_per_ipv6_48;
-            if self.sources_in_flight(|ip| crate::throttle::ipv6_site(ip) == Some(site)) >= limit as usize {
+            if self.sources_in_flight(|ip| crate::throttle::ipv6_site(ip) == Some(site))
+                >= limit as usize
+            {
                 return Err(Error::TooManyGamesFromIpv6Site { limit });
             }
         }
@@ -62,9 +64,15 @@ impl Hub {
 
     pub(super) fn admit_custom_match(&self) -> Result<(), Error> {
         let in_flight = self.matches.values().filter(|game| game.lobby).count()
-            + self.lobbies.values().filter(|lobby| lobby.starting.is_some()).count();
+            + self
+                .lobbies
+                .values()
+                .filter(|lobby| lobby.starting.is_some())
+                .count();
         let limit = self.config.limits.custom_match_capacity;
-        if in_flight >= limit as usize { return Err(Error::CustomMatchCapacity { limit }); }
+        if in_flight >= limit as usize {
+            return Err(Error::CustomMatchCapacity { limit });
+        }
         Ok(())
     }
 

@@ -707,10 +707,14 @@ impl Config {
         }
         for ruleset in &self.rulesets {
             if ruleset.teams.iter().enumerate().any(|(side, size)| {
-                self.lobby_teams.get(side).is_none_or(|capacity| size > capacity)
+                self.lobby_teams
+                    .get(side)
+                    .is_none_or(|capacity| size > capacity)
             }) {
-                return Err(format!("ruleset {}: teams {:?} do not fit lobby_teams {:?}; configure lobby_teams explicitly",
-                    ruleset.id, ruleset.teams, self.lobby_teams));
+                return Err(format!(
+                    "ruleset {}: teams {:?} do not fit lobby_teams {:?}; configure lobby_teams explicitly",
+                    ruleset.id, ruleset.teams, self.lobby_teams
+                ));
             }
             if ruleset
                 .lobby_min_players
@@ -732,8 +736,12 @@ impl Config {
 
     fn validate_limits(&self) -> Result<(), String> {
         let limits = &self.limits;
-        if !(1..=65536).contains(&limits.custom_match_capacity) || !(1..=65536).contains(&limits.games_per_ipv6_48) {
-            return Err("limits.custom_match_capacity and games_per_ipv6_48 must be 1 to 65536".into());
+        if !(1..=65536).contains(&limits.custom_match_capacity)
+            || !(1..=65536).contains(&limits.games_per_ipv6_48)
+        {
+            return Err(
+                "limits.custom_match_capacity and games_per_ipv6_48 must be 1 to 65536".into(),
+            );
         }
         if limits.games_per_source == 0 || limits.queue_capacity == 0 {
             return Err("limits.games_per_source and queue_capacity must be at least 1".to_owned());
@@ -829,9 +837,11 @@ impl Config {
         let limits = &self.limits;
         Limits {
             retired_games_per_account: 0,
-            games_per_account: wire_account_limit(ruleset.map_or(limits.games_per_account.of(kind), |r| {
-                r.games_per_account(limits, kind)
-            })),
+            games_per_account: wire_account_limit(
+                ruleset.map_or(limits.games_per_account.of(kind), |r| {
+                    r.games_per_account(limits, kind)
+                }),
+            ),
             accept_timeout_ms: limits.accept_timeout_secs * 1000,
             decline_cooldown_ms: limits.decline_cooldown_secs * 1000,
             queue_capacity: limits.queue_capacity,
@@ -1045,9 +1055,11 @@ fn stays_private(url: &str) -> bool {
         || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-
 fn wire_account_limit(value: u8) -> AccountGameLimit {
-    match value { 0 => AccountGameLimit::Unlimited, finite => AccountGameLimit::Limited(finite) }
+    match value {
+        0 => AccountGameLimit::Unlimited,
+        finite => AccountGameLimit::Limited(finite),
+    }
 }
 
 #[cfg(test)]

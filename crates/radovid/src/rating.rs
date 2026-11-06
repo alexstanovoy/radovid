@@ -60,7 +60,9 @@ impl Glicko {
 
     /// One match: opposing sides divide one observation's information and gain.
     pub fn updated_match(self, opponents: &[(Glicko, f64)]) -> Glicko {
-        if opponents.len() <= 1 { return self.updated(opponents); }
+        if opponents.len() <= 1 {
+            return self.updated(opponents);
+        }
         self.updated_weighted(opponents, 1.0 / opponents.len() as f64)
     }
 

@@ -120,7 +120,9 @@ impl Hub {
             Origin::Queue => (false, false),
             Origin::Lobby { cheats } => (true, cheats && ruleset.has_cheats()),
         };
-        if lobby { self.admit_custom_match()?; }
+        if lobby {
+            self.admit_custom_match()?;
+        }
         let rated = ruleset.rated && !lobby;
         let match_id = self
             .db

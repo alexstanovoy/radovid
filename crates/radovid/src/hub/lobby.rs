@@ -528,8 +528,13 @@ impl Hub {
             .get(&lobby)
             .and_then(|l| self.config.ruleset(&l.ruleset));
         let needed = rules.map_or(usize::MAX, |rules| usize::from(rules.lobby_min_players()));
-        let starts = self.lobbies.get(&lobby).is_some_and(|l| l.owner == id && ready);
-        if starts { self.admit_custom_match()?; }
+        let starts = self
+            .lobbies
+            .get(&lobby)
+            .is_some_and(|l| l.owner == id && ready);
+        if starts {
+            self.admit_custom_match()?;
+        }
         let l = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
         let starts = l.owner == id && ready;
         if starts {

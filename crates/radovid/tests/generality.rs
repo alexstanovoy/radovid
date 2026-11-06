@@ -7,8 +7,10 @@ use radovid_client::proto::*;
 
 #[test]
 fn default_lobbies_have_one_seat_per_side() {
-    let config: Config = toml::from_str(&include_str!("../../../radovid.example.toml").replace("lobby_teams = [2, 2]\n", ""))
-        .expect("example configuration");
+    let config: Config = toml::from_str(
+        &include_str!("../../../radovid.example.toml").replace("lobby_teams = [2, 2]\n", ""),
+    )
+    .expect("example configuration");
     assert_eq!(config.lobby_teams, [1, 1]);
 }
 
@@ -31,7 +33,9 @@ fn unlimited_account_default_is_queryable_and_explicit_limits_still_apply() {
     };
     assert_eq!(limits.games_per_account, AccountGameLimit::Unlimited);
     assert_eq!(limits.retired_games_per_account, 0);
-    let Reply::Rulesets { list } = account.ask(ClientMsg::Rulesets).expect("catalog") else { panic!("catalog") };
+    let Reply::Rulesets { list } = account.ask(ClientMsg::Rulesets).expect("catalog") else {
+        panic!("catalog")
+    };
     assert_eq!(list[0].games_per_account, AccountGameLimit::Unlimited);
     for _ in 0..12 {
         account.queue(&solo());
@@ -77,7 +81,11 @@ fn a_lobby_leaver_cannot_win_on_its_actual_side() {
         }),
         Ok(Reply::Lobby { .. })
     ));
-    owner.expect_done(ClientMsg::LobbySlot { lobby: state.id, account: Some(guest.me.id), slot: 1 });
+    owner.expect_done(ClientMsg::LobbySlot {
+        lobby: state.id,
+        account: Some(guest.me.id),
+        slot: 1,
+    });
     guest.expect_done(ClientMsg::LobbyReady {
         lobby: state.id,
         ready: true,
@@ -112,8 +120,12 @@ fn loading_a_ruleset_that_does_not_fit_lobbies_names_the_configuration_error() {
     let config: Config = toml::from_str(text).expect("configuration syntax");
     let mut config = config;
     config.lobby_teams = vec![1, 1];
-    assert_eq!(config.validate().expect_err("5v5 must not silently become 1v1"),
-        "ruleset full: teams [5, 5] do not fit lobby_teams [1, 1]; configure lobby_teams explicitly");
+    assert_eq!(
+        config
+            .validate()
+            .expect_err("5v5 must not silently become 1v1"),
+        "ruleset full: teams [5, 5] do not fit lobby_teams [1, 1]; configure lobby_teams explicitly"
+    );
 }
 
 #[test]
@@ -122,16 +134,30 @@ fn every_shipped_example_configuration_loads() {
     let mut paths = vec![root.join("radovid.example.toml")];
     for entry in std::fs::read_dir(root.join("examples")).expect("examples") {
         let path = entry.expect("entry").path();
-        if path.extension().is_some_and(|extension| extension == "toml") { paths.push(path); }
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "toml")
+        {
+            paths.push(path);
+        }
     }
     paths.sort();
-    for path in paths { Config::load(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display())); }
+    for path in paths {
+        Config::load(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
 }
 
 #[test]
 fn version_twelve_clients_are_refused_before_receiving_typed_limits() {
     let env = start(vec![ruleset("solo", true, "team0", "0")]);
     let result = radovid_client::Client::connect_as(&env.url, &env.tls, 12, FINGERPRINT);
-    let Err(radovid_client::ClientError::Refused(error)) = result else { panic!("old client must be refused") };
-    assert_eq!(error, Error::ProtoMismatch { server: PROTO_VERSION });
+    let Err(radovid_client::ClientError::Refused(error)) = result else {
+        panic!("old client must be refused")
+    };
+    assert_eq!(
+        error,
+        Error::ProtoMismatch {
+            server: PROTO_VERSION
+        }
+    );
 }

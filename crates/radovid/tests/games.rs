@@ -531,5 +531,8 @@ fn a_lobby_result_uses_its_actual_sides_instead_of_the_queue_layout() {
 #[test]
 fn fixture_interpreter_is_resolved_through_path() {
     let rules = fixture("ttt", &[1, 1], 200);
-    assert_eq!(rules.launcher.binary.as_deref(), Some(std::path::Path::new("python3")));
+    assert_eq!(
+        rules.launcher.binary.as_deref(),
+        Some(std::path::Path::new("python3"))
+    );
 }

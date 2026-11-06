@@ -163,14 +163,15 @@ async fn exit_end(game: &mut GameProcess) -> End {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use radovid_proto::{AccountKind, Ticket};
     use crate::template::SeatSpec;
+    use radovid_proto::{AccountKind, Ticket};
 
     /// Guard-only: queue formation currently fills every side, but the result
     /// boundary must remain safe if that internal guarantee changes.
     #[test]
     fn a_rated_result_cannot_name_a_side_without_a_reserved_seat() {
-        let ruleset: RulesetConfig = toml::from_str(r#"
+        let ruleset: RulesetConfig = toml::from_str(
+            r#"
             id = "guard"
             name = "Guard"
             game = "test"
@@ -181,11 +182,38 @@ mod tests {
             kind = "local"
             binary = "/bin/true"
             public_url = "tcp://127.0.0.1:{port}"
-        "#).expect("rules");
-        let spec = LaunchSpec { match_id: MatchId(1), port: 1, cheats: false,
-            seats: vec![SeatSpec { ticket: Ticket([0; 32]), team: 0, name: "seat".into(), kind: AccountKind::Human }], artifacts: Vec::new() };
-        let supervisor = Supervisor { match_id: MatchId(1), ruleset, rated: true, spec, hub: mpsc::channel(1).0 };
-        let result = GameResult { winner: Some(1), duration_ms: 1, report: Vec::new(), left: None, artifact_truncated: false };
-        assert!(matches!(supervisor.end_of(Line::Result(result)), End::Crashed(_)));
+        "#,
+        )
+        .expect("rules");
+        let spec = LaunchSpec {
+            match_id: MatchId(1),
+            port: 1,
+            cheats: false,
+            seats: vec![SeatSpec {
+                ticket: Ticket([0; 32]),
+                team: 0,
+                name: "seat".into(),
+                kind: AccountKind::Human,
+            }],
+            artifacts: Vec::new(),
+        };
+        let supervisor = Supervisor {
+            match_id: MatchId(1),
+            ruleset,
+            rated: true,
+            spec,
+            hub: mpsc::channel(1).0,
+        };
+        let result = GameResult {
+            winner: Some(1),
+            duration_ms: 1,
+            report: Vec::new(),
+            left: None,
+            artifact_truncated: false,
+        };
+        assert!(matches!(
+            supervisor.end_of(Line::Result(result)),
+            End::Crashed(_)
+        ));
     }
 }

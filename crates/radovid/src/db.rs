@@ -794,16 +794,21 @@ fn validate_rated_match(finish: &Finish, standing_count: usize) -> rusqlite::Res
         return fail("rated match needs 2 to 10 matching seats and ratings");
     }
     if let Outcome::Winner { team } = finish.outcome
-        && !finish.seats.iter().any(|seat| seat.team == team) {
+        && !finish.seats.iter().any(|seat| seat.team == team)
+    {
         return fail("rated match winner has no seat");
     }
     let mut accounts = std::collections::BTreeSet::new();
     let mut teams = std::collections::BTreeSet::new();
     for seat in &finish.seats {
-        if !accounts.insert(seat.account) { return fail("rated match repeats an account"); }
+        if !accounts.insert(seat.account) {
+            return fail("rated match repeats an account");
+        }
         teams.insert(seat.team);
     }
-    if teams.len() < 2 { return fail("rated match needs at least two seated sides"); }
+    if teams.len() < 2 {
+        return fail("rated match needs at least two seated sides");
+    }
     Ok(())
 }
 
@@ -1063,18 +1068,27 @@ mod tests {
     fn one_on_one_rating_matches_origin_main_goldens() {
         let before = [standing(1743.258, 83.649), standing(1302.115, 312.872)];
         let cases = [
-            (Outcome::Winner { team: 0 }, [
-                [1747.3099515716492, 83.69490829308198, 0.0599993179215],
-                [1266.7860551195884, 283.3002328334886, 0.05999930046076021],
-            ]),
-            (Outcome::Winner { team: 1 }, [
-                [1718.6966703287535, 83.69500785664277, 0.06000405353881476],
-                [1713.3264260384049, 283.3002633672034, 0.0600064225681048],
-            ]),
-            (Outcome::Draw, [
-                [1733.003336479686, 83.69492334580887, 0.06000003390938952],
-                [1490.0562044810486, 283.30023903024943, 0.060000745947484],
-            ]),
+            (
+                Outcome::Winner { team: 0 },
+                [
+                    [1747.3099515716492, 83.69490829308198, 0.0599993179215],
+                    [1266.7860551195884, 283.3002328334886, 0.05999930046076021],
+                ],
+            ),
+            (
+                Outcome::Winner { team: 1 },
+                [
+                    [1718.6966703287535, 83.69500785664277, 0.06000405353881476],
+                    [1713.3264260384049, 283.3002633672034, 0.0600064225681048],
+                ],
+            ),
+            (
+                Outcome::Draw,
+                [
+                    [1733.003336479686, 83.69492334580887, 0.06000003390938952],
+                    [1490.0562044810486, 283.30023903024943, 0.060000745947484],
+                ],
+            ),
         ];
         for (outcome, expected) in cases {
             let changes = rate_teams(&finish(&[0, 1], outcome), &before).expect("valid match");
@@ -1090,7 +1104,8 @@ mod tests {
     #[test]
     fn ten_sides_produce_one_finite_update_per_account() {
         let teams: Vec<_> = (0..MAX_SEATS as u8).collect();
-        let changes = rate_teams(&finish(&teams, Outcome::Draw), &[Glicko::NEW; MAX_SEATS]).expect("valid match");
+        let changes = rate_teams(&finish(&teams, Outcome::Draw), &[Glicko::NEW; MAX_SEATS])
+            .expect("valid match");
         assert_eq!(changes.len(), MAX_SEATS);
         for change in changes {
             assert_eq!(change.after.rating, 1500.0);
@@ -1105,8 +1120,15 @@ mod tests {
         let tx = connection.transaction().expect("transaction");
         let invalid = finish(&[0, 1], Outcome::Winner { team: 2 });
         let error = rate(&tx, &invalid).expect_err("unseated winner must be rejected");
-        assert_eq!(error.to_string(), "Invalid parameter name: rated match winner has no seat");
-        assert_eq!(tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0)).expect("transaction remains usable"), 1);
+        assert_eq!(
+            error.to_string(),
+            "Invalid parameter name: rated match winner has no seat"
+        );
+        assert_eq!(
+            tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                .expect("transaction remains usable"),
+            1
+        );
     }
 
     #[test]
@@ -1114,11 +1136,15 @@ mod tests {
         let duel = rate_teams(&finish(&[0, 1], Outcome::Draw), &[Glicko::NEW; 2]).expect("duel");
         for sides in 3..=MAX_SEATS {
             let teams: Vec<_> = (0..sides as u8).collect();
-            let ffa = rate_teams(&finish(&teams, Outcome::Draw), &vec![Glicko::NEW; sides]).expect("FFA");
-            assert!((ffa[0].after.deviation - duel[0].after.deviation).abs() < 1e-10,
-                "{sides}-side FFA RD {} versus duel {}", ffa[0].after.deviation, duel[0].after.deviation);
+            let ffa =
+                rate_teams(&finish(&teams, Outcome::Draw), &vec![Glicko::NEW; sides]).expect("FFA");
+            assert!(
+                (ffa[0].after.deviation - duel[0].after.deviation).abs() < 1e-10,
+                "{sides}-side FFA RD {} versus duel {}",
+                ffa[0].after.deviation,
+                duel[0].after.deviation
+            );
             assert!((ffa[0].after.volatility - duel[0].after.volatility).abs() < 1e-12);
         }
     }
-
 }
