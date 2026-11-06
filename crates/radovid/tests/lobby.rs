@@ -762,6 +762,66 @@ fn the_owner_changes_a_lobbys_settings_and_nobody_else() {
     assert_eq!(theirs.slot, 3);
 }
 
+#[test]
+fn lobby_ruleset_changes_preserve_members_game_version_and_state() {
+    let mut foreign = ruleset("foreign", false, "team0", "0.3");
+    foreign.game_fingerprint = FINGERPRINT ^ 1;
+    foreign.launcher.version_probe[1] = format!("{:016x}", foreign.game_fingerprint);
+    let env = start(vec![
+        ruleset("fun", false, "team0", "0.3"),
+        ruleset("compatible", false, "team0", "0.3"),
+        foreign,
+    ]);
+    let (mut owner, mut guest) = (env.human("host"), env.bot("guest"));
+    let lobby = create(&mut owner, "versioned lobby", None).id;
+    join(&mut guest, lobby);
+    guest.expect_done(ClientMsg::LobbyReady { lobby, ready: true });
+    let configure = |ruleset: &str| ClientMsg::LobbyConfigure {
+        lobby,
+        ruleset: RulesetId(ruleset.to_owned()),
+        audience: Audience::Everyone,
+        password: Some(Secret::new("replacement password")),
+    };
+    assert_eq!(
+        owner.ask(configure("foreign")),
+        Err(Error::GameVersionMismatch {
+            server: FINGERPRINT ^ 1
+        })
+    );
+    let Ok(Reply::Lobby { state }) = owner.ask(ClientMsg::LobbyJoin {
+        lobby,
+        password: None,
+    }) else {
+        panic!("the existing lobby can still be read");
+    };
+    assert_eq!(
+        state.ruleset,
+        fun(),
+        "a refusal leaves the ruleset unchanged"
+    );
+    assert!(!state.locked, "a refusal leaves the password unchanged");
+    assert_eq!(state.members.len(), 2, "both members remain seated");
+    assert!(
+        state
+            .members
+            .iter()
+            .find(|m| m.account == guest.me.id)
+            .expect("the guest")
+            .ready,
+        "a refusal preserves readiness"
+    );
+    owner.expect_done(configure("compatible"));
+    let state = state_until(&mut guest, lobby, |s| s.ruleset.0 == "compatible");
+    assert!(
+        state.locked,
+        "a compatible mode change applies the settings"
+    );
+    assert!(
+        state.members.iter().all(|m| !m.ready),
+        "a successful change unreadies members"
+    );
+}
+
 /// Every lobby has the service's ten slots, whatever its ruleset: a ruleset chosen later changes
 /// the rules and nothing else. A ruleset whose own games are one a side (the duel) still starts
 /// with as many on a side as are seated there: a mode caps nobody.
