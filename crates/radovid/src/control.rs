@@ -437,20 +437,17 @@ impl Conn {
         token: Option<SessionToken>,
         guard: &mut Unauthenticated,
     ) -> Result<Reply, Error> {
-        let token = match token {
-            Some(token) => token,
+        // A fresh token is stored only once the hub took the session, so that a login it
+        // refuses (one past the sessions an account may hold) leaves nothing behind.
+        let (token, fresh) = match token {
+            Some(token) => (token, false),
             None => {
                 let mut bytes = [0u8; 32];
                 getrandom::fill(&mut bytes).map_err(crate::hub::internal)?;
-                let token = SessionToken(bytes);
-                self.shared
-                    .db
-                    .create_session(row.id, token_hash(&token))
-                    .await
-                    .map_err(crate::hub::internal)?;
-                token
+                (SessionToken(bytes), true)
             }
         };
+        let account = row.id;
         let (events_tx, events) = event_channel();
         let (reply, answer) = oneshot::channel();
         let me = row.info();
@@ -468,6 +465,16 @@ impl Conn {
             .await
             .map_err(|_| Error::ServerStopping)?;
         let (id, activities) = answer.await.map_err(|_| Error::ServerStopping)??;
+        if fresh
+            && let Err(error) = self
+                .shared
+                .db
+                .create_session(account, token_hash(&token))
+                .await
+        {
+            let _ = self.shared.hub.tx.send(Cmd::Detach { session: id }).await;
+            return Err(crate::hub::internal(error));
+        }
         guard.release();
         self.live = Some(Live {
             id,

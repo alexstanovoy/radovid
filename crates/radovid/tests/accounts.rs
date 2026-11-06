@@ -565,3 +565,30 @@ fn an_account_keeps_only_its_newest_stored_sessions() {
     });
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A login past the sessions an account may hold at once is refused before its token is stored:
+/// refused logins in a loop leave nothing behind.
+#[test]
+fn a_login_refused_for_too_many_sessions_stores_no_token() {
+    let env = start(rules());
+    let mut live = vec![env.human("crowded")];
+    while live.len() < MAX_SESSIONS_PER_ACCOUNT {
+        live.push(env.login("crowded"));
+    }
+    let stored = || -> i64 {
+        let db = rusqlite::Connection::open(env.db_path()).expect("the database");
+        db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .expect("a count")
+    };
+    let before = stored();
+    for _ in 0..3 {
+        assert_eq!(
+            refused(
+                env.connect()
+                    .login("crowded", PASSWORD, ClientInfo::default())
+            ),
+            Error::TooManySessions
+        );
+    }
+    assert_eq!(stored(), before, "a refused login stored a token");
+}
