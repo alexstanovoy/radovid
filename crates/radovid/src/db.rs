@@ -1057,23 +1057,36 @@ mod tests {
         }
     }
 
+    /// Guard-only: captured from origin/main 2f21ea7's rating.rs using a standalone
+    /// release-optimized harness. These fixed values do not call the expected-value implementation.
     #[test]
-    fn one_on_one_rating_is_identical_to_the_existing_formula() {
+    fn one_on_one_rating_matches_origin_main_goldens() {
         let before = [standing(1743.258, 83.649), standing(1302.115, 312.872)];
-        for (outcome, score) in [
-            (Outcome::Winner { team: 0 }, 1.0),
-            (Outcome::Winner { team: 1 }, 0.0),
-            (Outcome::Draw, 0.5),
-        ] {
+        let cases = [
+            (Outcome::Winner { team: 0 }, [
+                [1747.3099515716492, 83.69490829308198, 0.0599993179215],
+                [1266.7860551195884, 283.3002328334886, 0.05999930046076021],
+            ]),
+            (Outcome::Winner { team: 1 }, [
+                [1718.6966703287535, 83.69500785664277, 0.06000405353881476],
+                [1713.3264260384049, 283.3002633672034, 0.0600064225681048],
+            ]),
+            (Outcome::Draw, [
+                [1733.003336479686, 83.69492334580887, 0.06000003390938952],
+                [1490.0562044810486, 283.30023903024943, 0.060000745947484],
+            ]),
+        ];
+        for (outcome, expected) in cases {
             let changes = rate_teams(&finish(&[0, 1], outcome), &before).expect("valid match");
-            assert_eq!(changes[0].after, before[0].updated(&[(before[1], score)]));
-            assert_eq!(
-                changes[1].after,
-                before[1].updated(&[(before[0], 1.0 - score)])
-            );
+            for (change, golden) in changes.iter().zip(expected) {
+                assert!((change.after.rating - golden[0]).abs() < 1e-10);
+                assert!((change.after.deviation - golden[1]).abs() < 1e-10);
+                assert!((change.after.volatility - golden[2]).abs() < 1e-14);
+            }
         }
     }
 
+    /// Guard-only: verifies the maximum supported shape, rather than reproducing an incident.
     #[test]
     fn ten_sides_produce_one_finite_update_per_account() {
         let teams: Vec<_> = (0..MAX_SEATS as u8).collect();

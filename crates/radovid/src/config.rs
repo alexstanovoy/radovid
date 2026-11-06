@@ -1045,6 +1045,11 @@ fn stays_private(url: &str) -> bool {
         || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+
+fn wire_account_limit(value: u8) -> AccountGameLimit {
+    match value { 0 => AccountGameLimit::Unlimited, finite => AccountGameLimit::Limited(finite) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1089,8 +1094,4 @@ public_url = "wss://x.example:{port}"
         assert_eq!(ruleset.max_duration_secs, DEFAULT_MAX_DURATION_SECS);
         assert!(ruleset.max_duration_secs >= 2 * 60 * 60);
     }
-}
-
-fn wire_account_limit(value: u8) -> AccountGameLimit {
-    match value { 0 => AccountGameLimit::Unlimited, finite => AccountGameLimit::Limited(finite) }
 }

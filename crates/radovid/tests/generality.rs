@@ -132,5 +132,6 @@ fn every_shipped_example_configuration_loads() {
 fn version_twelve_clients_are_refused_before_receiving_typed_limits() {
     let env = start(vec![ruleset("solo", true, "team0", "0")]);
     let result = radovid_client::Client::connect_as(&env.url, &env.tls, 12, FINGERPRINT);
-    assert!(matches!(result, Err(radovid_client::ClientError::Refused(Error::ProtoMismatch { .. }))));
+    let Err(radovid_client::ClientError::Refused(error)) = result else { panic!("old client must be refused") };
+    assert_eq!(error, Error::ProtoMismatch { server: PROTO_VERSION });
 }
