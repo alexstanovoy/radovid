@@ -1,82 +1,73 @@
-# A service hosts replaceable game servers implementing DEVELOPMENT.md's launcher contract.
-# Image names, fingerprints and arguments below are examples: supply your games' own values.
-listen = "0.0.0.0:4460"
-database = "radovid.db"
-tls_cert = "/etc/radovid/cert.pem"
-tls_key = "/etc/radovid/key.pem"
-game_ports = "20000-20100"
-lobby_teams = [2, 2]
-lobby_ruleset = "duel"
-# lobby_teams = [1, 1]                     # explicit layout shared by custom lobbies
+# Development-only fixtures: run from the repository root, after `radovid dev-cert dev/`.
+# The game processes live under tests/ and are never built into the service.
+listen = "127.0.0.1:4460"
+database = "dev/radovid.db"
+tls_cert = "dev/cert.pem"
+tls_key = "dev/key.pem"
+game_ports = "20000-20015"
+lobby_teams = [1, 1]
+lobby_ruleset = "tic_tac_toe"
 
 # [limits]
-# games_per_account = { human = 0, bot = 0 } # 0: no account cap; source/service capacities still apply
-# games_per_source = 8
-
-# [web]
-# static_dir = "/srv/radovid/page"
-# send_deadline_secs = 600
+# games_per_account = { human = 0, bot = 0 } # unlimited per account; service/source bounds remain
+# games_per_source = 8                     # tune for shared NATs
+# games_per_ipv6_48 = 64
+# custom_match_capacity = 256
 
 [[ruleset]]
-id = "duel"
-name = "Board duel"
-game = "example_board"
-game_fingerprint = "0123456789abcdef"
+id = "tic_tac_toe"
+name = "Tic-tac-toe fixture"
+game = "ttt"
+game_fingerprint = "7474740000000001"
 teams = [1, 1]
 rated = true
-# info = "0102"                            # opaque game parameters for its clients
-max_duration_secs = 10800                  # operational deadline, independent of the game's clock
-
+lobby_min_players = 2
+max_duration_secs = 180
 [ruleset.launcher]
-kind = "docker"
-image = "example_board_server:latest"
-container_port = 9000
-public_url = "wss://board.example.org:{port}"
-version_probe = ["--wire-fingerprint"]
-args = ["--port", "9000", "--match-id", "{match_id}", "--clock-seconds", "300"]
-env = { GAME_SEATS = "{seats}" }           # tickets only in environment, never arguments
-
-[ruleset.artifacts.record]
-path = "/var/lib/radovid/records/record-{match_id}.pgn"
-args = ["--record", "{artifact}"]
-max_kib = 1024
-access = "seats"
-
-[[ruleset]]
-id = "teams"
-name = "Arena teams"
-game = "example_arena"
-game_fingerprint = "fedcba9876543210"
-teams = [2, 2]                            # may also be unequal, or [1, 1, 1] for free-for-all
-rated = true
-max_duration_secs = 1800
-
-[ruleset.launcher]
-kind = "docker"
-image = "example_arena_server:latest"
-container_port = 9000
-public_url = "wss://arena.example.org:{port}"
-version_probe = ["--wire-fingerprint"]
-args = ["--port", "9000", "--match-id", "{match_id}", "--tick-rate", "60"]
+kind = "local"
+binary = "python3"
+public_url = "tcp://127.0.0.1:{port}"
+version_probe = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--probe"]
+args = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--port", "{port}"]
 env = { GAME_SEATS = "{seats}" }
 
-# One-player practice is optional and has no queue or ladder.
 [[ruleset]]
-id = "demo"
-name = "Arena practice"
-game = "example_arena"
-game_fingerprint = "fedcba9876543210"
+id = "clock"
+name = "Turn-clock fixture"
+game = "clock"
+game_fingerprint = "636c6f636b000001"
 teams = [1, 1]
-rated = false
-instant_solo = true
-max_duration_secs = 7200
-
+rated = true
+lobby_min_players = 2
+info = "3330303030"                       # game-owned bytes: "30000"
+max_duration_secs = 180
 [ruleset.launcher]
-kind = "docker"
-image = "example_arena_server:latest"
-container_port = 9000
-public_url = "wss://arena.example.org:{port}"
-version_probe = ["--wire-fingerprint"]
-args = ["--port", "9000", "--practice"]
+kind = "local"
+binary = "python3"
+public_url = "tcp://127.0.0.1:{port}"
+version_probe = ["crates/radovid/tests/fixtures/game_server.py", "--game", "clock", "--probe"]
+args = ["crates/radovid/tests/fixtures/game_server.py", "--game", "clock", "--port", "{port}", "--clock-ms", "30000"]
 env = { GAME_SEATS = "{seats}" }
-cheats_args = ["--cheats"]
+
+[[ruleset]]
+id = "grid"
+name = "Fixed-tick duel fixture"
+game = "grid"
+game_fingerprint = "6772696400000001"
+teams = [1, 1]
+rated = true
+lobby_min_players = 2
+max_duration_secs = 180
+[ruleset.launcher]
+kind = "local"
+binary = "python3"
+public_url = "tcp://127.0.0.1:{port}"
+version_probe = ["crates/radovid/tests/fixtures/game_server.py", "--game", "grid", "--probe"]
+args = ["crates/radovid/tests/fixtures/game_server.py", "--game", "grid", "--port", "{port}"]
+env = { GAME_SEATS = "{seats}" }
+
+# Optional named artifact; replace the absolute path before enabling:
+# [ruleset.artifacts.record]
+# path = "/absolute/path/to/records/record-{match_id}.txt"
+# env = { GAME_RECORD = "{artifact}" }
+# max_kib = 4

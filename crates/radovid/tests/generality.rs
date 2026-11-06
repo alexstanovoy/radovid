@@ -7,10 +7,8 @@ use radovid_client::proto::*;
 
 #[test]
 fn default_lobbies_have_one_seat_per_side() {
-    let config: Config = toml::from_str(
-        &include_str!("../../../radovid.example.toml").replace("lobby_teams = [2, 2]\n", ""),
-    )
-    .expect("example configuration");
+    let config: Config = toml::from_str(include_str!("../../../examples/tic_tac_toe.toml"))
+        .expect("example configuration with no explicit lobby layout");
     assert_eq!(config.lobby_teams, [1, 1]);
 }
 
@@ -116,15 +114,16 @@ fn an_unoccupied_configured_opponent_can_win_a_solo_game() {
 
 #[test]
 fn loading_a_ruleset_that_does_not_fit_lobbies_names_the_configuration_error() {
-    let text = include_str!("../../../examples/bota.toml");
+    let text = include_str!("../../../radovid.example.toml");
     let config: Config = toml::from_str(text).expect("configuration syntax");
     let mut config = config;
     config.lobby_teams = vec![1, 1];
+    config.rulesets[0].teams = vec![5, 5];
     assert_eq!(
         config
             .validate()
             .expect_err("5v5 must not silently become 1v1"),
-        "ruleset full: teams [5, 5] do not fit lobby_teams [1, 1]; configure lobby_teams explicitly"
+        "ruleset tic_tac_toe: teams [5, 5] do not fit lobby_teams [1, 1]; configure lobby_teams explicitly"
     );
 }
 

@@ -1073,18 +1073,6 @@ mod tests {
         assert_eq!(config.limits, LimitsConfig::default());
     }
 
-    #[test]
-    fn the_example_practice_ruleset_limits_matches_to_two_hours() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../radovid.example.toml");
-        let config = Config::load(&path).expect("radovid.example.toml");
-        let practice = config
-            .rulesets
-            .iter()
-            .find(|rules| rules.id == "demo" && rules.instant_solo)
-            .expect("the example's solo practice ruleset");
-        assert_eq!(practice.max_duration_secs, 2 * 60 * 60);
-    }
-
     /// A ruleset that does not say how long its matches may last is given room for a long one
     /// rather than imposing a short game clock on every game.
     #[test]

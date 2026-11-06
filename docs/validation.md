@@ -39,20 +39,13 @@ The gate runs the ignored-test audit, fuzz-target compilation, clippy, browser-c
 unit/integration tests, the ignored launcher test against a real Docker engine/image, dependency policy, and
 formatting last. A skipped stage fails. Independent model review found no remaining production blockers.
 
-## Read-only reference consumer
+## Consumer coordination
 
-The optional bota example remains a consumer, never a dependency. Check its unmodified `bota_radovid` crate
-against these local client/protocol crates with the `e2e` feature enabled. Its production client requests limits,
-caches the `Limits` record and returns it (`client.rs`); it performs no numeric-cap queue filtering. Rebuilding
-therefore picks up the typed field without a production client logic change. Its old integer-default assertion
-must become `AccountGameLimit::Unlimited`; the test cannot compare the typed value to integer `8`.
+Clients must rebuild against protocol version/minimum 14. Callers that perform numeric comparisons must match
+`AccountGameLimit::Limited(n)` and `Unlimited`, rather than infer unlimited from a number. Each application
+should retain its own bounded worker pool when the service imposes no per-account cap. Retired fields always
+stay empty; no existing numeric value is assigned a new wire meaning.
 
-Protocol version/minimum 14 explicitly refuses older binaries. Callers that perform numeric comparisons must
-match `Limited(n)` and `Unlimited` rather than infer unlimited from a number. Retired fields always stay empty;
-no existing numeric value is assigned a new wire meaning.
-
-The read-only check at bota revision `be6cafc` passed `cargo check --release -p bota_radovid --features e2e --lib`
-and its one library test with `test-release`. The all-targets test build stops at the owner-maintained assertion
-in `tests/matchmaking.rs:39`: expected `(AccountGameLimit, u32)`, found integer tuple `(8, 120_000)`. The required
-change is `(AccountGameLimit::Unlimited, 120_000)`. No bota source or tracked file was edited; the integration
-suite is reported as not run, rather than passed.
+Game-specific consumer tests and configuration examples live in each game's own repository. The service's
+proof uses only the neutral process fixtures and clients under `tests/`. See [protocol_14.md](protocol_14.md)
+for the coordinated upgrade contract.

@@ -115,8 +115,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 Artifacts: radovid creates each artifact file empty before the game starts. Keep the directory above it closed to
 other users, since the file is world-writable for the container's user. A file that is a link, or over its limit, is
 never served. radovid never reads the bytes: a game's durable files (metadata, a PGN, a log) are kept as long as the
-operator says. `radovid.example.toml` shows a full deployment, including a one-player practice ruleset
-(`instant_solo`, cheats in the game's own arguments).
+operator says. `radovid.example.toml` demonstrates three neutral development fixtures; `examples/tic_tac_toe.toml` shows a single ruleset. A game may additionally opt into `instant_solo` and its own cheats arguments.
 
 Operation: SIGHUP rereads the certificate and key (a bad pair keeps the old one); SIGINT or SIGTERM stops every match
 (a null) and exits. After a crash the next start records unfinished matches as null and removes leftover containers.
@@ -208,7 +207,6 @@ fractional scores. In FFA, the winner-versus-others decomposition therefore trea
 `cargo test` runs the end-to-end tests over real WebSockets; the launcher-contract tests use `crates/radovid/tests/fake_game.sh` (its report echoes how it was started).
 `tests/games.rs` also launches independent Python 3 game processes and plays them through real socket clients:
 rated tic-tac-toe, clock expiry, fixed-tick team and free-for-all games, and a custom lobby. The fixtures bind
-loopback only, cap input/connection/work budgets, and validate opaque seat tickets in constant time. Python 3 at
-`python3` on `PATH` is a required test dependency; a missing interpreter fails the tests and gate. A game's own client
+loopback only, cap input/connection/work budgets, and validate opaque seat tickets in constant time. `python3` on `PATH` is a required test dependency; a missing interpreter fails the tests and gate. A game's own client
 library carries the tests against its real server. `tools/gate.sh` is the merge gate: clippy, the wasm check, the
 tests, the docker launcher test against a real docker, the fuzz targets' type check, `cargo deny check` and fmt.

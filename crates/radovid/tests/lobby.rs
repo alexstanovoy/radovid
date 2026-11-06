@@ -620,8 +620,8 @@ fn members_choose_their_slots_and_spectators_stay_out_of_the_match() {
     join(&mut guest, lobby);
     join(&mut watcher, lobby);
 
-    // Slots 0 to 4 are Radiant's, 5 to 9 Dire's, whatever the ruleset: the guest, who came
-    // to Dire's first slot, goes to its second.
+    // Slots 0 to 4 belong to side 0, and 5 to 9 to side 1: the guest, who came
+    // to side 1's first slot, goes to its second.
     guest.expect_done(ClientMsg::LobbySlot {
         lobby,
         account: None,

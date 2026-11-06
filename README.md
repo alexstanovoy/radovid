@@ -39,29 +39,30 @@ service update together).
 
 ## Get started: a development setup on one machine
 
-Any server that honours the [launcher contract](DEVELOPMENT.md#launcher-contract) can be configured. The service
-never imports a game's protocol or client library. Start with [radovid.example.toml](radovid.example.toml) and supply
-your game's image, fingerprint, arguments and public address. [examples/bota.toml](examples/bota.toml) is one
-replaceable integration example.
-
-For local development, build radovid, create a certificate, and change a ruleset's launcher to `kind = "local"`,
-`binary = "/absolute/path/to/your_server"` and a loopback `public_url`. Keep tickets in its environment:
+The [example configuration](radovid.example.toml) runs neutral test fixtures: tic-tac-toe, a turn clock, and a
+fixed-tick grid race. They require `python3` on `PATH`, bind only to loopback, and remain test fixtures under
+`tests/`; none is part of the service binary. Run these commands from the repository root:
 
 ```sh
 cargo build --release -p radovid
-mkdir dev
+mkdir -p dev
 target/release/radovid dev-cert dev/
+cp radovid.example.toml dev/radovid.toml
 target/release/radovid serve --config dev/radovid.toml
 ```
 
-Set the configuration's listener to `127.0.0.1:4460` and TLS paths to `dev/cert.pem` and `dev/key.pem`. Clients
-connect to `wss://localhost:4460` and trust the development certificate. A game's own client reads the opaque
-handoff and connects directly to the game server.
+Clients connect to `wss://localhost:4460` and trust `dev/cert.pem`. The fixture clients in
+[the game E2Es](crates/radovid/tests/games.rs) demonstrate registration, queueing, acceptance, direct game
+connections, result reporting and ratings:
 
-The [game E2Es](crates/radovid/tests/games.rs) are executable integration examples: tic-tac-toe, a turn clock,
-and a fixed-tick grid race, each launched as a separate process. They require `python3` on `PATH` and run
-with `cargo test --profile test-release -p radovid --test games`. They are test fixtures, never part of the service
-binary. See [the generality audit](docs/generality.md) for guarantees and remaining boundaries.
+```sh
+cargo test --profile test-release -p radovid --test games
+```
+
+For your own game, configure its executable or container image, wire fingerprint, arguments and public address
+according to the [launcher contract](DEVELOPMENT.md#launcher-contract). The game owns its rules, network protocol
+and client library; the service never imports them. The [generality audit](docs/generality.md) records guarantees
+and remaining boundaries. [Protocol 14 coordination](docs/protocol_14.md) describes the client upgrade boundary.
 
 ## For developers
 

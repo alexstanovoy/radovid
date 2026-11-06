@@ -1,0 +1,24 @@
+# A team-game fixture configuration, separate from the two-player board games.
+# Run from the repository root; use the fixture E2E clients to play and reconnect.
+listen = "127.0.0.1:4461"
+database = "dev/grid.db"
+tls_cert = "dev/cert.pem"
+tls_key = "dev/key.pem"
+game_ports = "20016-20031"
+lobby_teams = [2, 2]
+[[ruleset]]
+id = "grid"
+name = "Fixed-tick team fixture"
+game = "grid"
+game_fingerprint = "6772696400000001"
+teams = [2, 2]
+rated = true
+lobby_min_players = 4
+max_duration_secs = 180
+[ruleset.launcher]
+kind = "local"
+binary = "python3"
+public_url = "tcp://127.0.0.1:{port}"
+version_probe = ["crates/radovid/tests/fixtures/game_server.py", "--game", "grid", "--probe"]
+args = ["crates/radovid/tests/fixtures/game_server.py", "--game", "grid", "--port", "{port}"]
+env = { GAME_SEATS = "{seats}" }

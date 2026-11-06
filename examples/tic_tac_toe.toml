@@ -1,0 +1,23 @@
+# A single neutral development fixture. Run from the repository root.
+listen = "127.0.0.1:4460"
+database = "dev/radovid.db"
+tls_cert = "dev/cert.pem"
+tls_key = "dev/key.pem"
+game_ports = "20000-20015"
+# The neutral lobby default is [1, 1].
+[[ruleset]]
+id = "tic_tac_toe"
+name = "Tic-tac-toe fixture"
+game = "ttt"
+game_fingerprint = "7474740000000001"
+teams = [1, 1]
+rated = true
+lobby_min_players = 2
+max_duration_secs = 180
+[ruleset.launcher]
+kind = "local"
+binary = "python3"
+public_url = "tcp://127.0.0.1:{port}"
+version_probe = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--probe"]
+args = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--port", "{port}"]
+env = { GAME_SEATS = "{seats}" }
