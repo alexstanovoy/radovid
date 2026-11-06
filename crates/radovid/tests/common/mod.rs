@@ -40,9 +40,29 @@ impl Env {
     /// One raw HTTPS request on the service's port (`request` is the whole head and what follows),
     /// and everything the service sent back until it closed.
     pub fn https(&self, request: &[u8]) -> Vec<u8> {
-        use std::io::{BufReader, Read, Write};
+        use std::io::Read;
+        let mut stream = self.https_stream(request);
+        let mut out = Vec::new();
+        let _ = stream.read_to_end(&mut out);
+        out
+    }
+
+    /// One raw HTTPS request on the service's port, sent and left open for the caller to read.
+    pub fn https_stream(
+        &self,
+        request: &[u8],
+    ) -> rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream> {
+        self.https_stream_to(self.url.trim_start_matches("wss://"), request)
+    }
+
+    /// As `https_stream`, to `addr` (the service's port over another family, say).
+    pub fn https_stream_to(
+        &self,
+        addr: &str,
+        request: &[u8],
+    ) -> rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream> {
+        use std::io::{BufReader, Write};
         use std::sync::Arc;
-        let addr = self.url.trim_start_matches("wss://");
         let mut roots = rustls::RootCertStore::empty();
         for cert in rustls::pki_types::CertificateDer::pem_reader_iter(&mut BufReader::new(
             self.cert_pem.as_bytes(),
@@ -62,9 +82,7 @@ impl Env {
             .expect("timeout");
         let mut stream = rustls::StreamOwned::new(connection, tcp);
         let _ = stream.write_all(request);
-        let mut out = Vec::new();
-        let _ = stream.read_to_end(&mut out);
-        out
+        stream
     }
 
     pub fn connect(&self) -> Client {

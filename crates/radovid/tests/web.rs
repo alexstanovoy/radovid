@@ -163,3 +163,48 @@ fn what_leaves_the_directory_or_is_not_a_plain_file_is_refused() {
     assert!(!status(&head).contains("200"), "{head}");
     let _ = std::fs::remove_dir_all(root.parent().expect("base"));
 }
+
+/// A page read at a crawl holds one of its source's places until it is sent, as a login does:
+/// one source stalling page downloads cannot take every connection the service may hold.
+#[test]
+fn a_source_stalling_page_downloads_holds_its_own_places_and_no_more() {
+    use std::io::Read;
+    let root = site();
+    // Sparse: far more than the socket buffers hold, and no disk spent on it.
+    std::fs::File::create(root.join("huge.bin"))
+        .and_then(|file| file.set_len(1 << 30))
+        .expect("a huge file");
+    let env = start_configured(rules(), |config| {
+        config.web = Some(WebConfig {
+            static_dir: root.clone(),
+        });
+        listen_on_both_families(config);
+    });
+    let stalled: Vec<_> = (0..radovid_client::proto::MAX_UNAUTHENTICATED_PER_IP)
+        .map(|_| {
+            let mut stream = env.https_stream(b"GET /huge.bin HTTP/1.1\r\nHost: localhost\r\n\r\n");
+            let mut start = [0u8; 15];
+            stream.read_exact(&mut start).expect("the answer begins");
+            assert_eq!(&start, b"HTTP/1.1 200 OK");
+            stream
+        })
+        .collect();
+    let (head, _) = get(&env, "/", "");
+    assert!(
+        head.is_empty(),
+        "a page past its source's places was served: {head}"
+    );
+    // Another source is served as ever.
+    let port = env.url.rsplit(':').next().expect("a port");
+    let mut other = env.https_stream_to(
+        &format!("[::1]:{port}"),
+        b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    );
+    let mut answer = Vec::new();
+    let _ = other.read_to_end(&mut answer);
+    let (head, body) = split(answer);
+    assert_eq!(status(&head), "HTTP/1.1 200 OK", "{head}");
+    assert_eq!(body, b"<h1>page</h1>");
+    drop(stalled);
+    let _ = std::fs::remove_dir_all(root.parent().expect("base"));
+}

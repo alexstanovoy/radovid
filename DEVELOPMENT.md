@@ -156,8 +156,9 @@ are the values around that transaction, so two matches of one account finishing 
   costs a hash too. Failed logins grow a delay per source, per (login, source) pair and per login across sources, so
   strangers can't lock an owner out; a right password after the delay always works.
 - Session tokens are random, stored as SHA-256, expire after 30 days idle, and a password change revokes them all.
-- Bounded: message size and rate, unauthenticated connections per source, handshakes (10 s), sessions per account,
-  lobbies, list sizes, registrations per hour per source, game servers' output lines.
+- Bounded: message size and rate, unauthenticated connections per source (a page download counts until it is sent),
+  handshakes (10 s), sessions per account, lobbies, list sizes, registrations per hour per source, game servers' output
+  lines.
 - Tickets reach game servers only by environment; logs carry match ids and errors, never logins, passwords, tokens or
   tickets.
 - Stored: per account login, nickname, password hash, kind, admin and ban flags, bot version, creation time; per session

@@ -240,7 +240,6 @@ async fn handle(
     // With a directory of files to serve, the request head says whether this is the control socket
     // or a page; without one every request is the socket's.
     let mut head = Vec::new();
-    let mut guard = guard;
     if let Some(web) = &shared.config.web {
         let Ok(Ok(())) = tokio::time::timeout(deadline, read_head(&mut tls, &mut head)).await
         else {
@@ -248,8 +247,9 @@ async fn handle(
         };
         match web::parse(&head) {
             Some(request) if !request.upgrade => {
-                // A page is no login attempt: its place is free again at once.
-                guard.release();
+                // The page keeps its source's place until it is sent: a peer that reads it at a
+                // crawl would otherwise hold one of the service's connections for every request
+                // it makes, all of them in the end.
                 let _ = web::serve(&mut tls, &web.static_dir, &request).await;
                 let _ = tls.shutdown().await;
                 return;
