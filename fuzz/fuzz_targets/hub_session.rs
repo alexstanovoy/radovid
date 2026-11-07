@@ -70,6 +70,8 @@ fn ruleset(id: &str, rated: bool, teams: Vec<u8>, behaviour: &str, max_secs: u64
         game_fingerprint: FINGERPRINT,
         teams,
         rated,
+        rating_ruleset: None,
+        rating_window: Default::default(),
         info: vec![1],
         max_duration_secs: max_secs,
         artifact_max_mib: None,
