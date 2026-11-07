@@ -49,6 +49,7 @@ impl Hub {
             .map(|session| session.account)
             .ok_or(Error::NotLoggedIn)?;
         let lookup = match message {
+            ClientMsg::GetAvatar { account } => Lookup::Avatar { account: *account, requester: id },
             ClientMsg::Leaderboard {
                 ruleset,
                 kind,
@@ -154,11 +155,12 @@ impl Hub {
 pub(super) fn is_lookup(message: &ClientMsg) -> bool {
     matches!(
         message,
-        ClientMsg::Leaderboard { .. } | ClientMsg::Account { .. } | ClientMsg::Ladder { .. }
+        ClientMsg::Leaderboard { .. } | ClientMsg::Account { .. } | ClientMsg::Ladder { .. } | ClientMsg::GetAvatar { .. }
     )
 }
 
 pub(super) enum Lookup {
+    Avatar { account: AccountId, requester: AccountId },
     Board {
         ruleset: RulesetId,
         kind: AccountKind,
@@ -182,6 +184,10 @@ pub(super) enum Lookup {
 impl Lookup {
     pub(super) async fn run(self, database: &Db) -> Result<Reply, Error> {
         match self {
+            Self::Avatar { account, requester } => {
+                let avatar = database.avatar(account,requester).await.map_err(lookup_error)??;
+                Ok(Reply::Avatar { account, avatar })
+            }
             Self::Board {
                 ruleset,
                 kind,

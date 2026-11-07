@@ -232,6 +232,12 @@ pub enum ClientMsg {
         kind: AccountKind,
         prefix: String,
     },
+    GetAvatar { account: AccountId },
+    SetAvatar {
+        #[serde(deserialize_with = "crate::model::avatar_png")]
+        png: Vec<u8>,
+    },
+    RemoveAvatar,
 }
 
 impl ClientMsg {
@@ -319,6 +325,7 @@ pub enum Reply {
     LeaderboardPage {
         page: LeaderboardPage,
     },
+    Avatar { account: AccountId, avatar: Option<crate::Avatar> },
 }
 
 /// Bound the new batch before client caches see it, including direct protocol decoders.

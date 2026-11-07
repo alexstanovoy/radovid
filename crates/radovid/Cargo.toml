@@ -14,6 +14,8 @@ name = "radovid"
 path = "src/main.rs"
 
 [dependencies]
+png.workspace = true
+flate2.workspace = true
 radovid_proto = { workspace = true }
 postcard.workspace = true
 serde = { workspace = true }

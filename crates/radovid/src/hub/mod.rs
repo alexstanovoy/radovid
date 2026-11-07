@@ -9,6 +9,8 @@ mod lobby;
 mod matches;
 #[cfg(test)]
 mod matching_tests;
+#[cfg(test)]
+mod avatar_tests;
 mod proposal;
 mod queue;
 mod slots;
@@ -559,6 +561,9 @@ impl Hub {
             ClientMsg::Logout
             | ClientMsg::ChangePassword { .. }
             | ClientMsg::DeleteAccount { .. } => Err(Error::Internal),
+            ClientMsg::GetAvatar { .. } => Err(Error::Internal),
+            ClientMsg::SetAvatar { png } => self.change_avatar(id, Some(png)).await,
+            ClientMsg::RemoveAvatar => self.change_avatar(id, None).await,
             ClientMsg::ChangeNickname { nickname } => self.change_nickname(id, nickname).await,
             ClientMsg::Account { .. } => Err(Error::Internal),
             ClientMsg::Rulesets => Ok(Reply::Rulesets {

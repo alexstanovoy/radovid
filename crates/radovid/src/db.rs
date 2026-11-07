@@ -1,5 +1,6 @@
 //! One WAL database, one account/match writer and a bounded read-only pool.
 
+mod avatar;
 mod leaderboard;
 mod reader;
 mod results;
@@ -21,7 +22,16 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::rating::Glicko;
 
 /// Schema 2 gains the denormalised category and indexes in one transaction.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+
+const AVATAR_SCHEMA: &str = "
+CREATE TABLE avatars(
+    account INTEGER PRIMARY KEY REFERENCES accounts(id),
+    version BLOB CHECK(version IS NULL OR length(version)=32),
+    png BLOB CHECK(png IS NULL OR length(png) BETWEEN 1 AND 512),
+    attempted_at INTEGER NOT NULL,
+    CHECK((version IS NULL) = (png IS NULL))
+);";
 
 const SCHEMA: &str = "
 CREATE TABLE accounts(
@@ -363,6 +373,7 @@ impl Db {
                 transaction.execute_batch(SCHEMA)?;
                 transaction.execute_batch(RANKING_SCHEMA)?;
                 transaction.execute_batch(visibility::SCHEMA)?;
+                transaction.execute_batch(AVATAR_SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 transaction.commit()?;
             }
@@ -374,12 +385,20 @@ impl Db {
                 )?;
                 transaction.execute_batch(RANKING_SCHEMA)?;
                 transaction.execute_batch(visibility::SCHEMA)?;
+                transaction.execute_batch(AVATAR_SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 transaction.commit()?;
             }
             3 => {
                 let transaction = conn.transaction()?;
                 transaction.execute_batch(visibility::SCHEMA)?;
+                transaction.execute_batch(AVATAR_SCHEMA)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                transaction.commit()?;
+            }
+            4 => {
+                let transaction = conn.transaction()?;
+                transaction.execute_batch(AVATAR_SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 transaction.commit()?;
             }
@@ -756,6 +775,7 @@ impl Db {
             let id = id.0 as i64;
             tx.execute("DELETE FROM sessions WHERE account = ?1", [id])?;
             tx.execute("DELETE FROM ratings WHERE account = ?1", [id])?;
+            tx.execute("DELETE FROM avatars WHERE account = ?1", [id])?;
             tx.execute(
                 "UPDATE accounts SET login = 'deleted#' || id, nickname = ?2, hash = '',
                  bot_version = NULL, admin = 0, deleted = 1 WHERE id = ?1",
@@ -845,7 +865,8 @@ impl Db {
                         WHERE r.ruleset=?1 AND {visible}
                         ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?2 OFFSET ?3)
                     SELECT a.id,a.nickname,a.kind,a.bot_version,r.rating,r.deviation,
-                        r.games,r.wins,r.draws,r.losses,r.last_played
+                        r.games,r.wins,r.draws,r.losses,r.last_played,
+                        (SELECT version FROM avatars WHERE account=a.id)
                     FROM picked p CROSS JOIN ratings r ON r.account=p.account AND r.ruleset=?1
                     CROSS JOIN accounts a ON a.id=r.account
                     ORDER BY r.rating DESC,r.deviation,r.account"
@@ -854,6 +875,7 @@ impl Db {
                     .query_map(params![ruleset.0, limit, offset], |row| {
                         let kind = kind_of(row.get(2)?);
                         Ok(LadderRow {
+                            avatar: row.get::<_,Option<[u8;32]>>(11)?.map(AvatarVersion),
                             rank: 0,
                             account: AccountId(row.get::<_, i64>(0)? as u64),
                             nickname: row.get(1)?,

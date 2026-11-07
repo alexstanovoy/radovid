@@ -535,3 +535,19 @@ variant Error 57 BadLeaderboardSearch
 
 # Protocol 19: permanent lookup work limits are not retryable throttling.
 variant Error 58 LookupTooExpensive
+
+# Protocol 20: bounded per-account images and public cache versions.
+field Avatar 0 version: AvatarVersion
+field Avatar 1 png: Vec<u8>
+newtype AvatarVersion [u8; 32]
+variant ClientMsg 42 GetAvatar {}
+field ClientMsg::GetAvatar 0 account: AccountId
+variant ClientMsg 43 SetAvatar {}
+field ClientMsg::SetAvatar 0 png: Vec<u8>
+variant ClientMsg 44 RemoveAvatar
+variant Error 59 BadAvatar
+field LadderRow 11 avatar: Option<AvatarVersion>
+field PublicAccount 6 avatar: Option<AvatarVersion>
+variant Reply 17 Avatar {}
+field Reply::Avatar 0 account: AccountId
+field Reply::Avatar 1 avatar: Option<Avatar>

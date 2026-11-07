@@ -123,6 +123,22 @@ pub struct PublicAccount {
     pub bot_version: Option<String>,
     #[serde(deserialize_with = "profile_ratings")]
     pub ratings: Vec<(RulesetId, RatingSummary)>,
+    pub avatar: Option<AvatarVersion>,
+}
+
+/// Content hash; cache keys also include the service and account.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AvatarVersion(pub [u8; 32]);
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Avatar {
+    pub version: AvatarVersion,
+    #[serde(deserialize_with = "avatar_png")]
+    pub png: Vec<u8>,
+}
+
+pub(crate) fn avatar_png<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+    bounded_list::<D, u8, { crate::MAX_AVATAR_BYTES }>(deserializer)
 }
 
 /// One entry of the service's catalog.
@@ -446,4 +462,5 @@ pub struct LadderRow {
     pub draws: u32,
     pub losses: u32,
     pub last_played: Option<UnixMs>,
+    pub avatar: Option<AvatarVersion>,
 }

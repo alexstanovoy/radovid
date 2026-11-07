@@ -85,7 +85,7 @@ fn read_snapshot<T>(
     Ok(result)
 }
 
-const ROW: &str = "r.account,a.nickname,r.kind,a.bot_version,r.rating,r.deviation,r.games,r.wins,r.draws,r.losses,r.last_played";
+const ROW: &str = "r.account,a.nickname,r.kind,a.bot_version,r.rating,r.deviation,r.games,r.wins,r.draws,r.losses,r.last_played,(SELECT version FROM avatars WHERE account=a.id)";
 pub(super) const VISIBLE: &str = "r.games>0 AND r.hidden=0";
 
 impl Db {
@@ -167,6 +167,7 @@ impl Db {
                     PROFILE_RANK_VM_STEPS,
                 )?;
                 Ok(Some(PublicAccount {
+                    avatar: super::avatar::version(connection,account)?,
                     id: account,
                     nickname: row.nickname,
                     kind: row.kind,
@@ -438,6 +439,7 @@ fn find_own_row(
 fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
     let kind = kind_of(row.get(2)?);
     Ok(LadderRow {
+        avatar: row.get::<_,Option<[u8;32]>>(11)?.map(AvatarVersion),
         account: AccountId(row.get::<_, i64>(0)? as u64),
         nickname: row.get(1)?,
         kind,
@@ -455,7 +457,7 @@ fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
         draws: row.get(8)?,
         losses: row.get(9)?,
         last_played: Some(UnixMs(row.get::<_, i64>(10)? as u64)),
-        rank: row.get(11)?,
+        rank: row.get(12)?,
     })
 }
 

@@ -5,6 +5,7 @@
 extern crate self as radovid;
 
 pub mod artifacts;
+pub mod avatar;
 pub mod config;
 mod control;
 pub mod db;

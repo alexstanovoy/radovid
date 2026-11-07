@@ -127,6 +127,8 @@ pub enum Error {
     BadLeaderboardSearch,
     /// The lookup exceeds a work bound; retrying the same request will not help.
     LookupTooExpensive,
+    /// Not a static 32x32 PNG of at most 512 bytes in the avatar format.
+    BadAvatar,
 }
 
 impl core::fmt::Display for Error {

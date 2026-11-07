@@ -14,6 +14,7 @@ fn a_profile_cannot_make_a_client_cache_more_than_64_mode_ratings() {
         rank: Some(1),
     };
     let account = PublicAccount {
+        avatar: None,
         id: AccountId(1),
         nickname: "alpha".into(),
         kind: AccountKind::Human,
@@ -40,6 +41,7 @@ fn a_profile_cannot_make_a_client_cache_more_than_64_mode_ratings() {
 #[test]
 fn a_leaderboard_reply_is_bounded_before_a_client_can_cache_it() {
     let row = LadderRow {
+        avatar: None,
         rank: 1,
         account: AccountId(1),
         nickname: "alpha".into(),

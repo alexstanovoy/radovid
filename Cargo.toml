@@ -12,6 +12,8 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+png = { version = "0.18.1", default-features = false }
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 radovid_client = { path = "crates/radovid_client" }
 radovid_proto = { path = "crates/radovid_proto" }
 serde = { version = "1", features = ["derive"] }

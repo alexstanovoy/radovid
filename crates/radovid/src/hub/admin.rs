@@ -9,6 +9,10 @@ use crate::db::{Ban, now_ms};
 use crate::supervisor::End;
 
 impl Hub {
+    pub(super) async fn change_avatar(&self, id: AccountId, png: Option<Vec<u8>>) -> Result<Reply,Error> {
+        let avatar = self.db.change_avatar(id,png,now_ms()).await.map_err(internal)??;
+        Ok(Reply::Avatar { account:id, avatar })
+    }
     pub(super) async fn recent_matches(
         &mut self,
         account: AccountId,
