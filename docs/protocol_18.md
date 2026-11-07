@@ -34,8 +34,10 @@ verify whether a person or a program is operating a client. Reclassification mov
 stored rating between the category views.
 
 `own = None` means the requester has no qualifying rated record in this mode. Display an
-unranked state rather than rank zero. When the own row is already among `rows`, clients can
-highlight it; otherwise show it separately. The own row does not consume the page limit.
+unranked state rather than rank zero. A category-filtered table highlights or pins the own
+row only when `own.kind == page.kind`. Its membership check uses the displayed rows if a
+client applies a smaller display cap. The independent own metadata does not consume the
+service page limit.
 
 ## Profiles and configuration
 
