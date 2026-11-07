@@ -399,7 +399,7 @@ mod tests {
                 [],
             )
             .expect("rating");
-        let writer = Connection::open(&directory.0.join("ranks.db")).expect("other connection");
+        let writer = Connection::open(directory.0.join("ranks.db")).expect("other connection");
         read_lookup(&mut connection, |snapshot| {
             assert_eq!(
                 own_row(snapshot, &RulesetId("duel".into()), AccountId(1))?
