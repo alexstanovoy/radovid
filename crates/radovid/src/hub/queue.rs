@@ -23,6 +23,11 @@ pub(super) struct Entry {
     told: (Standing, Instant),
 }
 
+#[cfg(test)]
+impl Entry {
+    pub(super) fn age_status(&mut self, duration: Duration) { self.told.1 -= duration; }
+}
+
 /// The parts of a `QueueEntry` whose change is news.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Standing {
@@ -251,15 +256,27 @@ impl Hub {
     pub(super) fn entry_status(&self, entry: QueueEntryId) -> Option<QueueEntry> {
         let e = self.entries.get(&entry)?;
         let queue = self.queues.get(&(e.ruleset.clone(), e.audience))?;
-        let position = queue.iter().position(|id| *id == entry)? as u32 + 1;
+        let position = queue.iter().position(|id| {
+            #[cfg(test)]
+            self.position_scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            *id == entry
+        })? as u32 + 1;
+        self.status_at(entry, Standing {
+            position, waiting: queue.len() as u32,
+            overloaded: self.pairing_paused(), games_waiting: self.waiting.len() as u32,
+        })
+    }
+
+    fn status_at(&self, entry: QueueEntryId, standing: Standing) -> Option<QueueEntry> {
+        let e = self.entries.get(&entry)?;
         Some(QueueEntry {
             entry,
             ruleset: e.ruleset.clone(),
             for_ms: e.since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
-            position,
-            waiting: queue.len() as u32,
-            overloaded: self.pairing_paused(),
-            games_waiting: self.waiting.len() as u32,
+            position: standing.position,
+            waiting: standing.waiting,
+            overloaded: standing.overloaded,
+            games_waiting: standing.games_waiting,
             audience: e.audience,
             search: e.search,
         })
@@ -332,15 +349,22 @@ impl Hub {
     pub(super) fn send_queue_statuses(&mut self) {
         let now = Instant::now();
         let interval = Duration::from_millis(u64::from(QUEUE_STATUS_INTERVAL_MS));
-        let due: Vec<(AccountId, QueueEntry)> = self
-            .entries
-            .iter()
-            .filter(|(_, e)| e.proposal.is_none() && now.duration_since(e.told.1) >= interval)
-            .filter_map(|(id, e)| {
-                let status = self.entry_status(*id)?;
-                (standing(&status) != e.told.0).then_some((e.account, status))
-            })
-            .collect();
+        let overloaded = self.pairing_paused();
+        let games_waiting = self.waiting.len() as u32;
+        let mut due = Vec::new();
+        for queue in self.queues.values() {
+            for (index, id) in queue.iter().enumerate() {
+                #[cfg(test)]
+                self.position_scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(entry) = self.entries.get(id) else { continue; };
+                if entry.proposal.is_some() || now.duration_since(entry.told.1) < interval { continue; }
+                let standing = Standing { position: index as u32 + 1, waiting: queue.len() as u32, overloaded, games_waiting };
+                if standing == entry.told.0 { continue; }
+                if let Some(status) = self.status_at(*id, standing) {
+                    due.push((entry.account, status));
+                }
+            }
+        }
         for (account, status) in due {
             if let Some(e) = self.entries.get_mut(&status.entry) {
                 e.told = (standing(&status), now);

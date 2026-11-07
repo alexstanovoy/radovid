@@ -148,6 +148,8 @@ pub struct Hub {
     pair_reset: tokio::time::Instant,
     pair_next: usize,
     pairing: bool,
+    #[cfg(test)]
+    position_scans: std::sync::atomic::AtomicUsize,
     proposals: HashMap<ProposalId, proposal::ProposalState>,
     next_proposal: u32,
     lobbies: BTreeMap<LobbyId, lobby::Lobby>,
@@ -232,6 +234,8 @@ impl Hub {
             entries: HashMap::new(), queues: HashMap::new(), next_entry: 1,
             pair_work: queue::QUEUE_SCAN_BUDGET, pair_reset: tokio::time::Instant::now(), pair_next: 0,
             pairing: false,
+            #[cfg(test)]
+            position_scans: std::sync::atomic::AtomicUsize::new(0),
             proposals: HashMap::new(), next_proposal: 1,
             lobbies: BTreeMap::new(), next_lobby: 1,
             matches: HashMap::new(), waiting: VecDeque::new(), penalties: HashMap::new(),

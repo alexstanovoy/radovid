@@ -24,6 +24,7 @@ impl Fixture {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut config = Config::load(&root.join("radovid.example.toml")).expect("config");
         config.database = directory.0.join("hub.db");
+        config.limits.games_per_source = 200;
         config.rulesets.truncate(1);
         config.rulesets[0].id = "ranked".into();
         config.rulesets[0].rating_window = RatingWindowConfig { initial: Some(100), widen_per_minute: Some(100), maximum: Some(500) };
@@ -125,6 +126,22 @@ async fn a_closed_event_channel_during_pairing_cannot_reserve_an_entry_twice() {
             assert_eq!(fixture.hub.entries[entry].proposal, Some(*id));
         }
     }
+}
+
+#[tokio::test]
+async fn a_status_sweep_inspects_queue_positions_at_most_once_per_entry() {
+    let mut fixture = Fixture::new();
+    fixture.hub.pair_work = 0;
+    fixture.hub.pair_reset = tokio::time::Instant::now() + Duration::from_secs(86_400);
+    for index in 0..64 {
+        let (_, session) = fixture.account(&format!("player_{index}")).await;
+        fixture.join(session, "ranked").await;
+    }
+    for entry in fixture.hub.entries.values_mut() { entry.age_status(Duration::from_secs(5)); }
+    fixture.hub.position_scans.store(0, Ordering::Relaxed);
+    fixture.hub.send_queue_statuses();
+    let scans = fixture.hub.position_scans.load(Ordering::Relaxed);
+    assert!(scans <= 64, "position inspections: {scans}");
 }
 
 #[tokio::test]
