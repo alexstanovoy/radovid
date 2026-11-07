@@ -682,12 +682,13 @@ impl Db {
                 )?;
                 let rows = statement
                     .query_map(params![ruleset.0, limit, offset], |row| {
+                        let kind=kind_of(row.get(2)?);
                         Ok(LadderRow {
                             rank: 0,
                             account: AccountId(row.get::<_, i64>(0)? as u64),
                             nickname: row.get(1)?,
-                            kind: kind_of(row.get(2)?),
-                            bot_version: row.get(3)?,
+                            kind,
+                            bot_version: if kind==AccountKind::Bot { row.get(3)? } else { None },
                             rating: Rating {
                                 rating: row.get(4)?,
                                 deviation: row.get(5)?,

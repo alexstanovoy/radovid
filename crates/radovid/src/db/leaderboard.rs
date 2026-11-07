@@ -204,11 +204,12 @@ fn own_row(connection:&Connection,ruleset:&RulesetId,account:AccountId)->rusqlit
 }
 
 fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
+    let kind=kind_of(row.get(2)?);
     Ok(LadderRow {
         account: AccountId(row.get::<_, i64>(0)? as u64),
         nickname: row.get(1)?,
-        kind: kind_of(row.get(2)?),
-        bot_version: row.get(3)?,
+        kind,
+        bot_version: if kind==AccountKind::Bot { row.get(3)? } else { None },
         rating: Rating {
             rating: row.get(4)?,
             deviation: row.get(5)?,
@@ -585,6 +586,19 @@ mod scale_tests {
         assert!(result.is_ok(), "profile refused: {:?}", result.err());
     }
 
-
+    /// Red: a human row must not carry a bot version (profile already filters it).
+    #[tokio::test]
+    async fn probe_reclassified_human_row_has_no_bot_version() {
+        let db = Db::init(Connection::open_in_memory().expect("db")).expect("schema");
+        populate(&db, &["duel"], 2);
+        db.run(|c| c.execute("UPDATE accounts SET bot_version='secret-build-7' WHERE id=2", []).map(|_| ())).await.expect("ver");
+        let page = db
+            .leaderboard(RulesetId("duel".into()), AccountKind::Human, String::new(), 100, AccountId(1))
+            .await
+            .expect("board");
+        assert!(page.rows.iter().all(|row| row.bot_version.is_none()), "human row leaks bot_version");
+        let (_,rows)=db.ladder(RulesetId("duel".into()),0,100).await.expect("legacy ladder");
+        assert!(rows.iter().filter(|row| row.kind==AccountKind::Human).all(|row| row.bot_version.is_none()),"legacy human row leaks bot_version");
+    }
 }
 
