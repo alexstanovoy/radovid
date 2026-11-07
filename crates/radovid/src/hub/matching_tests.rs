@@ -197,6 +197,19 @@ async fn combined_a_large_humans_queue_yields_to_everyone_on_budget_refill() {
 }
 
 #[tokio::test]
+async fn guard_only_nonfinite_rating_refresh_cancels_both_linked_places() {
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let mut fixture = Fixture::new();
+        let (alpha, session) = fixture.account("alpha").await;
+        fixture.join_audiences(session, "ranked", &[Audience::HumansOnly, Audience::Everyone]).await;
+        fixture.hub.refresh_queued_rating(alpha, &RulesetId("ranked".into()), invalid);
+        assert!(fixture.hub.entries.is_empty(), "invalid committed rating {invalid:?} must not enter the selector");
+        assert!(fixture.hub.accounts[&alpha].entries.is_empty());
+        assert_eq!(fixture.hub.cooldown_ms(alpha), 0);
+    }
+}
+
+#[tokio::test]
 async fn review_every_clock_tick_refills_the_pairing_budget() {
     let mut fixture = Fixture::new();
     fixture.hub.pair_work = 0;

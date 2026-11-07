@@ -320,16 +320,7 @@ impl Hub {
         });
         // Concurrent games update the same ladder. Waiting searches must use the committed rating.
         for change in &changes {
-            let Some(account) = self.accounts.get(&change.account) else {
-                continue;
-            };
-            for id in &account.entries {
-                if let Some(entry) = self.entries.get_mut(id)
-                    && entry.rating_ruleset == state.ruleset
-                {
-                    entry.rating = change.after.rating;
-                }
-            }
+            self.refresh_queued_rating(change.account, &state.ruleset, change.after.rating);
         }
         let result = MatchResult {
             match_id,
@@ -372,6 +363,29 @@ impl Hub {
         }
         self.try_launch();
         self.pair_all();
+    }
+
+    pub(super) fn refresh_queued_rating(&mut self, id: AccountId, ruleset: &RulesetId, rating: f64) {
+        if !rating.is_finite() {
+            internal("non-finite committed matchmaking rating; cancelling affected searches");
+            let searches: std::collections::BTreeSet<_> = self.accounts.get(&id).into_iter()
+                .flat_map(|account| account.entries.iter())
+                .filter_map(|entry| self.entries.get(entry))
+                .filter(|entry| entry.rating_ruleset == *ruleset)
+                .map(|entry| entry.search).collect();
+            let pairing = self.pairing;
+            self.pairing = true;
+            for search in searches { self.leave_queue(search, QueueLeftReason::Cancelled, false); }
+            self.pairing = pairing;
+            return;
+        }
+        let Some(account) = self.accounts.get(&id) else { return; };
+        for entry in &account.entries {
+            if let Some(entry) = self.entries.get_mut(entry)
+                && entry.rating_ruleset == *ruleset {
+                entry.rating = rating;
+            }
+        }
     }
 }
 
