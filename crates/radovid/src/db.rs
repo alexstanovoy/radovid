@@ -679,7 +679,7 @@ impl Db {
                         r.rating, r.deviation, r.games, r.wins, r.draws, r.losses, r.last_played
                  FROM ratings r INDEXED BY ratings_global_ladder CROSS JOIN accounts a ON a.id = r.account
                  WHERE r.ruleset = ?1 AND {visible}
-                 ORDER BY r.rating DESC, r.deviation ASC, a.id ASC LIMIT ?2 OFFSET ?3"),
+                 ORDER BY r.rating DESC, r.deviation ASC, r.account ASC LIMIT ?2 OFFSET ?3"),
                 )?;
                 let rows = statement
                     .query_map(params![ruleset.0, limit, offset], |row| {
