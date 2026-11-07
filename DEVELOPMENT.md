@@ -168,7 +168,7 @@ most 64 KiB from a client, 4 MiB from the service.
 Each rated mode has Humans and Bots views of its accounts' ratings. The leaderboard returns
 the configured top N, literal nickname-prefix search results with absolute ranks, and the
 requester's own position even outside those results. Profiles include per-mode ranks. A service
-configures at most 64 rated modes. See [protocol 18](docs/protocol_18.md) for the request/reply
+configures at most 64 rated modes. See [protocol 19](docs/protocol_19.md) for the request/reply
 contract, deterministic ordering, visibility, rate limits and database-work budget.
 
 ## Ratings

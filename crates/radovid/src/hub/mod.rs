@@ -37,6 +37,7 @@ pub type SessionId = u64;
 pub enum Cmd {
     /// A connection logged in.
     Attach(Box<Attach>),
+    LookupDone { account:AccountId },
     Request {
         session: SessionId,
         msg: ClientMsg,
@@ -106,6 +107,7 @@ pub fn event_channel() -> (mpsc::Sender<ServerMsg>, mpsc::Receiver<ServerMsg>) {
 /// An account with sessions, games in flight, or lookup debt still being refilled.
 struct Account {
     lookup_budget: crate::throttle::TokenBucket,
+    lookup_pending: bool,
     info: AccountInfo,
     bot_version: Option<String>,
     sessions: Vec<SessionId>,
@@ -127,7 +129,7 @@ impl Account {
     }
 
     fn is_idle_at(&self, now: std::time::Instant) -> bool {
-        self.sessions.is_empty() && self.in_flight() == 0 && self.lookup_budget.is_full(now)
+        self.sessions.is_empty() && self.in_flight() == 0 && !self.lookup_pending && self.lookup_budget.is_full(now)
     }
 }
 
@@ -266,9 +268,10 @@ impl Hub {
                 msg,
                 reply,
             } => {
-                let result = self.request(session, msg).await;
-                let _ = reply.send(result);
+                if leaderboard::is_lookup(&msg) { self.start_lookup(session,&msg,reply); }
+                else { let result=self.request(session,msg).await; let _=reply.send(result); }
             }
+            Cmd::LookupDone { account }=>self.lookup_done(account),
             Cmd::Detach { session } => self.detach(session),
             Cmd::EndOtherSessions { account, keep } => self.end_other_sessions(account, keep),
             Cmd::AccountDeleted { account, done } => {
@@ -321,6 +324,7 @@ impl Hub {
         );
         let entry = self.accounts.entry(id).or_insert_with(|| Account {
             lookup_budget: crate::throttle::TokenBucket::new(4, 4, std::time::Instant::now()),
+            lookup_pending:false,
             info: account.info(),
             bot_version: None,
             sessions: Vec::new(),
@@ -498,6 +502,12 @@ impl Hub {
     }
 
     async fn request(&mut self, session: SessionId, msg: ClientMsg) -> Result<Reply, Error> {
+        if leaderboard::is_lookup(&msg) {
+            let (account,query)=self.prepare_lookup(session,&msg)?;
+            let result=query.run(&self.db).await;
+            self.lookup_done(account);
+            return result;
+        }
         let id = self
             .sessions
             .get(&session)
@@ -513,7 +523,7 @@ impl Hub {
             | ClientMsg::ChangePassword { .. }
             | ClientMsg::DeleteAccount { .. } => Err(Error::Internal),
             ClientMsg::ChangeNickname { nickname } => self.change_nickname(id, nickname).await,
-            ClientMsg::Account { account } => self.public_account(id, account).await,
+            ClientMsg::Account { .. }=>Err(Error::Internal),
             ClientMsg::Rulesets => Ok(Reply::Rulesets {
                 list: self.config.ruleset_infos(self.kind_of(id)),
             }),
@@ -538,16 +548,7 @@ impl Hub {
             ClientMsg::RecentMatches { account, limit } => {
                 self.recent_matches(account, limit).await
             }
-            ClientMsg::Ladder {
-                ruleset,
-                offset,
-                limit,
-            } => self.ladder(id, ruleset, offset, limit).await,
-            ClientMsg::Leaderboard {
-                ruleset,
-                kind,
-                prefix,
-            } => self.leaderboard(id, ruleset, kind, prefix).await,
+            ClientMsg::Ladder { .. }|ClientMsg::Leaderboard { .. }=>Err(Error::Internal),
             ClientMsg::AdminBan {
                 account,
                 reason,

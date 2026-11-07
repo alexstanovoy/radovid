@@ -1,6 +1,9 @@
 //! The database: one SQLite file in WAL mode behind one connection.
 
 mod leaderboard;
+mod reader;
+#[cfg(test)]
+mod schema_tests;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -10,9 +13,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::rating::Glicko;
 
-/// The schema this build writes. A file with another version is refused; there
-/// is no migration.
-const SCHEMA_VERSION: i64 = 2;
+/// Schema 2 gains the denormalised category and indexes in one transaction.
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE accounts(
@@ -46,6 +48,7 @@ CREATE TABLE ratings(
     draws INTEGER NOT NULL,
     losses INTEGER NOT NULL,
     last_played INTEGER NOT NULL,
+    kind INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(account, ruleset)
 );
 CREATE INDEX ratings_ladder ON ratings(ruleset, rating DESC, deviation ASC);
@@ -76,6 +79,18 @@ CREATE TABLE match_seats(
 CREATE INDEX match_seats_account ON match_seats(account, match_id);
 ";
 
+const RANKING_SCHEMA: &str = "
+CREATE INDEX ratings_kind_ladder ON ratings(ruleset,kind,rating DESC,deviation,account) WHERE games>0;
+CREATE INDEX ratings_global_ladder ON ratings(ruleset,rating DESC,deviation,account) WHERE games>0;
+CREATE INDEX accounts_nickname_key ON accounts(lower(nickname),id) WHERE deleted=0;
+CREATE TRIGGER ratings_account_kind AFTER INSERT ON ratings
+WHEN NEW.kind != (SELECT kind FROM accounts WHERE id=NEW.account)
+BEGIN UPDATE ratings SET kind=(SELECT kind FROM accounts WHERE id=NEW.account)
+      WHERE account=NEW.account AND ruleset=NEW.ruleset; END;
+CREATE TRIGGER accounts_ratings_kind AFTER UPDATE OF kind ON accounts
+BEGIN UPDATE ratings SET kind=NEW.kind WHERE account=NEW.id; END;
+";
+
 /// What a deleted account is shown as.
 pub const DELETED_NICKNAME: &str = "deleted";
 
@@ -91,6 +106,7 @@ pub enum DbError {
     Taken,
     Sqlite(rusqlite::Error),
     Join,
+    ReadBusy,
 }
 
 impl From<rusqlite::Error> for DbError {
@@ -105,6 +121,7 @@ impl std::fmt::Display for DbError {
             DbError::Taken => write!(f, "the login is taken"),
             DbError::Sqlite(error) => write!(f, "database: {error}"),
             DbError::Join => write!(f, "database task failed"),
+            DbError::ReadBusy => write!(f, "database read queue is full"),
         }
     }
 }
@@ -207,6 +224,7 @@ pub struct Finish {
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
+    readers: Option<Arc<reader::ReadPool>>,
 }
 
 pub fn now_ms() -> UnixMs {
@@ -217,12 +235,19 @@ pub fn now_ms() -> UnixMs {
 }
 
 impl Db {
-    pub fn open(path: &Path) -> DbResult<Db> {
-        let conn = Connection::open(path)?;
-        Self::init(conn)
+    #[cfg(test)]
+    pub(crate) fn lookup_connection_for_test(&self)->&Mutex<Connection> {
+        self.readers.as_ref().map_or(self.conn.as_ref(),|readers| readers.first_connection())
     }
 
-    fn init(conn: Connection) -> DbResult<Db> {
+    pub fn open(path: &Path) -> DbResult<Db> {
+        let conn = Connection::open(path)?;
+        let mut db=Self::init(conn)?;
+        db.readers=Some(Arc::new(reader::ReadPool::open(path)?));
+        Ok(db)
+    }
+
+    fn init(mut conn: Connection) -> DbResult<Db> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
@@ -230,8 +255,19 @@ impl Db {
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => {
-                conn.execute_batch(SCHEMA)?;
-                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                let transaction=conn.transaction()?;
+                transaction.execute_batch(SCHEMA)?;
+                transaction.execute_batch(RANKING_SCHEMA)?;
+                transaction.pragma_update(None,"user_version",SCHEMA_VERSION)?;
+                transaction.commit()?;
+            }
+            2 => {
+                let transaction=conn.transaction()?;
+                transaction.execute_batch("ALTER TABLE ratings ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
+                    UPDATE ratings SET kind=(SELECT kind FROM accounts WHERE id=ratings.account);")?;
+                transaction.execute_batch(RANKING_SCHEMA)?;
+                transaction.pragma_update(None,"user_version",SCHEMA_VERSION)?;
+                transaction.commit()?;
             }
             SCHEMA_VERSION => {}
             other => {
@@ -242,6 +278,7 @@ impl Db {
         }
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
+            readers: None,
         })
     }
 
@@ -258,6 +295,13 @@ impl Db {
         .await
         .map_err(|_| DbError::Join)?
         .map_err(DbError::from)
+    }
+
+    async fn read<T:Send+'static>(&self,work:impl FnOnce(&mut Connection)->rusqlite::Result<T>+Send+'static)->DbResult<T> {
+        match &self.readers {
+            Some(readers)=>readers.run(work).await,
+            None=>self.run(work).await,
+        }
     }
 
     pub async fn account_by_login(&self, login: String) -> DbResult<Option<AccountRow>> {
@@ -621,7 +665,7 @@ impl Db {
         offset: u32,
         limit: u8,
     ) -> DbResult<(u32, Vec<LadderRow>)> {
-        self.run(move |connection| {
+        self.read(move |connection| {
             leaderboard::read_lookup(connection, |c| {
                 let total: u32 = c.query_row(
                     "SELECT COUNT(*) FROM ratings r JOIN accounts a ON a.id = r.account

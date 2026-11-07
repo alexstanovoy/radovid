@@ -22,46 +22,92 @@ impl Hub {
         self.accounts.retain(|_, account| !account.is_idle_at(now));
     }
 
-    pub(super) async fn leaderboard(
-        &mut self,
-        id: AccountId,
-        ruleset: RulesetId,
-        kind: AccountKind,
-        prefix: String,
-    ) -> Result<Reply, Error> {
-        if !valid_nickname_prefix(&prefix) {
-            return Err(Error::BadLeaderboardSearch);
-        }
-        let config = self.config.ruleset(&ruleset).ok_or(Error::UnknownRuleset)?;
-        if !config.rated {
-            return Err(Error::NoQueue);
-        }
-        if !config.admits(self.kind_of(id)) {
-            return Err(Error::AudienceMismatch);
-        }
-        let limit = self.config.limits.leaderboard_size;
+    pub(super) fn prepare_lookup(&mut self,session:SessionId,message:&ClientMsg)->Result<(AccountId,Lookup),Error> {
+        let id=self.sessions.get(&session).map(|session| session.account).ok_or(Error::NotLoggedIn)?;
+        let lookup=match message {
+            ClientMsg::Leaderboard { ruleset,kind,prefix }=>{
+                if !valid_nickname_prefix(prefix) { return Err(Error::BadLeaderboardSearch); }
+                let config=self.config.ruleset(ruleset).ok_or(Error::UnknownRuleset)?;
+                if !config.rated { return Err(Error::NoQueue); }
+                if !config.admits(self.kind_of(id)) { return Err(Error::AudienceMismatch); }
+                Lookup::Board { ruleset:ruleset.clone(),kind:*kind,prefix:prefix.clone(),limit:self.config.limits.leaderboard_size,requester:id }
+            }
+            ClientMsg::Account { account }=>Lookup::Profile {
+                account:*account,
+                modes:self.config.rulesets.iter().filter(|rule| rule.rated && rule.admits(self.kind_of(id))).map(|rule| rule.ruleset_id()).collect(),
+                online:self.accounts.get(account).is_some_and(|account| !account.sessions.is_empty()),
+            },
+            ClientMsg::Ladder { ruleset,offset,limit }=>{
+                let config=self.config.ruleset(ruleset).ok_or(Error::UnknownRuleset)?;
+                if !config.rated { return Err(Error::NoQueue); }
+                Lookup::Legacy { ruleset:ruleset.clone(),offset:*offset,limit:(*limit).min(MAX_LADDER_PAGE) }
+            }
+            _=>return Err(Error::Internal),
+        };
+        if self.accounts.get(&id).is_some_and(|account| account.lookup_pending) { return Err(Error::Throttled { retry_after_ms:250 }); }
         self.charge_lookup(id)?;
-        let page = self
-            .db
-            .leaderboard(ruleset, kind, prefix, limit, id)
-            .await
-            .map_err(lookup_error)?;
-        Ok(Reply::LeaderboardPage { page })
+        self.accounts.get_mut(&id).ok_or(Error::NotLoggedIn)?.lookup_pending=true;
+        Ok((id,lookup))
+    }
+
+    pub(super) fn lookup_done(&mut self,id:AccountId) {
+        if let Some(account)=self.accounts.get_mut(&id) { account.lookup_pending=false; }
+        self.forget_if_idle(id);
+    }
+
+    pub(super) fn start_lookup(&mut self,session:SessionId,message:&ClientMsg,reply:oneshot::Sender<Result<Reply,Error>>) {
+        let (account,lookup)=match self.prepare_lookup(session,message) {
+            Ok(query)=>query,
+            Err(error)=>{ let _=reply.send(Err(error)); return; }
+        };
+        let database=self.db.clone();
+        let hub=self.me.clone();
+        tokio::spawn(async move {
+            let result=lookup.run(&database).await;
+            let _=hub.send(Cmd::LookupDone { account }).await;
+            let _=reply.send(result);
+        });
+    }
+
+}
+
+pub(super) fn is_lookup(message:&ClientMsg)->bool {
+    matches!(message,ClientMsg::Leaderboard { .. }|ClientMsg::Account { .. }|ClientMsg::Ladder { .. })
+}
+
+pub(super) enum Lookup {
+    Board { ruleset:RulesetId,kind:AccountKind,prefix:String,limit:u16,requester:AccountId },
+    Profile { account:AccountId,modes:Vec<RulesetId>,online:bool },
+    Legacy { ruleset:RulesetId,offset:u32,limit:u8 },
+}
+
+impl Lookup {
+    pub(super) async fn run(self,database:&Db)->Result<Reply,Error> {
+        match self {
+            Self::Board { ruleset,kind,prefix,limit,requester }=>{
+                let page=database.leaderboard(ruleset,kind,prefix,limit,requester).await.map_err(lookup_error)?;
+                Ok(Reply::LeaderboardPage { page })
+            }
+            Self::Profile { account,modes,online }=>{
+                let mut account=database.public_profile(account,modes).await.map_err(lookup_error)?.ok_or(Error::UnknownAccount)?;
+                account.online=online; Ok(Reply::Account { account })
+            }
+            Self::Legacy { ruleset,offset,limit }=>{
+                let (total,rows)=database.ladder(ruleset,offset,limit).await.map_err(lookup_error)?;
+                Ok(Reply::LadderPage { total,rows })
+            }
+        }
     }
 }
 
-pub(super) fn lookup_error(error: crate::db::DbError) -> Error {
-    if let crate::db::DbError::Sqlite(rusqlite::Error::SqliteFailure(code, _)) = &error
-        && matches!(
-            code.code,
-            rusqlite::ErrorCode::OperationInterrupted
-                | rusqlite::ErrorCode::DatabaseBusy
-                | rusqlite::ErrorCode::DatabaseLocked
-        )
-    {
-        return Error::Throttled {
-            retry_after_ms: 1000,
-        };
+pub(super) fn lookup_error(error:crate::db::DbError)->Error {
+    if matches!(error,crate::db::DbError::ReadBusy) { return Error::Throttled { retry_after_ms:250 }; }
+    if let crate::db::DbError::Sqlite(rusqlite::Error::SqliteFailure(code,_))=&error {
+        match code.code {
+            rusqlite::ErrorCode::OperationInterrupted=>return Error::LookupTooExpensive,
+            rusqlite::ErrorCode::DatabaseBusy|rusqlite::ErrorCode::DatabaseLocked=>return Error::Throttled { retry_after_ms:1000 },
+            _=>{}
+        }
     }
     internal(error)
 }
@@ -70,6 +116,42 @@ pub(super) fn lookup_error(error: crate::db::DbError) -> Error {
 mod tests {
     use super::super::matching_tests::Fixture;
     use super::*;
+
+    #[test]
+    fn a_lookup_work_limit_is_not_reported_as_retryable_throttling() {
+        let error=crate::db::DbError::Sqlite(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(9),None));
+        assert_eq!(lookup_error(error),Error::LookupTooExpensive);
+    }
+
+    #[tokio::test]
+    async fn a_blocked_lookup_does_not_block_the_hub() {
+        let mut fixture=Fixture::new();
+        let (account,_)=fixture.account("alpha").await;
+        let db=fixture.hub.db.clone();
+        let row=db.account_by_id(account).await.expect("read").expect("account");
+        let (hub,task)=super::super::spawn(Arc::clone(&fixture.hub.config),db.clone());
+        let (events,_receiver)=event_channel();
+        let (reply,answer)=oneshot::channel();
+        hub.tx.send(Cmd::Attach(Box::new(Attach { account:row,token_hash:[0;32],game_fingerprint:fixture.hub.config.rulesets[0].game_fingerprint,source:"127.0.0.1".parse().expect("source"),events,reply }))).await.expect("attach");
+        let session=answer.await.expect("reply").expect("session").0;
+        let (held,ready)=std::sync::mpsc::sync_channel(1);
+        let (release,released)=std::sync::mpsc::sync_channel(1);
+        let locked=db.clone();
+        let holder=std::thread::spawn(move || {
+            let guard=locked.lookup_connection_for_test().lock().expect("lookup connection");
+            held.send(()).expect("held"); released.recv().expect("release"); drop(guard);
+        });
+        ready.recv().expect("lookup connection held");
+        let (reply,lookup)=oneshot::channel();
+        hub.tx.send(Cmd::Request { session,msg:ClientMsg::Leaderboard { ruleset:RulesetId("ranked".into()),kind:AccountKind::Human,prefix:String::new() },reply }).await.expect("lookup");
+        let (reply,cheap)=oneshot::channel();
+        hub.tx.send(Cmd::Request { session,msg:ClientMsg::Limits { ruleset:None },reply }).await.expect("cheap request");
+        let progress=tokio::time::timeout(Duration::from_secs(1),cheap).await;
+        release.send(()).expect("release lookup"); holder.join().expect("holder");
+        lookup.await.expect("lookup answer").expect("lookup");
+        hub.tx.send(Cmd::Shutdown).await.expect("shutdown"); task.await.expect("hub stops");
+        assert!(matches!(progress,Ok(Ok(Ok(Reply::Limits { .. })))),"matchmaking hub must progress while a reader waits");
+    }
 
     #[tokio::test]
     async fn two_accounts_at_their_own_rate_cannot_throttle_another_account() {

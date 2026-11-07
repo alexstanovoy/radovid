@@ -125,6 +125,8 @@ pub enum Error {
     BadQueueAudiences,
     /// A nickname prefix contains characters outside [A-Za-z0-9_] or exceeds 20 bytes.
     BadLeaderboardSearch,
+    /// The lookup exceeds a work bound; retrying the same request will not help.
+    LookupTooExpensive,
 }
 
 impl core::fmt::Display for Error {

@@ -532,3 +532,6 @@ field LeaderboardPage 6 own: Option<LadderRow>
 field RatingSummary 5 rank: Option<u32>
 field Limits 12 leaderboard_size: u16
 variant Error 57 BadLeaderboardSearch
+
+# Protocol 19: permanent lookup work limits are not retryable throttling.
+variant Error 58 LookupTooExpensive
