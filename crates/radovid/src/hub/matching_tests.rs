@@ -197,6 +197,28 @@ async fn combined_a_large_humans_queue_yields_to_everyone_on_budget_refill() {
 }
 
 #[tokio::test]
+async fn reaching_the_window_cap_notifies_both_linked_places_without_a_position_change() {
+    let mut fixture = Fixture::new();
+    let (_, session) = fixture.account("alpha").await;
+    let entries = fixture.join_audiences(session, "ranked", &[Audience::HumansOnly, Audience::Everyone]).await;
+    assert!(entries.iter().all(|entry| !entry.window_capped));
+    for status in &entries {
+        let entry = fixture.hub.entries.get_mut(&status.entry).expect("entry");
+        entry.since -= Duration::from_secs(240);
+        entry.age_status(Duration::from_secs(10));
+    }
+    fixture.hub.send_queue_statuses();
+    let mut capped = Vec::new();
+    while let Ok(message) = fixture.events[0].try_recv() {
+        if let ServerMsg::Event(Event::QueueStatus { entry }) = message && entry.window_capped {
+            capped.push(entry.entry);
+        }
+    }
+    capped.sort();
+    assert_eq!(capped, entries.iter().map(|entry| entry.entry).collect::<Vec<_>>(), "the capped transition is news even when positions are unchanged");
+}
+
+#[tokio::test]
 async fn guard_only_nonfinite_rating_refresh_cancels_both_linked_places() {
     for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let mut fixture = Fixture::new();

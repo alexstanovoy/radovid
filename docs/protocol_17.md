@@ -29,6 +29,12 @@ than their configured maximum windows, waiting longer cannot make them compatibl
 Unranked is the configured fallback with a looser window; the service never silently
 widens ranked beyond its cap or switches a ranked search into unranked play.
 
+`QueueEntry.window_capped` reports that this search's own window has reached its
+maximum, including constant windows. A transition is sent through `QueueStatus` even
+when position and queue length are unchanged. This is not an opponent-distance estimate
+or a guarantee that a match will be found. A client can suggest the configured unranked
+sibling for a capped ranked search; changing modes remains the player's choice.
+
 Only a rated result updates the ladder. An unrated handoff/result has `rated = false`, and
 its result seats have no `before`/`after` rating changes. Its handoff can show existing ratings
 from the sibling's ladder. An unrated ruleset does not acquire a separate ladder.
@@ -40,7 +46,8 @@ a maximum-cardinality optimization or protection against collusion.
 
 The service refills a shared budget of 65,536 candidate inspections on every clock tick
 across pairing requests and retries. It rebuilds the rating index after selecting each group, counting
-each rebuild against that budget. Queue capacity cannot exceed 65,536. Queues rotate when
+each rebuild against that budget. Queue capacity cannot exceed 65,536. Each
+(ruleset, audience) queue rotates when
 work is deferred; the next tick resumes it. At the hard queue limit, this intentionally permits
 only one full-queue selection per tick. The default capacity is 256. Each selection uses
 linear storage and bounded-neighbor rating searches; there are at most ten seats per group.

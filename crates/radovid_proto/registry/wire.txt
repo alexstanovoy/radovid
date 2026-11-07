@@ -513,3 +513,4 @@ field RatingWindow 1 widen_per_minute: u32
 field RatingWindow 2 maximum: u32
 field RulesetInfo 12 rating_ruleset: Option<RulesetId>
 field RulesetInfo 13 rating_window: Option<RatingWindow>
+field QueueEntry 9 window_capped: bool

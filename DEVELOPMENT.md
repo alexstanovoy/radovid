@@ -90,7 +90,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `ruleset.teams` | | team sizes, two or more sides of any size, at most 10 seats |
 | `ruleset.rated` | | queued games update this ruleset's ladder; lobbies remain unrated |
 | `ruleset.rating_ruleset` | none | an unrated queue's rated sibling; same game, fingerprint and teams, at most one unrated sibling per ladder |
-| `ruleset.rating_window` | mode's policy from `limits` | partial overrides of `initial`, `widen_per_minute`, `maximum`; values 0 to 10000, initial ≤ maximum |
+| `ruleset.rating_window` | mode's policy from `limits` | partial overrides of `initial`, `widen_per_minute`, `maximum`; maximum 1 to 10000, other values 0 to 10000, initial ≤ maximum; zero widening requires initial = maximum |
 | `ruleset.info` | `""` | hex bytes shown to clients, the game's own meaning |
 | `ruleset.max_duration_secs` | `7200` | a longer match is killed (a null) |
 | `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit |
@@ -145,7 +145,7 @@ most 64 KiB from a client, 4 MiB from the service.
   `ProposalFailed` (back in the queue) or `MatchQueued` and `MatchFound { handoff }`, and finally `MatchResult`.
   `LoggedIn.activities`, `MyMatches` and `MatchHandoff` return what an account has in flight, for a reconnect or a
   second device.
-- Each rated ruleset has humans and everyone queues. `QueueJoinAudiences` can link both places into one
+- Each matchmaking ruleset has humans and everyone queues. `QueueJoinAudiences` can link both places into one
   search; bots may use everyone only. The queue capacity counts raw entries; game limits count linked
   searches once. See [protocol 16](docs/protocol_16.md) for reservation, cancellation and upgrade details.
 - `registry/wire.txt` lists every enum variant and field position and only grows. Every wire change bumps

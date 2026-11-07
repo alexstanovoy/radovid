@@ -53,6 +53,7 @@ struct Standing {
     waiting: u32,
     overloaded: bool,
     games_waiting: u32,
+    window_capped: bool,
 }
 
 impl Hub {
@@ -160,6 +161,7 @@ impl Hub {
                 waiting: 0,
                 overloaded: false,
                 games_waiting: 0,
+                window_capped: false,
             },
             now,
         );
@@ -288,6 +290,7 @@ impl Hub {
         self.status_at(entry, Standing {
             position, waiting: queue.len() as u32,
             overloaded: self.pairing_paused(), games_waiting: self.waiting.len() as u32,
+            window_capped: self.window_capped(e),
         })
     }
 
@@ -303,7 +306,14 @@ impl Hub {
             games_waiting: standing.games_waiting,
             audience: e.audience,
             search: e.search,
+            window_capped: standing.window_capped,
         })
+    }
+
+    fn window_capped(&self, entry: &Entry) -> bool {
+        self.config.ruleset(&entry.ruleset)
+            .and_then(|rules| rules.matchmaking_window(&self.config.limits))
+            .is_some_and(|window| window.after_ms(entry.since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32) == window.maximum)
     }
 
     /// Pairing waits while as many queued matches are being formed or wait
@@ -385,7 +395,7 @@ impl Hub {
                 self.position_scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(entry) = self.entries.get(id) else { continue; };
                 if entry.proposal.is_some() || now.duration_since(entry.told.1) < interval { continue; }
-                let standing = Standing { position: index as u32 + 1, waiting: queue.len() as u32, overloaded, games_waiting };
+                let standing = Standing { position: index as u32 + 1, waiting: queue.len() as u32, overloaded, games_waiting, window_capped: self.window_capped(entry) };
                 if standing == entry.told.0 { continue; }
                 if let Some(status) = self.status_at(*id, standing) {
                     due.push((entry.account, status));
@@ -407,6 +417,7 @@ fn standing(status: &QueueEntry) -> Standing {
         waiting: status.waiting,
         overloaded: status.overloaded,
         games_waiting: status.games_waiting,
+        window_capped: status.window_capped,
     }
 }
 

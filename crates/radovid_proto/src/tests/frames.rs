@@ -104,6 +104,7 @@ fn linked_entries() -> Vec<QueueEntry> {
             games_waiting: 0,
             audience,
             search: QueueEntryId(1),
+            window_capped: false,
         })
         .collect()
 }

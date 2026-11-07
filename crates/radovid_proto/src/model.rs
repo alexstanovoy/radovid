@@ -208,6 +208,9 @@ pub struct QueueEntry {
     pub audience: Audience,
     /// The first entry of this linked search. Leaving either entry cancels that search.
     pub search: QueueEntryId,
+    /// This search's rating window has reached its configured maximum.
+    /// It does not imply a compatible opponent exists or bound the remaining wait.
+    pub window_capped: bool,
 }
 
 /// A pairing waiting for its players' answers. The opponents are not named.
