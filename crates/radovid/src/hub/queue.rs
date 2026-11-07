@@ -43,7 +43,9 @@ pub(super) struct Entry {
 
 #[cfg(test)]
 impl Entry {
-    pub(super) fn age_status(&mut self, duration: Duration) { self.told.1 -= duration; }
+    pub(super) fn age_status(&mut self, duration: Duration) {
+        self.told.1 -= duration;
+    }
 }
 
 /// The parts of a `QueueEntry` whose change is news.
@@ -62,7 +64,9 @@ impl Hub {
         session: SessionId,
         ruleset: RulesetId,
     ) -> Result<Reply, Error> {
-        let mut entries = self.join_queues(session, ruleset, &[Audience::Everyone]).await?;
+        let mut entries = self
+            .join_queues(session, ruleset, &[Audience::Everyone])
+            .await?;
         Ok(Reply::Queued {
             entry: entries.remove(0),
         })
@@ -102,11 +106,22 @@ impl Hub {
             .map(|s| (s.account, s.source))
             .ok_or(Error::NotLoggedIn)?;
         let rating_ruleset = rules.rating_ruleset_id();
-        let rating = self.db.rating(account, rating_ruleset.clone()).await.map_err(internal)?
+        let rating = self
+            .db
+            .rating(account, rating_ruleset.clone())
+            .await
+            .map_err(internal)?
             .map_or(INITIAL_RATING, |row| row.glicko.rating);
-        if !rating.is_finite() { return Err(internal("non-finite stored matchmaking rating")); }
+        if !rating.is_finite() {
+            return Err(internal("non-finite stored matchmaking rating"));
+        }
         let pending = PendingSearch {
-            account, source, ruleset, since: Instant::now(), rating, rating_ruleset,
+            account,
+            source,
+            ruleset,
+            since: Instant::now(),
+            rating,
+            rating_ruleset,
             search: QueueEntryId(self.next_entry),
         };
         let mut entries = Vec::with_capacity(audiences.len());
@@ -147,11 +162,7 @@ impl Hub {
         Ok(())
     }
 
-    fn insert_queue_entry(
-        &mut self,
-        pending: &PendingSearch,
-        audience: Audience,
-    ) -> QueueEntryId {
+    fn insert_queue_entry(&mut self, pending: &PendingSearch, audience: Audience) -> QueueEntryId {
         let id = QueueEntryId(self.next_entry);
         self.next_entry = self.next_entry.wrapping_add(1).max(1);
         let now = pending.since;
@@ -180,7 +191,10 @@ impl Hub {
                 told: never,
             },
         );
-        self.queues.entry((pending.ruleset.clone(), audience)).or_default().push(id);
+        self.queues
+            .entry((pending.ruleset.clone(), audience))
+            .or_default()
+            .push(id);
         if let Some(a) = self.accounts.get_mut(&pending.account) {
             a.entries.push(id);
             a.searches.insert(pending.search);
@@ -284,14 +298,21 @@ impl Hub {
         let queue = self.queues.get(&(e.ruleset.clone(), e.audience))?;
         let position = queue.iter().position(|id| {
             #[cfg(test)]
-            self.position_scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.position_scans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             *id == entry
-        })? as u32 + 1;
-        self.status_at(entry, Standing {
-            position, waiting: queue.len() as u32,
-            overloaded: self.pairing_paused(), games_waiting: self.waiting.len() as u32,
-            window_capped: self.window_capped(e),
-        })
+        })? as u32
+            + 1;
+        self.status_at(
+            entry,
+            Standing {
+                position,
+                waiting: queue.len() as u32,
+                overloaded: self.pairing_paused(),
+                games_waiting: self.waiting.len() as u32,
+                window_capped: self.window_capped(e),
+            },
+        )
     }
 
     fn status_at(&self, entry: QueueEntryId, standing: Standing) -> Option<QueueEntry> {
@@ -311,9 +332,13 @@ impl Hub {
     }
 
     fn window_capped(&self, entry: &Entry) -> bool {
-        self.config.ruleset(&entry.ruleset)
+        self.config
+            .ruleset(&entry.ruleset)
             .and_then(|rules| rules.matchmaking_window(&self.config.limits))
-            .is_some_and(|window| window.after_ms(entry.since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32) == window.maximum)
+            .is_some_and(|window| {
+                window.after_ms(entry.since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32)
+                    == window.maximum
+            })
     }
 
     /// Pairing waits while as many queued matches are being formed or wait
@@ -329,7 +354,9 @@ impl Hub {
 
     /// Forms every proposal the queues allow.
     pub(super) fn pair_all(&mut self) {
-        if self.pairing { return; }
+        if self.pairing {
+            return;
+        }
         self.pairing = true;
         self.pair_queues();
         self.pairing = false;
@@ -343,13 +370,21 @@ impl Hub {
             let index = (start + offset) % slots;
             let ruleset = &config.rulesets[index / QUEUE_AUDIENCES.len()];
             let audience = QUEUE_AUDIENCES[index % QUEUE_AUDIENCES.len()];
-            if !ruleset.has_queue() { continue; }
-            if self.pairing_paused() { return; }
+            if !ruleset.has_queue() {
+                continue;
+            }
+            if self.pairing_paused() {
+                return;
+            }
             let available = self.pair_work;
             let complete = self.pair_queue(ruleset, audience);
-            if self.pair_work < available { self.pair_next = (index + 1) % slots; }
+            if self.pair_work < available {
+                self.pair_next = (index + 1) % slots;
+            }
             if !complete {
-                if self.pair_work == available { self.pair_next = index; }
+                if self.pair_work == available {
+                    self.pair_next = index;
+                }
                 return;
             }
         }
@@ -357,25 +392,47 @@ impl Hub {
 
     /// Returns false when another full scan must wait for the next clock budget.
     fn pair_queue(&mut self, ruleset: &RulesetConfig, audience: Audience) -> bool {
-        let Some(window) = ruleset.matchmaking_window(&self.config.limits) else { return true; };
+        let Some(window) = ruleset.matchmaking_window(&self.config.limits) else {
+            return true;
+        };
         let key = (ruleset.ruleset_id(), audience);
         while !self.pairing_paused() {
-            let Some(queue) = self.queues.get(&key) else { break; };
-            if queue.len() < ruleset.seats() { break; }
-            if queue.len() > self.pair_work { return false; }
-            let candidates: Vec<_> = queue.iter().enumerate().filter_map(|(order, id)| {
-                let entry = self.entries.get(id)?;
-                entry.proposal.is_none().then(|| Candidate {
-                    entry: *id, account: entry.account, source: entry.source, rating: entry.rating, order,
-                    window: window.after_ms(entry.since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32),
+            let Some(queue) = self.queues.get(&key) else {
+                break;
+            };
+            if queue.len() < ruleset.seats() {
+                break;
+            }
+            if queue.len() > self.pair_work {
+                return false;
+            }
+            let candidates: Vec<_> = queue
+                .iter()
+                .enumerate()
+                .filter_map(|(order, id)| {
+                    let entry = self.entries.get(id)?;
+                    entry.proposal.is_none().then(|| Candidate {
+                        entry: *id,
+                        account: entry.account,
+                        source: entry.source,
+                        rating: entry.rating,
+                        order,
+                        window: window.after_ms(
+                            entry.since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
+                        ),
+                    })
                 })
-            }).collect();
+                .collect();
             self.pair_work -= queue.len() - candidates.len();
             if candidates.len() < ruleset.seats() {
                 self.pair_work -= candidates.len();
                 break;
             }
-            let Some(picked) = matching::groups(candidates, ruleset.seats(), 1, &mut self.pair_work).pop() else { break; };
+            let Some(picked) =
+                matching::groups(candidates, ruleset.seats(), 1, &mut self.pair_work).pop()
+            else {
+                break;
+            };
             self.propose(key.0.clone(), picked);
         }
         true
@@ -392,11 +449,24 @@ impl Hub {
         for queue in self.queues.values() {
             for (index, id) in queue.iter().enumerate() {
                 #[cfg(test)]
-                self.position_scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some(entry) = self.entries.get(id) else { continue; };
-                if entry.proposal.is_some() || now.duration_since(entry.told.1) < interval { continue; }
-                let standing = Standing { position: index as u32 + 1, waiting: queue.len() as u32, overloaded, games_waiting, window_capped: self.window_capped(entry) };
-                if standing == entry.told.0 { continue; }
+                self.position_scans
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(entry) = self.entries.get(id) else {
+                    continue;
+                };
+                if entry.proposal.is_some() || now.duration_since(entry.told.1) < interval {
+                    continue;
+                }
+                let standing = Standing {
+                    position: index as u32 + 1,
+                    waiting: queue.len() as u32,
+                    overloaded,
+                    games_waiting,
+                    window_capped: self.window_capped(entry),
+                };
+                if standing == entry.told.0 {
+                    continue;
+                }
                 if let Some(status) = self.status_at(*id, standing) {
                     due.push((entry.account, status));
                 }

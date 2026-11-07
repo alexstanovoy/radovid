@@ -1240,7 +1240,9 @@ fn validate_rating_window(name: &str, window: RatingWindow) -> Result<(), String
         return Err(format!("{name}.initial must not exceed maximum"));
     }
     if window.widen_per_minute == 0 && window.initial < window.maximum {
-        return Err(format!("{name}.maximum is unreachable when widen_per_minute is zero"));
+        return Err(format!(
+            "{name}.maximum is unreachable when widen_per_minute is zero"
+        ));
     }
     Ok(())
 }
@@ -1333,7 +1335,14 @@ maximum = 3000
     #[test]
     fn review_zero_maximum_rating_window_is_rejected() {
         assert_eq!(
-            validate_rating_window("policy", RatingWindow { initial: 0, widen_per_minute: 0, maximum: 0 }),
+            validate_rating_window(
+                "policy",
+                RatingWindow {
+                    initial: 0,
+                    widen_per_minute: 0,
+                    maximum: 0
+                }
+            ),
             Err("policy.maximum must be 1 to 10000".into())
         );
     }
@@ -1341,10 +1350,27 @@ maximum = 3000
     #[test]
     fn review_nonwidening_window_must_already_be_at_its_maximum() {
         assert_eq!(
-            validate_rating_window("policy", RatingWindow { initial: 100, widen_per_minute: 0, maximum: 1000 }),
+            validate_rating_window(
+                "policy",
+                RatingWindow {
+                    initial: 100,
+                    widen_per_minute: 0,
+                    maximum: 1000
+                }
+            ),
             Err("policy.maximum is unreachable when widen_per_minute is zero".into())
         );
-        assert!(validate_rating_window("policy", RatingWindow { initial: 100, widen_per_minute: 0, maximum: 100 }).is_ok());
+        assert!(
+            validate_rating_window(
+                "policy",
+                RatingWindow {
+                    initial: 100,
+                    widen_per_minute: 0,
+                    maximum: 100
+                }
+            )
+            .is_ok()
+        );
     }
 
     #[test]

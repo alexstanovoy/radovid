@@ -365,24 +365,38 @@ impl Hub {
         self.pair_all();
     }
 
-    pub(super) fn refresh_queued_rating(&mut self, id: AccountId, ruleset: &RulesetId, rating: f64) {
+    pub(super) fn refresh_queued_rating(
+        &mut self,
+        id: AccountId,
+        ruleset: &RulesetId,
+        rating: f64,
+    ) {
         if !rating.is_finite() {
             internal("non-finite committed matchmaking rating; cancelling affected searches");
-            let searches: std::collections::BTreeSet<_> = self.accounts.get(&id).into_iter()
+            let searches: std::collections::BTreeSet<_> = self
+                .accounts
+                .get(&id)
+                .into_iter()
                 .flat_map(|account| account.entries.iter())
                 .filter_map(|entry| self.entries.get(entry))
                 .filter(|entry| entry.rating_ruleset == *ruleset)
-                .map(|entry| entry.search).collect();
+                .map(|entry| entry.search)
+                .collect();
             let pairing = self.pairing;
             self.pairing = true;
-            for search in searches { self.leave_queue(search, QueueLeftReason::Cancelled, false); }
+            for search in searches {
+                self.leave_queue(search, QueueLeftReason::Cancelled, false);
+            }
             self.pairing = pairing;
             return;
         }
-        let Some(account) = self.accounts.get(&id) else { return; };
+        let Some(account) = self.accounts.get(&id) else {
+            return;
+        };
         for entry in &account.entries {
             if let Some(entry) = self.entries.get_mut(entry)
-                && entry.rating_ruleset == *ruleset {
+                && entry.rating_ruleset == *ruleset
+            {
                 entry.rating = rating;
             }
         }

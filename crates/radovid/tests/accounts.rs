@@ -338,7 +338,12 @@ fn version_15_is_refused_before_the_linked_queue_catalog_is_served() {
 fn version_16_is_refused_before_the_rating_window_catalog_is_served() {
     let env = start(rules());
     let error = refused(Client::connect_as(&env.url, &env.tls, 16, FINGERPRINT));
-    assert_eq!(error, Error::ProtoMismatch { server: PROTO_VERSION });
+    assert_eq!(
+        error,
+        Error::ProtoMismatch {
+            server: PROTO_VERSION
+        }
+    );
 }
 
 #[test]

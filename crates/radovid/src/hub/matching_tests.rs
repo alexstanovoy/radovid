@@ -91,7 +91,12 @@ impl Fixture {
     async fn join(&mut self, session: SessionId, ruleset: &str) -> QueueEntryId {
         let Reply::Queued { entry } = self
             .hub
-            .request(session, ClientMsg::QueueJoin { ruleset: RulesetId(ruleset.into()) })
+            .request(
+                session,
+                ClientMsg::QueueJoin {
+                    ruleset: RulesetId(ruleset.into()),
+                },
+            )
             .await
             .expect("queue")
         else {
@@ -100,10 +105,26 @@ impl Fixture {
         entry.entry
     }
 
-    async fn join_audiences(&mut self, session: SessionId, ruleset: &str, audiences: &[Audience]) -> Vec<QueueEntry> {
-        let Reply::QueuesJoined { entries } = self.hub.request(session, ClientMsg::QueueJoinAudiences {
-            ruleset: RulesetId(ruleset.into()), audiences: audiences.to_vec(),
-        }).await.expect("queue") else { panic!("linked queue reply"); };
+    async fn join_audiences(
+        &mut self,
+        session: SessionId,
+        ruleset: &str,
+        audiences: &[Audience],
+    ) -> Vec<QueueEntry> {
+        let Reply::QueuesJoined { entries } = self
+            .hub
+            .request(
+                session,
+                ClientMsg::QueueJoinAudiences {
+                    ruleset: RulesetId(ruleset.into()),
+                    audiences: audiences.to_vec(),
+                },
+            )
+            .await
+            .expect("queue")
+        else {
+            panic!("linked queue reply");
+        };
         entries
     }
 
@@ -144,27 +165,57 @@ async fn combined_linked_unranked_entries_share_the_persisted_rating_and_start()
     let (beta, _) = fixture.account("beta").await;
     let game = fixture.game(&[alpha, beta]).await;
     fixture.win(game).await;
-    let entries = fixture.join_audiences(session, "casual", &[Audience::HumansOnly, Audience::Everyone]).await;
+    let entries = fixture
+        .join_audiences(
+            session,
+            "casual",
+            &[Audience::HumansOnly, Audience::Everyone],
+        )
+        .await;
     assert_eq!(entries.len(), 2);
-    let rating = fixture.hub.db.rating(alpha, RulesetId("ranked".into())).await.expect("rating").expect("stored").glicko.rating;
+    let rating = fixture
+        .hub
+        .db
+        .rating(alpha, RulesetId("ranked".into()))
+        .await
+        .expect("rating")
+        .expect("stored")
+        .glicko
+        .rating;
     assert!(rating > 1500.0);
     for entry in &entries {
         let cached = &fixture.hub.entries[&entry.entry];
         assert_eq!(cached.rating, rating);
         assert_eq!(cached.rating_ruleset, RulesetId("ranked".into()));
     }
-    assert_eq!(fixture.hub.entries[&entries[0].entry].since, fixture.hub.entries[&entries[1].entry].since);
+    assert_eq!(
+        fixture.hub.entries[&entries[0].entry].since,
+        fixture.hub.entries[&entries[1].entry].since
+    );
 }
 
 #[tokio::test]
 async fn combined_rating_lookup_failure_inserts_neither_linked_place() {
     let mut fixture = Fixture::new();
     let (alpha, session) = fixture.account("alpha").await;
-    rusqlite::Connection::open(&fixture.hub.config.database).expect("open").execute("DROP TABLE ratings", []).expect("simulate database failure");
+    rusqlite::Connection::open(&fixture.hub.config.database)
+        .expect("open")
+        .execute("DROP TABLE ratings", [])
+        .expect("simulate database failure");
     let next = fixture.hub.next_entry;
-    assert_eq!(fixture.hub.request(session, ClientMsg::QueueJoinAudiences {
-        ruleset: RulesetId("ranked".into()), audiences: vec![Audience::HumansOnly, Audience::Everyone],
-    }).await, Err(Error::Internal));
+    assert_eq!(
+        fixture
+            .hub
+            .request(
+                session,
+                ClientMsg::QueueJoinAudiences {
+                    ruleset: RulesetId("ranked".into()),
+                    audiences: vec![Audience::HumansOnly, Audience::Everyone],
+                }
+            )
+            .await,
+        Err(Error::Internal)
+    );
     assert!(fixture.hub.entries.is_empty());
     assert!(fixture.hub.accounts[&alpha].entries.is_empty());
     assert_eq!(fixture.hub.next_entry, next);
@@ -174,7 +225,9 @@ async fn combined_rating_lookup_failure_inserts_neither_linked_place() {
 async fn combined_a_large_humans_queue_yields_to_everyone_on_budget_refill() {
     let mut fixture = Fixture::new();
     Arc::make_mut(&mut fixture.hub.config).limits.game_capacity = 1;
-    Arc::make_mut(&mut fixture.hub.config).limits.lobby_games_max = 1;
+    Arc::make_mut(&mut fixture.hub.config)
+        .limits
+        .lobby_games_max = 1;
     let (_, first) = fixture.account("blocker_a").await;
     let (_, second) = fixture.account("blocker_b").await;
     fixture.join(first, "ranked").await;
@@ -182,25 +235,57 @@ async fn combined_a_large_humans_queue_yields_to_everyone_on_budget_refill() {
     assert_eq!(fixture.hub.proposals.len(), 1);
     for index in 0..8 {
         let (_, session) = fixture.account(&format!("player_{index}")).await;
-        let audience = if index < 6 { Audience::HumansOnly } else { Audience::Everyone };
+        let audience = if index < 6 {
+            Audience::HumansOnly
+        } else {
+            Audience::Everyone
+        };
         fixture.join_audiences(session, "ranked", &[audience]).await;
     }
     let blocker = *fixture.hub.proposals.keys().next().expect("blocker");
-    for entry in fixture.hub.proposals.remove(&blocker).expect("proposal").entries { fixture.hub.remove_entry(entry); }
+    for entry in fixture
+        .hub
+        .proposals
+        .remove(&blocker)
+        .expect("proposal")
+        .entries
+    {
+        fixture.hub.remove_entry(entry);
+    }
     Arc::make_mut(&mut fixture.hub.config).limits.game_capacity = 8;
     fixture.hub.pair_work = 6;
     fixture.hub.pair_all();
-    assert_eq!(fixture.hub.proposals.len(), 1, "one full humans scan spends the budget");
+    assert_eq!(
+        fixture.hub.proposals.len(),
+        1,
+        "one full humans scan spends the budget"
+    );
     fixture.hub.pair_work = 6;
     fixture.hub.pair_all();
-    assert!(fixture.hub.proposals.values().any(|proposal| proposal.entries.iter().any(|id| fixture.hub.entries[id].audience == Audience::Everyone)), "everyone must get the next refill even for the same ruleset");
+    assert!(
+        fixture
+            .hub
+            .proposals
+            .values()
+            .any(|proposal| proposal
+                .entries
+                .iter()
+                .any(|id| fixture.hub.entries[id].audience == Audience::Everyone)),
+        "everyone must get the next refill even for the same ruleset"
+    );
 }
 
 #[tokio::test]
 async fn reaching_the_window_cap_notifies_both_linked_places_without_a_position_change() {
     let mut fixture = Fixture::new();
     let (_, session) = fixture.account("alpha").await;
-    let entries = fixture.join_audiences(session, "ranked", &[Audience::HumansOnly, Audience::Everyone]).await;
+    let entries = fixture
+        .join_audiences(
+            session,
+            "ranked",
+            &[Audience::HumansOnly, Audience::Everyone],
+        )
+        .await;
     assert!(entries.iter().all(|entry| !entry.window_capped));
     for status in &entries {
         let entry = fixture.hub.entries.get_mut(&status.entry).expect("entry");
@@ -210,12 +295,18 @@ async fn reaching_the_window_cap_notifies_both_linked_places_without_a_position_
     fixture.hub.send_queue_statuses();
     let mut capped = Vec::new();
     while let Ok(message) = fixture.events[0].try_recv() {
-        if let ServerMsg::Event(Event::QueueStatus { entry }) = message && entry.window_capped {
+        if let ServerMsg::Event(Event::QueueStatus { entry }) = message
+            && entry.window_capped
+        {
             capped.push(entry.entry);
         }
     }
     capped.sort();
-    assert_eq!(capped, entries.iter().map(|entry| entry.entry).collect::<Vec<_>>(), "the capped transition is news even when positions are unchanged");
+    assert_eq!(
+        capped,
+        entries.iter().map(|entry| entry.entry).collect::<Vec<_>>(),
+        "the capped transition is news even when positions are unchanged"
+    );
 }
 
 #[tokio::test]
@@ -223,9 +314,20 @@ async fn guard_only_nonfinite_rating_refresh_cancels_both_linked_places() {
     for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let mut fixture = Fixture::new();
         let (alpha, session) = fixture.account("alpha").await;
-        fixture.join_audiences(session, "ranked", &[Audience::HumansOnly, Audience::Everyone]).await;
-        fixture.hub.refresh_queued_rating(alpha, &RulesetId("ranked".into()), invalid);
-        assert!(fixture.hub.entries.is_empty(), "invalid committed rating {invalid:?} must not enter the selector");
+        fixture
+            .join_audiences(
+                session,
+                "ranked",
+                &[Audience::HumansOnly, Audience::Everyone],
+            )
+            .await;
+        fixture
+            .hub
+            .refresh_queued_rating(alpha, &RulesetId("ranked".into()), invalid);
+        assert!(
+            fixture.hub.entries.is_empty(),
+            "invalid committed rating {invalid:?} must not enter the selector"
+        );
         assert!(fixture.hub.accounts[&alpha].entries.is_empty());
         assert_eq!(fixture.hub.cooldown_ms(alpha), 0);
     }
@@ -241,7 +343,11 @@ async fn review_every_clock_tick_refills_the_pairing_budget() {
     fixture.join(second, "ranked").await;
     assert!(fixture.hub.proposals.is_empty());
     fixture.hub.tick();
-    assert_eq!(fixture.hub.proposals.len(), 1, "a clock tick refills without a second elapsed-time gate");
+    assert_eq!(
+        fixture.hub.proposals.len(),
+        1,
+        "a clock tick refills without a second elapsed-time gate"
+    );
 }
 
 #[tokio::test]
