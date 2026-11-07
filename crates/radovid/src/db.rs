@@ -1,5 +1,6 @@
 //! One WAL database, one account/match writer and a bounded read-only pool.
 
+mod results;
 mod leaderboard;
 mod reader;
 #[cfg(test)]
@@ -8,6 +9,8 @@ mod visibility;
 mod wal;
 #[cfg(test)]
 mod wal_tests;
+#[cfg(test)]
+mod results_tests;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -111,7 +114,7 @@ pub enum DbError {
     Sqlite(rusqlite::Error),
     Join,
     ReadBusy,
-    CheckpointBusy,
+    WalLimit,
     Io(std::io::Error),
 }
 
@@ -128,8 +131,8 @@ impl std::fmt::Display for DbError {
             DbError::Sqlite(error) => write!(f, "database: {error}"),
             DbError::Join => write!(f, "database task failed"),
             DbError::ReadBusy => write!(f, "database read queue is full"),
-            DbError::CheckpointBusy => {
-                write!(f, "database WAL checkpoint is blocked; write not executed")
+            DbError::WalLimit => {
+                write!(f, "database WAL hard limit reached; write not executed")
             }
             DbError::Io(error) => write!(f, "database file: {error}"),
         }
@@ -201,7 +204,7 @@ impl RatingRow {
 }
 
 /// One seat of a match being created.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct NewSeat {
     pub account: AccountId,
     pub slot: u8,
@@ -217,6 +220,7 @@ pub struct RatingChange {
 }
 
 /// What a finished match leaves behind.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Finish {
     pub match_id: MatchId,
     pub ruleset: RulesetId,
@@ -225,8 +229,10 @@ pub struct Finish {
     pub outcome: Outcome,
     pub reason: EndReason,
     pub duration_ms: u32,
+    #[serde(deserialize_with="results::report")]
     pub report: Vec<u8>,
     /// Slot by slot.
+    #[serde(deserialize_with="results::seats")]
     pub seats: Vec<NewSeat>,
     pub finished_at: UnixMs,
 }
@@ -237,7 +243,11 @@ pub struct Db {
     readers: Option<Arc<reader::ReadPool>>,
     writer_turn: Arc<tokio::sync::Semaphore>,
     wal: Option<Arc<wal::Wal>>,
+    results:Option<Arc<results::Results>>,
 }
+
+/// Validates a bounded durable-result record without opening files.
+pub fn decode_pending_result(bytes:&[u8])->DbResult<(u64,Finish)> {results::decode_record(bytes)}
 
 pub fn now_ms() -> UnixMs {
     let since = std::time::SystemTime::now()
@@ -247,6 +257,35 @@ pub fn now_ms() -> UnixMs {
 }
 
 impl Db {
+    pub(crate) async fn recover_results(&self)->DbResult<usize> {
+        let Some(journal)=self.results.clone() else {return Ok(0);};
+        let mut recovered=0;
+        for _ in 0..=results::MAX_PENDING {
+            let reader=Arc::clone(&journal);
+            let next=tokio::task::spawn_blocking(move||reader.first()).await.map_err(|_|DbError::Join)??;
+            let Some(finish)=next else {return Ok(recovered);};
+            if recovered>=results::MAX_PENDING {return Err(DbError::Io(std::io::Error::other("too many pending results")));}
+            let id=finish.match_id;
+            self.commit_finish(finish).await?;
+            self.ack_finish(id).await?;
+            recovered+=1;
+        }
+        Ok(recovered)
+    }
+
+    pub(crate) async fn queue_finish(&self,finish:Finish)->DbResult<()> {
+        let Some(journal)=self.results.clone() else {return Ok(());};
+        tokio::task::spawn_blocking(move||journal.save(&finish)).await.map_err(|_|DbError::Join)?
+    }
+
+    async fn ack_finish(&self,id:MatchId)->DbResult<()> {
+        let Some(journal)=self.results.clone() else {return Ok(());};
+        tokio::task::spawn_blocking(move||journal.remove(id)).await.map_err(|_|DbError::Join)?
+    }
+
+    pub(crate) async fn completed_result(&self,id:MatchId)->DbResult<MatchResult> {
+        self.inspect(move|connection|load_result(connection,id.0 as i64)).await
+    }
     #[cfg(test)]
     fn lookup_pending_for_test(&self) -> usize {
         self.readers
@@ -280,6 +319,7 @@ impl Db {
             &resolved,
             Arc::clone(&wal.snapshots),
         )?));
+        db.results=Some(Arc::new(results::Results::open(&resolved)?));
         db.wal = Some(wal);
         Ok(db)
     }
@@ -287,6 +327,8 @@ impl Db {
     fn init(mut conn: Connection) -> DbResult<Db> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // Checkpoints use the dedicated short-timeout connection, never a foreground commit.
+        conn.pragma_update(None,"wal_autocheckpoint",0)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -328,6 +370,7 @@ impl Db {
             readers: None,
             writer_turn: Arc::new(tokio::sync::Semaphore::new(1)),
             wal: None,
+            results:None,
         })
     }
 
@@ -336,19 +379,24 @@ impl Db {
         &self,
         work: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> DbResult<T> {
+        self.run_inner(work,true).await
+    }
+
+    async fn inspect<T:Send+'static>(&self,work:impl FnOnce(&mut Connection)->rusqlite::Result<T>+Send+'static)->DbResult<T> {self.run_inner(work,false).await}
+
+    async fn run_inner<T:Send+'static>(&self,work:impl FnOnce(&mut Connection)->rusqlite::Result<T>+Send+'static,mutation:bool)->DbResult<T> {
         let conn = Arc::clone(&self.conn);
-        let turn = Arc::clone(&self.writer_turn)
+        let _turn = Arc::clone(&self.writer_turn)
             .acquire_owned()
             .await
             .map_err(|_| DbError::Join)?;
         let wal = self.wal.clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            if let Some(policy) = &wal
-                && policy.blocked()
-            {
-                policy.schedule(conn, turn, runtime);
-                return Err(DbError::CheckpointBusy);
+            let _turn=_turn;
+            if mutation && let Some(policy) = &wal && policy.exceeds_hard_limit() {
+                policy.schedule(runtime);
+                return Err(DbError::WalLimit);
             }
             let (result, checkpoint) = {
                 let mut connection = conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -358,7 +406,7 @@ impl Db {
                 (result, checkpoint)
             };
             if checkpoint && let Some(policy) = wal {
-                policy.schedule(conn, turn, runtime);
+                policy.schedule(runtime);
             }
             result.map_err(DbError::from)
         })
@@ -372,12 +420,12 @@ impl Db {
     ) -> DbResult<T> {
         match &self.readers {
             Some(readers) => readers.run(work).await,
-            None => self.run(work).await,
+            None => self.inspect(work).await,
         }
     }
 
     pub async fn account_by_login(&self, login: String) -> DbResult<Option<AccountRow>> {
-        self.run(move |c| {
+        self.inspect(move |c| {
             c.query_row(
                 &format!("{ACCOUNT_SELECT} WHERE login = ?1"),
                 [&login],
@@ -389,7 +437,7 @@ impl Db {
     }
 
     pub async fn account_by_id(&self, id: AccountId) -> DbResult<Option<AccountRow>> {
-        self.run(move |c| {
+        self.inspect(move |c| {
             c.query_row(
                 &format!("{ACCOUNT_SELECT} WHERE id = ?1"),
                 [id.0 as i64],
@@ -582,7 +630,7 @@ impl Db {
         account: AccountId,
         ruleset: RulesetId,
     ) -> DbResult<Option<RatingRow>> {
-        self.run(move |c| {
+        self.inspect(move |c| {
             c.query_row(
                 &format!(
                     "SELECT {RATING_COLUMNS} FROM ratings WHERE account = ?1 AND ruleset = ?2"
@@ -596,7 +644,7 @@ impl Db {
     }
 
     pub async fn ratings_of(&self, account: AccountId) -> DbResult<Vec<(RulesetId, RatingRow)>> {
-        self.run(move |c| {
+        self.inspect(move |c| {
             let mut statement = c.prepare(&format!(
                 "SELECT ruleset, {RATING_COLUMNS} FROM ratings WHERE account = ?1 ORDER BY ruleset"
             ))?;
@@ -639,19 +687,22 @@ impl Db {
     /// Records the end of a match and, for a rated one, the Glicko-2 update
     /// of every member against the opposing teams as stored now, in one
     /// transaction (DEVELOPMENT.md "Ratings"). Returns the rating changes.
-    pub async fn finish_match(&self, finish: Finish) -> DbResult<Vec<RatingChange>> {
-        self.run(move |c| {
-            let tx = c.transaction()?;
-            let changes = if finish.rate {
-                rate(&tx, &finish)?
-            } else {
-                Vec::new()
-            };
-            write_finish(&tx, &finish, &changes)?;
-            tx.commit()?;
-            Ok(changes)
-        })
-        .await
+    pub async fn finish_match(&self,finish:Finish)->DbResult<Vec<RatingChange>> {
+        let id=finish.match_id;
+        self.queue_finish(finish.clone()).await?;
+        let changes=self.commit_finish(finish).await?;
+        if let Err(error)=self.ack_finish(id).await {eprintln!("WARN: match {} committed; result-inbox cleanup will retry: {error}",id.0);}
+        Ok(changes)
+    }
+
+    async fn commit_finish(&self,finish:Finish)->DbResult<Vec<RatingChange>> {
+        self.run(move |connection| {
+            // Pending records may be removed only after the main WAL reaches stable storage.
+            connection.pragma_update(None,"synchronous","FULL")?;
+            let result=commit_finish_once(connection,&finish);
+            let restored=connection.pragma_update(None,"synchronous","NORMAL");
+            match result {Ok(changes)=>{restored?;Ok(changes)},Err(error)=>Err(error)}
+        }).await
     }
 
     /// Deletes the credentials, sessions and ratings of an account; its
@@ -691,7 +742,7 @@ impl Db {
         account: AccountId,
         limit: u8,
     ) -> DbResult<Vec<MatchResult>> {
-        self.run(move |c| {
+        self.inspect(move |c| {
             let mut ids = c.prepare(
                 "SELECT m.id FROM matches m JOIN match_seats s ON s.match_id = m.id
                  WHERE s.account = ?1 AND m.finished = 1 ORDER BY m.id DESC LIMIT ?2",
@@ -709,7 +760,7 @@ impl Db {
         &self,
         match_id: MatchId,
     ) -> DbResult<Option<(RulesetId, Vec<AccountId>)>> {
-        self.run(move |c| {
+        self.inspect(move |c| {
             let ruleset: Option<String> = c
                 .query_row(
                     "SELECT ruleset FROM matches WHERE id = ?1 AND finished = 1",
@@ -1120,6 +1171,21 @@ fn reason_of(code: i64) -> EndReason {
         5 => EndReason::Left,
         _ => EndReason::Stopped,
     }
+}
+
+
+fn commit_finish_once(connection:&mut Connection,finish:&Finish)->rusqlite::Result<Vec<RatingChange>> {
+            let transaction=connection.transaction()?;
+            let (finished,ruleset,rated):(bool,String,bool)=transaction.query_row("SELECT finished,ruleset,rated FROM matches WHERE id=?1",[finish.match_id.0 as i64],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            if finished {return Ok(Vec::new());}
+            if ruleset!=finish.ruleset.0 || (finish.rate && !rated) {return Err(rusqlite::Error::InvalidQuery);}
+            let reserved=transaction.prepare("SELECT account,slot,team FROM match_seats WHERE match_id=?1 ORDER BY slot")?.query_map([finish.match_id.0 as i64],|row|Ok(NewSeat{account:AccountId(row.get::<_,i64>(0)? as u64),slot:row.get(1)?,team:row.get(2)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut seats=finish.seats.clone();seats.sort_by_key(|seat|seat.slot);
+            if seats!=reserved {return Err(rusqlite::Error::InvalidQuery);}
+            let changes=if finish.rate {rate(&transaction,finish)?}else{Vec::new()};
+            write_finish(&transaction,finish,&changes)?;
+            transaction.commit()?;
+            Ok(changes)
 }
 
 #[cfg(test)]

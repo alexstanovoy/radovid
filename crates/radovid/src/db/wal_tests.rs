@@ -56,7 +56,7 @@ async fn a_symlink_database_checkpoints_sqlites_actual_sidecar() {
     db.set_nickname(AccountId(1), "Changed".into())
         .await
         .expect("write");
-    db.run(|_| Ok(())).await.expect("checkpoint barrier");
+    db.wal.as_ref().expect("policy").wait_for_test().await;
     assert!(!aliases.join("linked.db-wal").exists());
     assert_eq!(
         std::fs::metadata(scratch.0.join("ratings.db-wal"))
@@ -68,7 +68,7 @@ async fn a_symlink_database_checkpoints_sqlites_actual_sidecar() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn checkpoint_closes_reader_admission_and_holds_the_next_writer_turn_until_snapshots_drain() {
+async fn checkpoint_closes_reader_admission_without_holding_the_writer_turn_while_snapshots_drain() {
     let (scratch, mut db) = fixture();
     Arc::get_mut(db.wal.as_mut().expect("WAL policy"))
         .expect("unique policy")
@@ -105,13 +105,11 @@ async fn checkpoint_closes_reader_admission_and_holds_the_next_writer_turn_until
         .await
         .expect("snapshot task")
         .expect("snapshot commit");
-    db.run(|_| Ok(()))
-        .await
-        .expect("checkpoint completes before next writer");
+    policy.wait_for_test().await;
     pending.expect("checkpoint closes admission");
     assert_eq!(
-        writer_permits, 0,
-        "no new mutation may grow WAL while old snapshots drain"
+        writer_permits, 1,
+        "reader drain must not reserve the writer turn"
     );
     assert_eq!(
         std::fs::metadata(scratch.0.join("ratings.db-wal"))
@@ -122,39 +120,18 @@ async fn checkpoint_closes_reader_admission_and_holds_the_next_writer_turn_until
 }
 
 #[tokio::test]
-async fn an_external_checkpoint_blocker_refuses_new_mutations_until_checkpoint_retry_succeeds() {
-    let (scratch, mut db) = fixture();
-    Arc::get_mut(db.wal.as_mut().expect("WAL policy"))
-        .expect("unique policy")
-        .set_limit_for_test(0);
-    db.run(|connection| connection.busy_timeout(std::time::Duration::ZERO))
-        .await
-        .expect("nonblocking test busy handler");
-    let outside = Connection::open(scratch.0.join("ratings.db")).expect("external reader");
-    outside
-        .execute_batch("BEGIN; SELECT COUNT(*) FROM accounts;")
-        .expect("external snapshot");
-    db.set_nickname(AccountId(1), "Kept".into())
-        .await
-        .expect("committed before checkpoint");
-    let rejected = db.set_nickname(AccountId(1), "MustNotCommit".into()).await;
-    assert!(matches!(rejected, Err(DbError::CheckpointBusy)));
-    outside
-        .execute_batch("COMMIT")
-        .expect("release external snapshot");
-    let mut recovered = false;
-    for _ in 0..3 {
-        match db.account_by_id(AccountId(1)).await {
-            Ok(Some(account)) => {
-                assert_eq!(account.nickname, "Kept");
-                recovered = true;
-                break;
-            }
-            Err(DbError::CheckpointBusy) => {}
-            other => panic!("unexpected recovery result: {other:?}"),
-        }
+async fn an_external_snapshot_keeps_normal_writes_and_login_reads_available_below_the_hard_cap() {
+    let (scratch,mut db)=fixture();
+    Arc::get_mut(db.wal.as_mut().expect("policy")).expect("unique").set_limit_for_test(0);
+    let outside=Connection::open(scratch.0.join("ratings.db")).expect("external");
+    outside.execute_batch("BEGIN; SELECT COUNT(*) FROM accounts;").expect("snapshot");
+    let mut failures=Vec::new();
+    for round in 0..20 {
+        if let Err(error)=db.set_nickname(AccountId(1),format!("Kept{round}")).await {failures.push(error.to_string());}
+        if let Err(error)=db.account_by_login("l1".into()).await {failures.push(error.to_string());}
     }
-    assert!(recovered);
+    outside.execute_batch("COMMIT").expect("release external");
+    assert!(failures.is_empty(),"normal writes/login reads failed below hard cap: {failures:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -209,12 +186,29 @@ async fn probe_wal_stays_bounded_under_overlapping_reads() {
     for reader in readers {
         completed += reader.await.expect("reader");
     }
-    db.run(|_| Ok(())).await.expect("writer/checkpoint barrier");
+    db.wal.as_ref().expect("policy").wait_for_test().await;
     assert!(failure.is_none(), "write failed: {failure:?}");
     assert!(completed > 0);
     eprintln!("WAL overlap peak {peak} bytes, {completed} reads");
     assert!(
-        peak < 64 << 20,
+        peak < wal::HARD_LIMIT_BYTES,
         "WAL grew to {peak} bytes under overlapping reads"
     );
+}
+
+#[tokio::test]
+async fn the_hard_wal_limit_refuses_mutations_but_keeps_authentication_reads_available() {
+    let (scratch,mut db)=fixture();
+    let policy=Arc::get_mut(db.wal.as_mut().expect("policy")).expect("unique");
+    policy.set_limit_for_test(0);policy.set_hard_limit_for_test(1024);
+    let external=Connection::open(scratch.0.join("ratings.db")).expect("external");
+    external.execute_batch("BEGIN;SELECT COUNT(*) FROM accounts;").expect("snapshot");
+    db.set_nickname(AccountId(1),"Kept".into()).await.expect("first commit");
+    let policy=Arc::clone(db.wal.as_ref().expect("policy"));
+    policy.wait_for_test().await;
+    assert!(matches!(db.set_nickname(AccountId(1),"Rejected".into()).await,Err(DbError::WalLimit)));
+    assert_eq!(db.account_by_login("l1".into()).await.expect("login read").expect("account").nickname,"Kept");
+    external.execute_batch("COMMIT").expect("release");
+    policy.reset_retry_for_test();policy.schedule(tokio::runtime::Handle::current());policy.wait_for_test().await;
+    db.set_nickname(AccountId(1),"Recovered".into()).await.expect("write recovers");
 }

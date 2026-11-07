@@ -354,7 +354,7 @@ impl Hub {
 
     /// Forms every proposal the queues allow.
     pub(super) fn pair_all(&mut self) {
-        if self.pairing {
+        if self.pairing || !self.pending_finishes.is_empty() {
             return;
         }
         self.pairing = true;

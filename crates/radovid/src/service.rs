@@ -56,6 +56,8 @@ impl Service {
         crate::private::database(&config.database)?;
         let db = Db::open(&config.database).map_err(|e| e.to_string())?;
         launcher::clean_up_orphans(&config.rulesets).await;
+        let recovered=db.recover_results().await.map_err(|error|format!("cannot replay pending match results: {error}"))?;
+        if recovered>0 {eprintln!("radovid: recovered {recovered} pending match results");}
         let lost = db
             .fail_unfinished_matches()
             .await

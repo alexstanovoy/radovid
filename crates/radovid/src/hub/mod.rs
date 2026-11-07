@@ -46,6 +46,7 @@ pub enum Cmd {
         account: AccountId,
     },
     VisibilitySweepDone,
+    FinishApplied {match_id:MatchId,result:crate::db::DbResult<MatchResult>},
     Request {
         session: SessionId,
         msg: ClientMsg,
@@ -154,6 +155,8 @@ struct Session {
 
 pub struct Hub {
     visibility_sweep_pending: bool,
+    pending_finishes:VecDeque<crate::db::Finish>,
+    finish_inflight:bool,
     #[cfg(test)]
     lookup_clock: Option<std::time::Instant>,
     config: Arc<Config>,
@@ -232,8 +235,9 @@ pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle
             if matches!(cmd, Cmd::Shutdown) {
                 hub.shutdown().await;
                 // The matches report their ends; serve until they have.
+                let deadline=tokio::time::Instant::now()+Duration::from_secs(15);
                 while !hub.matches.is_empty() {
-                    match tokio::time::timeout(Duration::from_secs(15), rx.recv()).await {
+                    match tokio::time::timeout_at(deadline, rx.recv()).await {
                         Ok(Some(cmd)) => hub.handle(cmd).await,
                         _ => break,
                     }
@@ -250,6 +254,8 @@ impl Hub {
     fn new(config: Arc<Config>, db: Db, me: mpsc::Sender<Cmd>) -> Self {
         Self {
             visibility_sweep_pending: false,
+            pending_finishes:VecDeque::new(),
+            finish_inflight:false,
             #[cfg(test)]
             lookup_clock: None,
             free_ports: config.game_ports.ports().collect(),
@@ -299,6 +305,7 @@ impl Hub {
             }
             Cmd::LookupDone { account } => self.lookup_done(account),
             Cmd::VisibilitySweepDone => self.visibility_sweep_pending = false,
+            Cmd::FinishApplied {match_id,result}=>self.finish_applied(match_id,result),
             Cmd::Detach { session } => self.detach(session),
             Cmd::EndOtherSessions { account, keep } => self.end_other_sessions(account, keep),
             Cmd::AccountDeleted { account, done } => {
@@ -637,6 +644,7 @@ impl Hub {
 
     /// Once a second: queue statuses, and forgetting cooldowns that are over.
     fn tick(&mut self) {
+        self.retry_finish();
         self.start_visibility_sweep();
         self.sweep_lookup_accounts(std::time::Instant::now());
         self.pair_work = queue::QUEUE_SCAN_BUDGET;

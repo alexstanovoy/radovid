@@ -4,6 +4,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use radovid_client::Control;
+use sha2::{Digest,Sha256};
 use radovid_proto::{ClientFrame, LEN_PREFIX, ServerMsg, decode_payload, encode_frame_to_vec};
 
 /// Whatever decodes encodes, and decodes again to what encodes the same
@@ -20,6 +21,12 @@ where
 }
 
 fuzz_target!(|data: &[u8]| {
+    let _=radovid::db::decode_pending_result(data);
+    if data.len()<=radovid_proto::MAX_GAME_REPORT_LEN+4096 {
+        let mut digest=Sha256::new();digest.update(0u64.to_le_bytes());digest.update(data);
+        let mut record=b"RDVRES1\0".to_vec();record.extend_from_slice(&0u64.to_le_bytes());record.extend_from_slice(&digest.finalize());record.extend_from_slice(data);
+        let _=radovid::db::decode_pending_result(&record);
+    }
     round_trip::<ClientFrame>(data);
     round_trip::<ServerMsg>(data);
     let mut control = Control::new();
