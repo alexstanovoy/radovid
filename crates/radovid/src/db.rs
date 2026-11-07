@@ -7,6 +7,9 @@ mod scale_tests;
 #[cfg(test)]
 mod schema_tests;
 mod visibility;
+mod wal;
+#[cfg(test)]
+mod wal_tests;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -110,6 +113,7 @@ pub enum DbError {
     Sqlite(rusqlite::Error),
     Join,
     ReadBusy,
+    CheckpointBusy,
 }
 
 impl From<rusqlite::Error> for DbError {
@@ -125,6 +129,7 @@ impl std::fmt::Display for DbError {
             DbError::Sqlite(error) => write!(f, "database: {error}"),
             DbError::Join => write!(f, "database task failed"),
             DbError::ReadBusy => write!(f, "database read queue is full"),
+            DbError::CheckpointBusy => write!(f,"database WAL checkpoint is blocked; write not executed"),
         }
     }
 }
@@ -228,6 +233,8 @@ pub struct Finish {
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
     readers: Option<Arc<reader::ReadPool>>,
+    writer_turn:Arc<tokio::sync::Semaphore>,
+    wal:Option<Arc<wal::Wal>>,
 }
 
 pub fn now_ms() -> UnixMs {
@@ -254,7 +261,9 @@ impl Db {
     pub fn open(path: &Path) -> DbResult<Db> {
         let conn = Connection::open(path)?;
         let mut db = Self::init(conn)?;
-        db.readers = Some(Arc::new(reader::ReadPool::open(path)?));
+        let wal=Arc::new(wal::Wal::new(path,&db.conn.lock().unwrap_or_else(|poisoned|poisoned.into_inner()))?);
+        db.readers = Some(Arc::new(reader::ReadPool::open(path,Arc::clone(&wal.snapshots))?));
+        db.wal=Some(wal);
         Ok(db)
     }
 
@@ -300,6 +309,8 @@ impl Db {
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
             readers: None,
+            writer_turn:Arc::new(tokio::sync::Semaphore::new(1)),
+            wal:None,
         })
     }
 
@@ -309,13 +320,25 @@ impl Db {
         work: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> DbResult<T> {
         let conn = Arc::clone(&self.conn);
+        let turn=Arc::clone(&self.writer_turn).acquire_owned().await.map_err(|_|DbError::Join)?;
+        let wal=self.wal.clone();
+        let runtime=tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            let mut conn = conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            work(&mut conn)
+            if let Some(policy)=&wal && policy.blocked() {
+                policy.schedule(conn,turn,runtime);
+                return Err(DbError::CheckpointBusy);
+            }
+            let (result,checkpoint)={
+                let mut connection=conn.lock().unwrap_or_else(|poisoned|poisoned.into_inner());
+                let result=work(&mut connection);
+                let checkpoint=connection.is_autocommit() && wal.as_ref().is_some_and(|policy|policy.exceeds_limit());
+                (result,checkpoint)
+            };
+            if checkpoint && let Some(policy)=wal { policy.schedule(conn,turn,runtime); }
+            result.map_err(DbError::from)
         })
         .await
         .map_err(|_| DbError::Join)?
-        .map_err(DbError::from)
     }
 
     async fn read<T: Send + 'static>(

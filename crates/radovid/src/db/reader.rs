@@ -1,6 +1,6 @@
 //! A fixed pool of read-only connections, separate from account and match writes.
 use super::*;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, OwnedRwLockReadGuard,RwLock};
 
 const READ_CONNECTIONS: usize = 4;
 const MAX_READS: usize = 64;
@@ -8,6 +8,7 @@ const MAX_READS: usize = 64;
 struct ReturnReader {
     index: usize,
     free: Arc<Mutex<Vec<usize>>>,
+    _snapshot:OwnedRwLockReadGuard<()>,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -21,6 +22,7 @@ impl Drop for ReturnReader {
 }
 
 pub(super) struct ReadPool {
+    snapshots:Arc<RwLock<()>>,
     connections: Vec<Arc<Mutex<Connection>>>,
     free: Arc<Mutex<Vec<usize>>>,
     available: Arc<Semaphore>,
@@ -32,7 +34,7 @@ impl ReadPool {
     pub(super) fn pending_for_test(&self) -> usize {
         MAX_READS - self.pending.available_permits()
     }
-    pub(super) fn open(path: &Path) -> DbResult<Self> {
+    pub(super) fn open(path: &Path,snapshots:Arc<RwLock<()>>) -> DbResult<Self> {
         let mut connections = Vec::with_capacity(READ_CONNECTIONS);
         for _ in 0..READ_CONNECTIONS {
             let connection =
@@ -49,6 +51,7 @@ impl ReadPool {
             connections.push(Arc::new(Mutex::new(connection)));
         }
         Ok(Self {
+            snapshots,
             connections,
             free: Arc::new(Mutex::new((0..READ_CONNECTIONS).rev().collect())),
             available: Arc::new(Semaphore::new(READ_CONNECTIONS)),
@@ -68,6 +71,7 @@ impl ReadPool {
             .acquire_owned()
             .await
             .map_err(|_| DbError::Join)?;
+        let snapshot=Arc::clone(&self.snapshots).read_owned().await;
         let index = self
             .free
             .lock()
@@ -77,6 +81,7 @@ impl ReadPool {
         let checkout = ReturnReader {
             index,
             free: Arc::clone(&self.free),
+            _snapshot:snapshot,
             _permit: permit,
         };
         let connection = Arc::clone(&self.connections[index]);
