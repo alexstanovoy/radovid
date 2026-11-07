@@ -441,6 +441,23 @@ mod tests {
     }
 
     #[test]
+    fn a_profiles_total_rank_budget_is_shared_across_modes_without_losing_summaries() {
+        let db=fixture();
+        let connection=db.conn.lock().expect("connection");
+        let ruleset=RulesetId("duel".into());
+        let own=find_own_row(&connection,&ruleset,AccountId(1),VISIBLE).expect("row").expect("played");
+        let mut remaining=100_000;
+        let rank=profile_rank(&connection,&ruleset,&own,VISIBLE,100_000,&mut remaining).expect("rank");
+        let used=100_000-remaining;
+        assert!(used>1);
+        let rows=profile_rows_capped(&connection,AccountId(1),vec![ruleset,RulesetId("teams".into())],VISIBLE,100_000,used+1).expect("profile survives aggregate exhaustion");
+        assert_eq!(rows.len(),2);
+        assert_eq!(rows[0].1.rank,rank);
+        assert_eq!(rows[1].1.rank,None);
+        assert_eq!(rows[1].1.games,2);
+    }
+
+    #[test]
     fn guard_only_rank_range_counts_use_covering_indexes_without_account_joins() {
         let db = fixture();
         let connection = db.conn.lock().expect("connection");

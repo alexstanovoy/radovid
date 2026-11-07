@@ -120,8 +120,11 @@ impl Results {
 
     pub(super) fn remove(&self,id:MatchId)->DbResult<()> {
         let mut index=self.index.lock().unwrap_or_else(|poisoned|poisoned.into_inner());
-        match std::fs::remove_file(self.directory.join(format!("{:020}.result",id.0))) {
-            Ok(())=>{},Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(DbError::Io(error)),
+        // A publication can be durable even if its temporary-name cleanup failed.
+        for suffix in ["tmp","result"] {
+            match std::fs::remove_file(self.directory.join(format!("{:020}.{suffix}",id.0))) {
+                Ok(())=>{},Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},Err(error)=>return Err(DbError::Io(error)),
+            }
         }
         sync_directory(&self.directory)?;
         if let Some(order)=index.orders.remove(&id) {index.ready.remove(&(order,id));}

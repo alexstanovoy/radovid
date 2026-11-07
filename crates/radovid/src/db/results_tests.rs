@@ -98,3 +98,61 @@ async fn finished_results_are_synced_before_the_durable_pending_record_is_remove
     let synchronous=db.inspect(|connection|connection.pragma_query_value(None,"synchronous",|row|row.get::<_,i32>(0))).await.expect("restored mode");
     assert_eq!(synchronous,1,"ordinary writes retain their normal sync policy");
 }
+
+#[tokio::test]
+async fn a_match_reservation_is_durable_before_a_game_can_produce_a_pending_result() {
+    let (_directory,db,_game,seats)=fixture().await;
+    db.run(|connection|connection.execute_batch("CREATE TRIGGER require_reservation_full BEFORE INSERT ON matches WHEN (SELECT synchronous FROM pragma_synchronous)!=2 BEGIN SELECT RAISE(ABORT,'reservation must use FULL');END;")).await.expect("reservation durability assertion");
+    db.create_match(RulesetId("duel".into()),true,seats).await.expect("durable reservation");
+}
+
+#[tokio::test]
+async fn overlapping_players_pending_results_replay_in_completion_order_not_match_id_order() {
+    let (directory,db,first,seats)=fixture().await;
+    let second=db.create_match(RulesetId("duel".into()),true,seats.clone()).await.expect("second game");
+    let win=finish(second,seats.clone());
+    let mut loss=finish(first,seats.clone());loss.outcome=Outcome::Winner{team:1};
+    db.queue_finish(win).await.expect("first completion");
+    db.queue_finish(loss).await.expect("second completion");
+    drop(db);
+    let recovered=Db::open(&directory.0.join("main.db")).expect("reopen");
+    assert_eq!(recovered.recover_results().await.expect("replay"),2);
+    let (_control,control,first_control,control_seats)=fixture().await;
+    let second_control=control.create_match(RulesetId("duel".into()),true,control_seats.clone()).await.expect("control second");
+    control.finish_match(finish(second_control,control_seats.clone())).await.expect("control first completion");
+    let mut loss=finish(first_control,control_seats);loss.outcome=Outcome::Winner{team:1};
+    control.finish_match(loss).await.expect("control second completion");
+    let actual=recovered.rating(seats[0].account,RulesetId("duel".into())).await.expect("recovered rating").expect("rated");
+    let expected=control.rating(AccountId(1),RulesetId("duel".into())).await.expect("control rating").expect("rated");
+    assert_eq!(actual.glicko.public(),expected.glicko.public(),"recovery must preserve the same Glicko update order");
+    assert_eq!(actual.games,2);
+}
+
+#[test]
+fn reopening_an_existing_database_performs_a_real_startup_durability_write() {
+    static NEXT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
+    let path=std::env::temp_dir().join(format!("radovid_startup_sync_{}_{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));
+    std::fs::create_dir(&path).expect("scratch");
+    let directory=Scratch(path);
+    let path=directory.0.join("main.db");
+    drop(Db::open(&path).expect("initial schema"));
+    let outside=Connection::open(&path).expect("old service");
+    outside.pragma_update(None,"synchronous","NORMAL").expect("old policy");
+    outside.execute_batch("PRAGMA wal_autocheckpoint=0;INSERT INTO accounts(login,nickname,hash,kind,created) VALUES('legacy','legacy','hash',0,0);").expect("old unflushed state");
+    let wal=directory.0.join("main.db-wal");
+    let before=std::fs::metadata(&wal).expect("old WAL").len();
+    let _reopened=Db::open(&path).expect("upgrade durability barrier");
+    let after=std::fs::metadata(wal).expect("new WAL").len();
+    assert!(after>before,"startup must append a FULL-synchronous write, not only change a pragma or commit an empty transaction");
+}
+
+#[tokio::test]
+async fn acknowledging_a_committed_result_removes_a_leftover_temporary_publication_too() {
+    let (directory,db,game,seats)=fixture().await;
+    db.queue_finish(finish(game,seats.clone())).await.expect("published");
+    let folder=directory.0.join("main.db.pending_results");
+    let temporary=folder.join(format!("{:020}.tmp",game.0));
+    std::fs::hard_link(folder.join(format!("{:020}.result",game.0)),&temporary).expect("simulate incomplete publication cleanup");
+    db.finish_match(finish(game,seats)).await.expect("commit and acknowledge");
+    assert!(!temporary.exists(),"acknowledgement cannot leak temporary records outside the pending capacity bound");
+}

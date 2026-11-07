@@ -23,12 +23,16 @@ or filesystem I/O. The soft threshold is a checkpoint trigger, not a size promis
 
 ## Finished results
 
-Before attempting the main transaction, each completed match is published in a
+Match reservations commit with synchronous FULL before a game can start, flushing
+preceding account and seat records too. Startup performs an actual FULL-synchronous
+header write to cover existing reservations before accepting or replaying results.
+Before attempting its main transaction, each completed match is published in a
 private directory beside the database, `<database>.pending_results`. Immutable,
 size-bounded records contain an order, checksum and validated match result. Files
 and directory entries are synced before publication is acknowledged. A result
 transaction uses SQLite synchronous FULL; only after that durable commit is its
-pending record removed. Ordinary database writes retain synchronous NORMAL.
+pending record removed. Ordinary database writes retain synchronous NORMAL. A failed pending-record cleanup
+logs WARN and preserves the record for idempotent startup recovery.
 
 A failed transaction retains its match slot and queues a retry. Ratings apply in
 completion order, and clients receive a result only after commit. Restart replays

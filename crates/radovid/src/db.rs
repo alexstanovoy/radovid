@@ -303,10 +303,12 @@ impl Db {
         let conn = Connection::open(path)?;
         let mut db = Self::init(conn)?;
         let (resolved, wal) = {
-            let connection = db
+            let mut connection = db
                 .conn
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Flush existing reservations before publishing independently durable results.
+            durable_write(&mut connection,|connection|connection.pragma_update(None,"user_version",SCHEMA_VERSION))?;
             let actual = connection
                 .path()
                 .filter(|path| !path.is_empty())
@@ -665,7 +667,7 @@ impl Db {
         seats: Vec<NewSeat>,
     ) -> DbResult<MatchId> {
         let now = now_ms().0 as i64;
-        self.run(move |c| {
+        self.run(move |c| durable_write(c,|c| {
             let tx = c.transaction()?;
             tx.execute(
                 "INSERT INTO matches(ruleset, rated, created) VALUES(?1, ?2, ?3)",
@@ -680,7 +682,7 @@ impl Db {
             }
             tx.commit()?;
             Ok(MatchId(id as u64))
-        })
+        }))
         .await
     }
 
@@ -691,18 +693,12 @@ impl Db {
         let id=finish.match_id;
         self.queue_finish(finish.clone()).await?;
         let changes=self.commit_finish(finish).await?;
-        if let Err(error)=self.ack_finish(id).await {eprintln!("WARN: match {} committed; result-inbox cleanup will retry: {error}",id.0);}
+        if let Err(error)=self.ack_finish(id).await {eprintln!("WARN: match {} committed; pending record retained for startup recovery: {error}",id.0);}
         Ok(changes)
     }
 
     async fn commit_finish(&self,finish:Finish)->DbResult<Vec<RatingChange>> {
-        self.run(move |connection| {
-            // Pending records may be removed only after the main WAL reaches stable storage.
-            connection.pragma_update(None,"synchronous","FULL")?;
-            let result=commit_finish_once(connection,&finish);
-            let restored=connection.pragma_update(None,"synchronous","NORMAL");
-            match result {Ok(changes)=>{restored?;Ok(changes)},Err(error)=>Err(error)}
-        }).await
+        self.run(move |connection|durable_write(connection,|connection|commit_finish_once(connection,&finish))).await
     }
 
     /// Deletes the credentials, sessions and ratings of an account; its
@@ -1173,6 +1169,14 @@ fn reason_of(code: i64) -> EndReason {
     }
 }
 
+
+// A successful FULL commit flushes preceding WAL frames as well as this transaction.
+fn durable_write<T>(connection:&mut Connection,work:impl FnOnce(&mut Connection)->rusqlite::Result<T>)->rusqlite::Result<T> {
+    connection.pragma_update(None,"synchronous","FULL")?;
+    let result=work(connection);
+    let restored=connection.pragma_update(None,"synchronous","NORMAL");
+    match result {Ok(value)=>{restored?;Ok(value)},Err(error)=>Err(error)}
+}
 
 fn commit_finish_once(connection:&mut Connection,finish:&Finish)->rusqlite::Result<Vec<RatingChange>> {
             let transaction=connection.transaction()?;
