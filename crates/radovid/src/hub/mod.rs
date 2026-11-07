@@ -511,9 +511,9 @@ impl Hub {
                 list: self.config.ruleset_infos(self.kind_of(id)),
             }),
             ClientMsg::Limits { ruleset } => self.limits(id, ruleset),
-            ClientMsg::QueueJoin { ruleset } => self.queue_join(session, ruleset),
+            ClientMsg::QueueJoin { ruleset } => self.queue_join(session, ruleset).await,
             ClientMsg::QueueJoinAudiences { ruleset, audiences } => {
-                self.queue_join_audiences(session, ruleset, audiences)
+                self.queue_join_audiences(session, ruleset, audiences).await
             }
             ClientMsg::QueueLeave { entry } => self.queue_leave(id, entry),
             ClientMsg::MatchAccept { proposal } => self.match_accept(id, proposal).await,

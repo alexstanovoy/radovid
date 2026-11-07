@@ -1,4 +1,4 @@
-//! The humans and everyone queues of each rated ruleset, in arrival order. An
+//! The humans and everyone queues of each matchmaking ruleset, in arrival order. An
 //! entry keeps its place while it sits in a proposal and after a proposal
 //! fails; the pairer forms proposals from the oldest free entries.
 
@@ -9,7 +9,23 @@ use std::time::Duration;
 use radovid_proto::*;
 use tokio::time::Instant;
 
-use super::{Hub, SessionId};
+use super::{Hub, SessionId, internal};
+use crate::config::RulesetConfig;
+use crate::matching::{self, Candidate};
+use crate::rating::INITIAL_RATING;
+
+pub(super) const QUEUE_SCAN_BUDGET: usize = crate::config::MAX_QUEUE_CAPACITY as usize;
+const QUEUE_AUDIENCES: [Audience; MAX_QUEUE_AUDIENCES] = [Audience::HumansOnly, Audience::Everyone];
+
+struct PendingSearch {
+    account: AccountId,
+    source: IpAddr,
+    ruleset: RulesetId,
+    since: Instant,
+    rating: f64,
+    rating_ruleset: RulesetId,
+    search: QueueEntryId,
+}
 
 pub(super) struct Entry {
     pub account: AccountId,
@@ -19,6 +35,8 @@ pub(super) struct Entry {
     pub proposal: Option<ProposalId>,
     pub audience: Audience,
     pub search: QueueEntryId,
+    pub rating: f64,
+    pub rating_ruleset: RulesetId,
     /// What the account was last told of the entry's standing, and when.
     told: (Standing, Instant),
 }
@@ -38,29 +56,29 @@ struct Standing {
 }
 
 impl Hub {
-    pub(super) fn queue_join(
+    pub(super) async fn queue_join(
         &mut self,
         session: SessionId,
         ruleset: RulesetId,
     ) -> Result<Reply, Error> {
-        let mut entries = self.join_queues(session, ruleset, &[Audience::Everyone])?;
+        let mut entries = self.join_queues(session, ruleset, &[Audience::Everyone]).await?;
         Ok(Reply::Queued {
             entry: entries.remove(0),
         })
     }
 
-    pub(super) fn queue_join_audiences(
+    pub(super) async fn queue_join_audiences(
         &mut self,
         session: SessionId,
         ruleset: RulesetId,
         audiences: Vec<Audience>,
     ) -> Result<Reply, Error> {
         Ok(Reply::QueuesJoined {
-            entries: self.join_queues(session, ruleset, &audiences)?,
+            entries: self.join_queues(session, ruleset, &audiences).await?,
         })
     }
 
-    fn join_queues(
+    async fn join_queues(
         &mut self,
         session: SessionId,
         ruleset: RulesetId,
@@ -82,10 +100,17 @@ impl Hub {
             .get(&session)
             .map(|s| (s.account, s.source))
             .ok_or(Error::NotLoggedIn)?;
-        let search = QueueEntryId(self.next_entry);
+        let rating_ruleset = rules.rating_ruleset_id();
+        let rating = self.db.rating(account, rating_ruleset.clone()).await.map_err(internal)?
+            .map_or(INITIAL_RATING, |row| row.glicko.rating);
+        if !rating.is_finite() { return Err(internal("non-finite stored matchmaking rating")); }
+        let pending = PendingSearch {
+            account, source, ruleset, since: Instant::now(), rating, rating_ruleset,
+            search: QueueEntryId(self.next_entry),
+        };
         let mut entries = Vec::with_capacity(audiences.len());
         for &audience in audiences {
-            let id = self.insert_queue_entry(account, source, ruleset.clone(), audience, search);
+            let id = self.insert_queue_entry(&pending, audience);
             entries.push(self.entry_status(id).ok_or(Error::Internal)?);
         }
         self.pair_all();
@@ -123,15 +148,12 @@ impl Hub {
 
     fn insert_queue_entry(
         &mut self,
-        account: AccountId,
-        source: IpAddr,
-        ruleset: RulesetId,
+        pending: &PendingSearch,
         audience: Audience,
-        search: QueueEntryId,
     ) -> QueueEntryId {
         let id = QueueEntryId(self.next_entry);
         self.next_entry = self.next_entry.wrapping_add(1).max(1);
-        let now = Instant::now();
+        let now = pending.since;
         let never = (
             Standing {
                 position: 0,
@@ -144,20 +166,22 @@ impl Hub {
         self.entries.insert(
             id,
             Entry {
-                account,
-                ruleset: ruleset.clone(),
+                account: pending.account,
+                ruleset: pending.ruleset.clone(),
                 since: now,
-                source,
+                source: pending.source,
                 proposal: None,
                 audience,
-                search,
+                search: pending.search,
+                rating: pending.rating,
+                rating_ruleset: pending.rating_ruleset.clone(),
                 told: never,
             },
         );
-        self.queues.entry((ruleset, audience)).or_default().push(id);
-        if let Some(a) = self.accounts.get_mut(&account) {
+        self.queues.entry((pending.ruleset.clone(), audience)).or_default().push(id);
+        if let Some(a) = self.accounts.get_mut(&pending.account) {
             a.entries.push(id);
-            a.searches.insert(search);
+            a.searches.insert(pending.search);
         }
         let status = self
             .entry_status(id)
@@ -295,53 +319,56 @@ impl Hub {
 
     /// Forms every proposal the queues allow.
     pub(super) fn pair_all(&mut self) {
+        if self.pairing { return; }
+        self.pairing = true;
+        self.pair_queues();
+        self.pairing = false;
+    }
+
+    fn pair_queues(&mut self) {
         let config = Arc::clone(&self.config);
-        for ruleset in config.rulesets.iter().filter(|r| r.rated) {
-            for audience in [Audience::HumansOnly, Audience::Everyone] {
-                while !self.pairing_paused() {
-                    let Some(picked) =
-                        self.pick(&(ruleset.ruleset_id(), audience), ruleset.seats())
-                    else {
-                        break;
-                    };
-                    self.propose(ruleset.ruleset_id(), picked);
-                }
+        let slots = config.rulesets.len() * QUEUE_AUDIENCES.len();
+        let start = self.pair_next;
+        for offset in 0..slots {
+            let index = (start + offset) % slots;
+            let ruleset = &config.rulesets[index / QUEUE_AUDIENCES.len()];
+            let audience = QUEUE_AUDIENCES[index % QUEUE_AUDIENCES.len()];
+            if !ruleset.has_queue() { continue; }
+            if self.pairing_paused() { return; }
+            let available = self.pair_work;
+            let complete = self.pair_queue(ruleset, audience);
+            if self.pair_work < available { self.pair_next = (index + 1) % slots; }
+            if !complete {
+                if self.pair_work == available { self.pair_next = index; }
+                return;
             }
         }
     }
 
-    /// The oldest free entries that fill `seats`: never one account twice,
-    /// and an entry from a source already picked only when no other fits.
-    fn pick(&self, queue: &(RulesetId, Audience), seats: usize) -> Option<Vec<QueueEntryId>> {
-        let free: Vec<(QueueEntryId, &Entry)> = self
-            .queues
-            .get(queue)?
-            .iter()
-            .filter_map(|id| self.entries.get(id).map(|e| (*id, e)))
-            .filter(|(_, e)| e.proposal.is_none())
-            .collect();
-        for start in 0..free.len() {
-            let mut picked = vec![free[start]];
-            while picked.len() < seats {
-                let fits = |(_, e): &&(QueueEntryId, &Entry)| {
-                    picked.iter().all(|(_, p)| p.account != e.account)
-                };
-                let rest = &free[start + 1..];
-                let next = rest
-                    .iter()
-                    .filter(fits)
-                    .find(|(_, e)| picked.iter().all(|(_, p)| p.source != e.source))
-                    .or_else(|| rest.iter().find(fits));
-                match next {
-                    Some(next) => picked.push(*next),
-                    None => break,
-                }
+    /// Returns false when another full scan must wait for the next clock budget.
+    fn pair_queue(&mut self, ruleset: &RulesetConfig, audience: Audience) -> bool {
+        let Some(window) = ruleset.matchmaking_window(&self.config.limits) else { return true; };
+        let key = (ruleset.ruleset_id(), audience);
+        while !self.pairing_paused() {
+            let Some(queue) = self.queues.get(&key) else { break; };
+            if queue.len() < ruleset.seats() { break; }
+            if queue.len() > self.pair_work { return false; }
+            let candidates: Vec<_> = queue.iter().enumerate().filter_map(|(order, id)| {
+                let entry = self.entries.get(id)?;
+                entry.proposal.is_none().then(|| Candidate {
+                    entry: *id, account: entry.account, source: entry.source, rating: entry.rating, order,
+                    window: window.after_ms(entry.since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32),
+                })
+            }).collect();
+            self.pair_work -= queue.len() - candidates.len();
+            if candidates.len() < ruleset.seats() {
+                self.pair_work -= candidates.len();
+                break;
             }
-            if picked.len() == seats {
-                return Some(picked.into_iter().map(|(id, _)| id).collect());
-            }
+            let Some(picked) = matching::groups(candidates, ruleset.seats(), 1, &mut self.pair_work).pop() else { break; };
+            self.propose(key.0.clone(), picked);
         }
-        None
+        true
     }
 
     /// Tells every free entry whose standing changed, at most once per

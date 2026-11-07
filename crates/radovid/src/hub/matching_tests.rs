@@ -91,13 +91,20 @@ impl Fixture {
     async fn join(&mut self, session: SessionId, ruleset: &str) -> QueueEntryId {
         let Reply::Queued { entry } = self
             .hub
-            .queue_join(session, RulesetId(ruleset.into()))
+            .request(session, ClientMsg::QueueJoin { ruleset: RulesetId(ruleset.into()) })
             .await
             .expect("queue")
         else {
             panic!("queued reply");
         };
         entry.entry
+    }
+
+    async fn join_audiences(&mut self, session: SessionId, ruleset: &str, audiences: &[Audience]) -> Vec<QueueEntry> {
+        let Reply::QueuesJoined { entries } = self.hub.request(session, ClientMsg::QueueJoinAudiences {
+            ruleset: RulesetId(ruleset.into()), audiences: audiences.to_vec(),
+        }).await.expect("queue") else { panic!("linked queue reply"); };
+        entries
     }
 
     async fn game(&mut self, accounts: &[AccountId]) -> MatchId {
@@ -128,6 +135,65 @@ impl Fixture {
             )
             .await;
     }
+}
+
+#[tokio::test]
+async fn combined_linked_unranked_entries_share_the_persisted_rating_and_start() {
+    let mut fixture = Fixture::new();
+    let (alpha, session) = fixture.account("alpha").await;
+    let (beta, _) = fixture.account("beta").await;
+    let game = fixture.game(&[alpha, beta]).await;
+    fixture.win(game).await;
+    let entries = fixture.join_audiences(session, "casual", &[Audience::HumansOnly, Audience::Everyone]).await;
+    assert_eq!(entries.len(), 2);
+    let rating = fixture.hub.db.rating(alpha, RulesetId("ranked".into())).await.expect("rating").expect("stored").glicko.rating;
+    assert!(rating > 1500.0);
+    for entry in &entries {
+        let cached = &fixture.hub.entries[&entry.entry];
+        assert_eq!(cached.rating, rating);
+        assert_eq!(cached.rating_ruleset, RulesetId("ranked".into()));
+    }
+    assert_eq!(fixture.hub.entries[&entries[0].entry].since, fixture.hub.entries[&entries[1].entry].since);
+}
+
+#[tokio::test]
+async fn combined_rating_lookup_failure_inserts_neither_linked_place() {
+    let mut fixture = Fixture::new();
+    let (alpha, session) = fixture.account("alpha").await;
+    rusqlite::Connection::open(&fixture.hub.config.database).expect("open").execute("DROP TABLE ratings", []).expect("simulate database failure");
+    let next = fixture.hub.next_entry;
+    assert_eq!(fixture.hub.request(session, ClientMsg::QueueJoinAudiences {
+        ruleset: RulesetId("ranked".into()), audiences: vec![Audience::HumansOnly, Audience::Everyone],
+    }).await, Err(Error::Internal));
+    assert!(fixture.hub.entries.is_empty());
+    assert!(fixture.hub.accounts[&alpha].entries.is_empty());
+    assert_eq!(fixture.hub.next_entry, next);
+}
+
+#[tokio::test]
+async fn combined_a_large_humans_queue_yields_to_everyone_on_budget_refill() {
+    let mut fixture = Fixture::new();
+    Arc::make_mut(&mut fixture.hub.config).limits.game_capacity = 1;
+    Arc::make_mut(&mut fixture.hub.config).limits.lobby_games_max = 1;
+    let (_, first) = fixture.account("blocker_a").await;
+    let (_, second) = fixture.account("blocker_b").await;
+    fixture.join(first, "ranked").await;
+    fixture.join(second, "ranked").await;
+    assert_eq!(fixture.hub.proposals.len(), 1);
+    for index in 0..8 {
+        let (_, session) = fixture.account(&format!("player_{index}")).await;
+        let audience = if index < 6 { Audience::HumansOnly } else { Audience::Everyone };
+        fixture.join_audiences(session, "ranked", &[audience]).await;
+    }
+    let blocker = *fixture.hub.proposals.keys().next().expect("blocker");
+    for entry in fixture.hub.proposals.remove(&blocker).expect("proposal").entries { fixture.hub.remove_entry(entry); }
+    Arc::make_mut(&mut fixture.hub.config).limits.game_capacity = 8;
+    fixture.hub.pair_work = 6;
+    fixture.hub.pair_all();
+    assert_eq!(fixture.hub.proposals.len(), 1, "one full humans scan spends the budget");
+    fixture.hub.pair_work = 6;
+    fixture.hub.pair_all();
+    assert!(fixture.hub.proposals.values().any(|proposal| proposal.entries.iter().any(|id| fixture.hub.entries[id].audience == Audience::Everyone)), "everyone must get the next refill even for the same ruleset");
 }
 
 #[tokio::test]
@@ -286,7 +352,7 @@ async fn a_queue_deferred_before_its_first_scan_goes_first_on_refill() {
             .join(session, if index < 6 { "ranked" } else { "casual" })
             .await;
     }
-    fixture.hub.pair_next = 1;
+    fixture.hub.pair_next = 3; // casual/everyone, after ranked's two audience queues
     fixture.hub.pair_work = 6;
     fixture.hub.pair_all();
     assert_eq!(fixture.hub.proposals.len(), 1);
