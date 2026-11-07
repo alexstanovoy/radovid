@@ -71,6 +71,10 @@ impl Control {
             decode_payload(payload).map_err(|e| ClientError::Protocol(e.to_string()))?;
         Ok(match msg {
             ServerMsg::Reply { seq, reply } => {
+                if let Reply::Avatar { avatar:Some(avatar), .. } = &reply
+                    && avatar_image_data(&avatar.png).is_none() {
+                    return Err(ClientError::Protocol("invalid avatar image envelope".into()));
+                }
                 self.note(&reply);
                 Incoming::Reply {
                     seq,
@@ -123,5 +127,20 @@ pub fn control_url(url: &str) -> String {
         url.to_owned()
     } else {
         format!("{url}/control")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn avatar_downloads_cannot_deliver_an_unbounded_image_shape_to_a_client_decoder() {
+        for png in [b"<svg/>".to_vec(),vec![0;512]] {
+            let message=ServerMsg::Reply {seq:1,reply:Reply::Avatar {account:AccountId(1),avatar:Some(Avatar{version:AvatarVersion([0;32]),png})}};
+            let bytes=encode_frame_to_vec(&message).expect("malicious peer");
+            let error=Control::new().receive(&bytes).expect_err("untrusted service image");
+            assert!(matches!(error,ClientError::Protocol(ref message) if message=="invalid avatar image envelope"));
+        }
     }
 }

@@ -141,3 +141,20 @@ fn existing_ratings_gain_indexed_account_kind_without_losing_account_or_rating_d
         .expect("synchronised kind");
     assert_eq!(kind, 0);
 }
+
+#[tokio::test]
+async fn schema_four_migration_adds_avatars_without_changing_visible_ladder_totals() {
+    let connection=Connection::open_in_memory().expect("database");
+    connection.execute_batch(include_str!("../../tests/fixtures/schema_4.sql")).expect("schema four");
+    connection.execute_batch("INSERT INTO accounts(id,login,nickname,hash,kind,created) VALUES(1,'one','One','kept hash',0,123);
+        INSERT INTO ratings(account,ruleset,rating,deviation,volatility,games,wins,draws,losses,last_played) VALUES(1,'duel',1800,80,0.06,7,4,1,2,456);").expect("old records");
+    let db=Db::init(connection).expect("migrate");
+    assert_eq!(db.avatar(AccountId(1),AccountId(1)).await.expect("new endpoint"),Ok(None));
+    let image=crate::avatar::tests::image(32,32);
+    let stored=db.change_avatar(AccountId(1),Some(image),UnixMs(1)).await.expect("storage").expect("valid").expect("avatar");
+    let page=db.leaderboard(RulesetId("duel".into()),AccountKind::Human,String::new(),100,AccountId(1)).await.expect("board");
+    assert_eq!(page.total,1);
+    assert_eq!((page.rows[0].rating.rating,page.rows[0].games),(1800.0,7));
+    assert_eq!(page.rows[0].avatar,Some(stored.version));
+    assert_eq!(db.account_by_id(AccountId(1)).await.expect("query").expect("credentials").hash,"kept hash");
+}

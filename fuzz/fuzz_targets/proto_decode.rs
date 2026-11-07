@@ -32,6 +32,7 @@ fuzz_target!(|data: &[u8]| {
         record.extend_from_slice(data);
         let _ = radovid::db::decode_pending_result(&record);
     }
+    let _ = radovid::avatar::validate(data);
     round_trip::<ClientFrame>(data);
     round_trip::<ServerMsg>(data);
     let mut control = Control::new();

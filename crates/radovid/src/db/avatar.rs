@@ -94,8 +94,39 @@ mod tests {
     async fn invalid_avatar_attempt_consumes_quota_and_never_replaces_the_image() {
         let db = Db::init(Connection::open_in_memory().expect("connection")).expect("db");
         let account = account(&db,"alpha").await;
-        assert_eq!(db.change_avatar(account,Some(vec![0]),UnixMs(1)).await.expect("request"),Err(Error::BadAvatar));
-        assert_eq!(db.change_avatar(account,None,UnixMs(2)).await.expect("request"),Err(Error::Throttled{retry_after_ms:59_999}));
+        let first=db.change_avatar(account,Some(crate::avatar::tests::image(32,32)),UnixMs(1)).await.expect("storage").expect("upload");
+        assert_eq!(db.change_avatar(account,Some(vec![0]),UnixMs(60_001)).await.expect("request"),Err(Error::BadAvatar));
+        assert_eq!(db.avatar(account,account).await.expect("read"),Ok(first));
+        assert_eq!(db.change_avatar(account,None,UnixMs(60_002)).await.expect("request"),Err(Error::Throttled{retry_after_ms:59_999}));
+        assert_eq!(db.change_avatar(account,None,UnixMs(120_001)).await.expect("remove"),Ok(None));
+        assert_eq!(db.avatar(account,account).await.expect("removed image"),Ok(None));
+    }
+
+    #[tokio::test]
+    async fn avatar_visibility_hides_banned_and_deleted_accounts_and_deletion_erases_bytes() {
+        let db=Db::init(Connection::open_in_memory().expect("connection")).expect("db");
+        let alpha=account(&db,"alpha").await;
+        let beta=account(&db,"beta").await;
+        let stored=db.change_avatar(alpha,Some(crate::avatar::tests::image(32,32)),UnixMs(1)).await.expect("storage").expect("upload");
+        db.set_ban(alpha,Some(Ban{reason:"fixture".into(),until:None})).await.expect("ban");
+        assert_eq!(db.avatar(alpha,beta).await.expect("public fetch"),Err(Error::UnknownAccount));
+        assert_eq!(db.avatar(alpha,alpha).await.expect("own fetch"),Ok(stored.clone()));
+        db.set_ban(alpha,None).await.expect("unban");
+        assert_eq!(db.avatar(alpha,beta).await.expect("public fetch"),Ok(stored));
+        db.delete_account(alpha).await.expect("delete");
+        assert_eq!(db.avatar(alpha,alpha).await.expect("deleted self"),Err(Error::UnknownAccount));
+        assert_eq!(db.avatar(alpha,beta).await.expect("deleted other"),Err(Error::UnknownAccount));
+        let bytes:i64=db.run(move |connection|connection.query_row("SELECT COUNT(*) FROM avatars WHERE account=?1",[alpha.0 as i64],|row|row.get(0))).await.expect("stored bytes");
+        assert_eq!(bytes,0);
+    }
+
+    #[tokio::test]
+    async fn corrupt_stored_avatar_hash_is_refused_without_serving_unvalidated_bytes() {
+        let db=Db::init(Connection::open_in_memory().expect("connection")).expect("db");
+        let alpha=account(&db,"alpha").await;
+        db.change_avatar(alpha,Some(crate::avatar::tests::image(32,32)),UnixMs(1)).await.expect("storage").expect("upload");
+        db.run(|connection|connection.execute("UPDATE avatars SET version=zeroblob(32)",[]).map(|_|())).await.expect("corruption fixture");
+        assert!(matches!(db.avatar(alpha,alpha).await,Err(DbError::Sqlite(rusqlite::Error::InvalidQuery))));
     }
 }
 

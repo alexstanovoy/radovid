@@ -371,6 +371,13 @@ fn version_18_is_refused_before_the_indexed_lookup_error_contract_is_served() {
 }
 
 #[test]
+fn version_19_is_refused_before_nested_avatar_fields_are_served() {
+    let env=start(rules());
+    let error=refused(Client::connect_as(&env.url,&env.tls,19,FINGERPRINT));
+    assert_eq!(error,Error::ProtoMismatch {server:PROTO_VERSION});
+}
+
+#[test]
 fn another_protocol_version_is_refused_and_another_game_wire_cannot_play() {
     let env = start(rules());
     // The configured minimum is served; versions outside the range are refused.

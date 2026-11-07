@@ -1,9 +1,9 @@
 //! The fixed-size public avatar format. No paths, URLs, metadata or animation.
-use radovid_proto::{Error, MAX_AVATAR_BYTES, AVATAR_SIDE};
+use radovid_proto::{Error, AVATAR_SIDE, avatar_image_data};
 use std::io::Cursor;
 
 pub fn validate(bytes: &[u8]) -> Result<(), Error> {
-    let (compressed, channels) = envelope(bytes).ok_or(Error::BadAvatar)?;
+    let (compressed, channels) = avatar_image_data(bytes).ok_or(Error::BadAvatar)?;
     // A tiny compressed stream may advertise arbitrary inflated data. Require exactly
     // the scanlines, the checksum and the end of the one zlib stream before pixel decoding.
     let mut scanlines = [0; 4129];
@@ -17,49 +17,26 @@ pub fn validate(bytes: &[u8]) -> Result<(), Error> {
     }
     let mut decoder = png::Decoder::new_with_limits(Cursor::new(bytes), png::Limits { bytes: 64 * 1024 });
     decoder.ignore_checksums(false);
-    decoder.set_transformations(png::Transformations::EXPAND);
     let mut reader = decoder.read_info().map_err(|_| Error::BadAvatar)?;
     let mut pixels = [0; 4096];
     if reader.output_buffer_size().is_none_or(|size| size > pixels.len()) {
         return Err(Error::BadAvatar);
     }
-    reader.next_frame(&mut pixels).map_err(|_| Error::BadAvatar)?;
+    let palette_entries = reader.info().palette.as_ref().map(|palette| palette.len()/3);
+    let output = reader.next_frame(&mut pixels).map_err(|_| Error::BadAvatar)?;
+    if output.color_type == png::ColorType::Indexed && palette_entries.is_none_or(|entries|
+        pixels[..output.buffer_size()].iter().any(|index| usize::from(*index)>=entries)) {
+        return Err(Error::BadAvatar);
+    }
     reader.finish().map_err(|_| Error::BadAvatar)?;
     Ok(())
 }
 
-fn envelope(bytes: &[u8]) -> Option<(Vec<u8>, u64)> {
-    if bytes.len() > MAX_AVATAR_BYTES || bytes.get(..8)? != b"\x89PNG\r\n\x1a\n" { return None; }
-    let mut offset = 8;
-    let mut channels = None;
-    let mut compressed = Vec::new();
-    let (mut palette, mut transparency, mut data) = (false, false, false);
-    while offset < bytes.len() {
-        let length = u32::from_be_bytes(bytes.get(offset..offset+4)?.try_into().ok()?) as usize;
-        let kind = bytes.get(offset+4..offset+8)?;
-        let end = offset.checked_add(12)?.checked_add(length)?;
-        let payload = bytes.get(offset+8..end.checked_sub(4)?)?;
-        bytes.get(..end)?;
-        match kind {
-            b"IHDR" if offset == 8 && length == 13 => {
-                if payload[..4] != AVATAR_SIDE.to_be_bytes() || payload[4..8] != AVATAR_SIDE.to_be_bytes()
-                    || payload[8] != 8 || payload[10..13] != [0,0,0] { return None; }
-                channels = Some(match payload[9] { 0|3 => 1, 2 => 3, 4 => 2, 6 => 4, _ => return None });
-            }
-            b"PLTE" if channels.is_some() && !palette && !transparency && !data => { palette = true; }
-            b"tRNS" if channels.is_some() && !transparency && !data => { transparency = true; }
-            b"IDAT" if channels.is_some() => { data = true; compressed.extend_from_slice(payload); }
-            b"IEND" if data && length == 0 && end == bytes.len() => return Some((compressed, channels?)),
-            _ => return None,
-        }
-        offset = end;
-    }
-    None
-}
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use radovid_proto::MAX_AVATAR_BYTES;
 
     pub(crate) fn image(width: u32, height: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -143,5 +120,17 @@ pub(crate) mod tests {
         }
         assert!(bytes.len() <= MAX_AVATAR_BYTES);
         assert_eq!(validate(&bytes),Ok(()));
+    }
+
+    #[test]
+    fn avatar_refuses_palette_indices_without_a_palette_entry() {
+        let mut bytes=Vec::new();
+        {
+            let mut encoder=png::Encoder::new(&mut bytes,32,32);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_palette(vec![255,0,0]);
+            encoder.write_header().expect("header").write_image_data(&vec![1;1024]).expect("pixels");
+        }
+        assert_eq!(validate(&bytes),Err(Error::BadAvatar));
     }
 }

@@ -9,6 +9,7 @@
 //! (`u32 LE length | postcard payload`). The crate does no I/O and builds for
 //! `wasm32` as it is.
 
+mod avatar;
 mod error;
 mod frame;
 mod ids;
@@ -20,6 +21,7 @@ mod validate;
 #[cfg(test)]
 mod tests;
 
+pub use avatar::*;
 pub use error::*;
 pub use frame::*;
 pub use ids::*;
