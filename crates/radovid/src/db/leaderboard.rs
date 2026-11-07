@@ -4,17 +4,21 @@ use super::*;
 /// A board or legacy ladder walk has one deterministic work budget.
 const LOOKUP_VM_STEPS: u32 = 5_000_000;
 const PROGRESS_INTERVAL: i32 = 1000;
-const PROFILE_RANK_VM_STEPS:u32=500_000;
-const PROFILE_METADATA_VM_STEPS:u32=10_000;
+const PROFILE_RANK_VM_STEPS: u32 = 500_000;
+const PROFILE_METADATA_VM_STEPS: u32 = 10_000;
 
 pub(super) fn bounded<T>(
     connection: &Connection,
     work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
-    bounded_with_limit(connection,LOOKUP_VM_STEPS,work)
+    bounded_with_limit(connection, LOOKUP_VM_STEPS, work)
 }
 
-fn bounded_with_limit<T>(connection:&Connection,steps:u32,work:impl FnOnce(&Connection)->rusqlite::Result<T>)->rusqlite::Result<T> {
+fn bounded_with_limit<T>(
+    connection: &Connection,
+    steps: u32,
+    work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
     let mut remaining = steps / PROGRESS_INTERVAL as u32;
     connection.progress_handler(
         PROGRESS_INTERVAL,
@@ -60,12 +64,15 @@ pub(super) fn read_lookup<T>(
     connection: &mut Connection,
     work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
-    read_snapshot(connection,|snapshot|bounded(snapshot,work))
+    read_snapshot(connection, |snapshot| bounded(snapshot, work))
 }
 
-fn read_snapshot<T>(connection:&mut Connection,work:impl FnOnce(&Connection)->rusqlite::Result<T>)->rusqlite::Result<T> {
-    let transaction=connection.transaction()?;
-    let result=work(&transaction)?;
+fn read_snapshot<T>(
+    connection: &mut Connection,
+    work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    let transaction = connection.transaction()?;
+    let result = work(&transaction)?;
     transaction.commit()?;
     Ok(result)
 }
@@ -128,20 +135,29 @@ impl Db {
         self.read(move |connection| {
             read_snapshot(connection, |connection| {
                 let now = now_ms();
-                let row = bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| connection
-                    .query_row(
-                        &format!("{ACCOUNT_SELECT} WHERE id=?1"),
-                        [account.0 as i64],
-                        account_row,
-                    )
-                    .optional())?;
+                let row =
+                    bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| {
+                        connection
+                            .query_row(
+                                &format!("{ACCOUNT_SELECT} WHERE id=?1"),
+                                [account.0 as i64],
+                                account_row,
+                            )
+                            .optional()
+                    })?;
                 let Some(row) = row else {
                     return Ok(None);
                 };
                 if requester != account && row.active_ban(now).is_some() {
                     return Ok(None);
                 }
-                let ratings = profile_rows(connection, account, rulesets, VISIBLE, PROFILE_RANK_VM_STEPS)?;
+                let ratings = profile_rows(
+                    connection,
+                    account,
+                    rulesets,
+                    VISIBLE,
+                    PROFILE_RANK_VM_STEPS,
+                )?;
                 Ok(Some(PublicAccount {
                     id: account,
                     nickname: row.nickname,
@@ -161,7 +177,7 @@ fn profile_rows(
     account: AccountId,
     rulesets: Vec<RulesetId>,
     visible: &str,
-    rank_budget:u32,
+    rank_budget: u32,
 ) -> rusqlite::Result<Vec<(RulesetId, RatingSummary)>> {
     if rulesets.len() > MAX_RATED_MODES {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -170,11 +186,22 @@ fn profile_rows(
     }
     let mut ratings = Vec::new();
     for ruleset in rulesets {
-        if let Some(row) = bounded_with_limit(connection,PROFILE_METADATA_VM_STEPS,|connection|find_own_row(connection,&ruleset,account,visible))? {
-            let rank = match bounded_with_limit(connection,rank_budget,|connection|rank_of(connection,&ruleset,&row,visible)) {
-                Ok(rank)=>Some(rank),
-                Err(error) if error.sqlite_error_code()==Some(rusqlite::ErrorCode::OperationInterrupted)=>None,
-                Err(error)=>return Err(error),
+        if let Some(row) =
+            bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| {
+                find_own_row(connection, &ruleset, account, visible)
+            })?
+        {
+            let rank = match bounded_with_limit(connection, rank_budget, |connection| {
+                rank_of(connection, &ruleset, &row, visible)
+            }) {
+                Ok(rank) => Some(rank),
+                Err(error)
+                    if error.sqlite_error_code()
+                        == Some(rusqlite::ErrorCode::OperationInterrupted) =>
+                {
+                    None
+                }
+                Err(error) => return Err(error),
             };
             ratings.push((
                 ruleset,
@@ -286,8 +313,10 @@ fn rank_selected(
     Ok(())
 }
 
-fn rank_range_query(visible:&str,range:&str)->String {
-    format!("SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND {range} AND ?4 IS NOT NULL AND ?5 IS NOT NULL")
+fn rank_range_query(visible: &str, range: &str) -> String {
+    format!(
+        "SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND {range} AND ?4 IS NOT NULL AND ?5 IS NOT NULL"
+    )
 }
 
 fn rank_of(
@@ -360,35 +389,66 @@ mod tests {
 
     #[test]
     fn profile_keeps_each_modes_summary_when_its_rank_budget_is_exhausted() {
-        let db=Db::init(Connection::open_in_memory().expect("database")).expect("schema");
-        let mut connection=db.conn.lock().expect("writer");
+        let db = Db::init(Connection::open_in_memory().expect("database")).expect("schema");
+        let mut connection = db.conn.lock().expect("writer");
         {
-            let transaction=connection.transaction().expect("seed");
+            let transaction = connection.transaction().expect("seed");
             for id in 1..=4096i64 {
                 transaction.execute("INSERT INTO accounts(id,login,nickname,hash,kind,created) VALUES(?1,'l'||?1,'a'||?1,'fixture',0,0)",[id]).expect("account");
-                for mode in ["deep","other"] {
+                for mode in ["deep", "other"] {
                     transaction.execute("INSERT INTO ratings(account,ruleset,rating,deviation,volatility,games,wins,draws,losses,last_played) VALUES(?1,?2,?3,50,0.06,2,1,0,1,1)",params![id,mode,1000+id]).expect("rating");
                 }
             }
             transaction.execute("INSERT INTO ratings(account,ruleset,rating,deviation,volatility,games,wins,draws,losses,last_played) VALUES(1,'tiny',1800,50,0.06,2,1,0,1,1)",[]).expect("cheap rank");
             transaction.commit().expect("commit");
         }
-        let modes=["deep","other","tiny"].map(|name|RulesetId(name.into())).to_vec();
-        let ratings=read_snapshot(&mut connection,|snapshot|profile_rows(snapshot,AccountId(1),modes,VISIBLE,1000)).expect("profile renders");
-        assert_eq!(ratings.len(),3);
-        assert_eq!(ratings.iter().map(|(_,summary)|summary.rank).collect::<Vec<_>>(),[None,None,Some(1)]);
-        assert!(ratings.iter().all(|(_,summary)|summary.games==2 && summary.wins==1 && summary.losses==1));
+        let modes = ["deep", "other", "tiny"]
+            .map(|name| RulesetId(name.into()))
+            .to_vec();
+        let ratings = read_snapshot(&mut connection, |snapshot| {
+            profile_rows(snapshot, AccountId(1), modes, VISIBLE, 1000)
+        })
+        .expect("profile renders");
+        assert_eq!(ratings.len(), 3);
+        assert_eq!(
+            ratings
+                .iter()
+                .map(|(_, summary)| summary.rank)
+                .collect::<Vec<_>>(),
+            [None, None, Some(1)]
+        );
+        assert!(
+            ratings
+                .iter()
+                .all(|(_, summary)| summary.games == 2 && summary.wins == 1 && summary.losses == 1)
+        );
     }
 
     #[test]
     fn guard_only_rank_range_counts_use_covering_indexes_without_account_joins() {
-        let db=fixture();
-        let connection=db.conn.lock().expect("connection");
-        let query=format!("EXPLAIN QUERY PLAN {}",rank_range_query(VISIBLE,"r.rating>?3"));
-        let mut statement=connection.prepare(&query).expect("plan");
-        let plan=statement.query_map(params!["duel",0,1800.0,50.0,1],|row|row.get::<_,String>(3)).expect("rows").collect::<rusqlite::Result<Vec<_>>>().expect("plan descriptions");
-        assert!(plan.iter().any(|step|step.contains("COVERING INDEX ratings_kind_ladder")),"{plan:?}");
-        assert!(plan.iter().all(|step|!step.contains("accounts")),"{plan:?}");
+        let db = fixture();
+        let connection = db.conn.lock().expect("connection");
+        let query = format!(
+            "EXPLAIN QUERY PLAN {}",
+            rank_range_query(VISIBLE, "r.rating>?3")
+        );
+        let mut statement = connection.prepare(&query).expect("plan");
+        let plan = statement
+            .query_map(params!["duel", 0, 1800.0, 50.0, 1], |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("rows")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("plan descriptions");
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("COVERING INDEX ratings_kind_ladder")),
+            "{plan:?}"
+        );
+        assert!(
+            plan.iter().all(|step| !step.contains("accounts")),
+            "{plan:?}"
+        );
     }
 
     #[test]

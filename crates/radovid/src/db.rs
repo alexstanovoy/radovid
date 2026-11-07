@@ -128,8 +128,10 @@ impl std::fmt::Display for DbError {
             DbError::Sqlite(error) => write!(f, "database: {error}"),
             DbError::Join => write!(f, "database task failed"),
             DbError::ReadBusy => write!(f, "database read queue is full"),
-            DbError::CheckpointBusy => write!(f,"database WAL checkpoint is blocked; write not executed"),
-            DbError::Io(error)=>write!(f,"database file: {error}"),
+            DbError::CheckpointBusy => {
+                write!(f, "database WAL checkpoint is blocked; write not executed")
+            }
+            DbError::Io(error) => write!(f, "database file: {error}"),
         }
     }
 }
@@ -233,8 +235,8 @@ pub struct Finish {
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
     readers: Option<Arc<reader::ReadPool>>,
-    writer_turn:Arc<tokio::sync::Semaphore>,
-    wal:Option<Arc<wal::Wal>>,
+    writer_turn: Arc<tokio::sync::Semaphore>,
+    wal: Option<Arc<wal::Wal>>,
 }
 
 pub fn now_ms() -> UnixMs {
@@ -261,15 +263,24 @@ impl Db {
     pub fn open(path: &Path) -> DbResult<Db> {
         let conn = Connection::open(path)?;
         let mut db = Self::init(conn)?;
-        let (resolved,wal)={
-            let connection=db.conn.lock().unwrap_or_else(|poisoned|poisoned.into_inner());
-            let actual=connection.path().filter(|path|!path.is_empty()).ok_or_else(||DbError::Sqlite(rusqlite::Error::InvalidPath(path.to_owned())))?;
-            let resolved=std::fs::canonicalize(actual).map_err(DbError::Io)?;
-            let wal=Arc::new(wal::Wal::new(&resolved,&connection)?);
-            (resolved,wal)
+        let (resolved, wal) = {
+            let connection = db
+                .conn
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let actual = connection
+                .path()
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| DbError::Sqlite(rusqlite::Error::InvalidPath(path.to_owned())))?;
+            let resolved = std::fs::canonicalize(actual).map_err(DbError::Io)?;
+            let wal = Arc::new(wal::Wal::new(&resolved, &connection)?);
+            (resolved, wal)
         };
-        db.readers = Some(Arc::new(reader::ReadPool::open(&resolved,Arc::clone(&wal.snapshots))?));
-        db.wal=Some(wal);
+        db.readers = Some(Arc::new(reader::ReadPool::open(
+            &resolved,
+            Arc::clone(&wal.snapshots),
+        )?));
+        db.wal = Some(wal);
         Ok(db)
     }
 
@@ -315,8 +326,8 @@ impl Db {
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
             readers: None,
-            writer_turn:Arc::new(tokio::sync::Semaphore::new(1)),
-            wal:None,
+            writer_turn: Arc::new(tokio::sync::Semaphore::new(1)),
+            wal: None,
         })
     }
 
@@ -326,21 +337,29 @@ impl Db {
         work: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> DbResult<T> {
         let conn = Arc::clone(&self.conn);
-        let turn=Arc::clone(&self.writer_turn).acquire_owned().await.map_err(|_|DbError::Join)?;
-        let wal=self.wal.clone();
-        let runtime=tokio::runtime::Handle::current();
+        let turn = Arc::clone(&self.writer_turn)
+            .acquire_owned()
+            .await
+            .map_err(|_| DbError::Join)?;
+        let wal = self.wal.clone();
+        let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            if let Some(policy)=&wal && policy.blocked() {
-                policy.schedule(conn,turn,runtime);
+            if let Some(policy) = &wal
+                && policy.blocked()
+            {
+                policy.schedule(conn, turn, runtime);
                 return Err(DbError::CheckpointBusy);
             }
-            let (result,checkpoint)={
-                let mut connection=conn.lock().unwrap_or_else(|poisoned|poisoned.into_inner());
-                let result=work(&mut connection);
-                let checkpoint=connection.is_autocommit() && wal.as_ref().is_some_and(|policy|policy.exceeds_limit());
-                (result,checkpoint)
+            let (result, checkpoint) = {
+                let mut connection = conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let result = work(&mut connection);
+                let checkpoint = connection.is_autocommit()
+                    && wal.as_ref().is_some_and(|policy| policy.exceeds_limit());
+                (result, checkpoint)
             };
-            if checkpoint && let Some(policy)=wal { policy.schedule(conn,turn,runtime); }
+            if checkpoint && let Some(policy) = wal {
+                policy.schedule(conn, turn, runtime);
+            }
             result.map_err(DbError::from)
         })
         .await
