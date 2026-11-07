@@ -20,7 +20,7 @@ rustls = { workspace = true }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process", "io-util", "signal", "fs"] }
 tokio-tungstenite = "0.30.0"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "hooks"] }
 argon2 = "0.6.0"
 sha2 = "0.11.1"
 toml = "1.1.8"

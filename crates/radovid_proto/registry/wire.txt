@@ -514,3 +514,21 @@ field RatingWindow 2 maximum: u32
 field RulesetInfo 12 rating_ruleset: Option<RulesetId>
 field RulesetInfo 13 rating_window: Option<RatingWindow>
 field QueueEntry 9 window_capped: bool
+
+# Protocol 18: bounded category leaderboards, own position, and ranked profiles.
+variant ClientMsg 41 Leaderboard {}
+field ClientMsg::Leaderboard 0 ruleset: RulesetId
+field ClientMsg::Leaderboard 1 kind: AccountKind
+field ClientMsg::Leaderboard 2 prefix: String
+variant Reply 16 LeaderboardPage {}
+field Reply::LeaderboardPage 0 page: LeaderboardPage
+field LeaderboardPage 0 ruleset: RulesetId
+field LeaderboardPage 1 kind: AccountKind
+field LeaderboardPage 2 prefix: String
+field LeaderboardPage 3 limit: u16
+field LeaderboardPage 4 total: u32
+field LeaderboardPage 5 rows: Vec<LadderRow>
+field LeaderboardPage 6 own: Option<LadderRow>
+field RatingSummary 5 rank: Option<u32>
+field Limits 12 leaderboard_size: u16
+variant Error 57 BadLeaderboardSearch

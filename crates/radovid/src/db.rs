@@ -1,5 +1,7 @@
 //! The database: one SQLite file in WAL mode behind one connection.
 
+mod leaderboard;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -166,6 +168,7 @@ impl RatingRow {
             wins: self.wins,
             draws: self.draws,
             losses: self.losses,
+            rank: None,
         }
     }
 }
@@ -618,49 +621,51 @@ impl Db {
         offset: u32,
         limit: u8,
     ) -> DbResult<(u32, Vec<LadderRow>)> {
-        self.run(move |c| {
-            let total: u32 = c.query_row(
-                "SELECT COUNT(*) FROM ratings r JOIN accounts a ON a.id = r.account
+        self.run(move |connection| {
+            leaderboard::read_lookup(connection, |c| {
+                let total: u32 = c.query_row(
+                    "SELECT COUNT(*) FROM ratings r JOIN accounts a ON a.id = r.account
                  WHERE r.ruleset = ?1 AND r.games > 0 AND a.deleted = 0",
-                [&ruleset.0],
-                |row| row.get(0),
-            )?;
-            let mut statement = c.prepare(
-                "SELECT a.id, a.nickname, a.kind, a.bot_version,
+                    [&ruleset.0],
+                    |row| row.get(0),
+                )?;
+                let mut statement = c.prepare(
+                    "SELECT a.id, a.nickname, a.kind, a.bot_version,
                         r.rating, r.deviation, r.games, r.wins, r.draws, r.losses, r.last_played
                  FROM ratings r JOIN accounts a ON a.id = r.account
                  WHERE r.ruleset = ?1 AND r.games > 0 AND a.deleted = 0
                  ORDER BY r.rating DESC, r.deviation ASC, a.id ASC LIMIT ?2 OFFSET ?3",
-            )?;
-            let rows = statement
-                .query_map(params![ruleset.0, limit, offset], |row| {
-                    Ok(LadderRow {
-                        rank: 0,
-                        account: AccountId(row.get::<_, i64>(0)? as u64),
-                        nickname: row.get(1)?,
-                        kind: kind_of(row.get(2)?),
-                        bot_version: row.get(3)?,
-                        rating: Rating {
-                            rating: row.get(4)?,
-                            deviation: row.get(5)?,
-                        },
-                        games: row.get(6)?,
-                        wins: row.get(7)?,
-                        draws: row.get(8)?,
-                        losses: row.get(9)?,
-                        last_played: Some(UnixMs(row.get::<_, i64>(10)? as u64)),
+                )?;
+                let rows = statement
+                    .query_map(params![ruleset.0, limit, offset], |row| {
+                        Ok(LadderRow {
+                            rank: 0,
+                            account: AccountId(row.get::<_, i64>(0)? as u64),
+                            nickname: row.get(1)?,
+                            kind: kind_of(row.get(2)?),
+                            bot_version: row.get(3)?,
+                            rating: Rating {
+                                rating: row.get(4)?,
+                                deviation: row.get(5)?,
+                            },
+                            games: row.get(6)?,
+                            wins: row.get(7)?,
+                            draws: row.get(8)?,
+                            losses: row.get(9)?,
+                            last_played: Some(UnixMs(row.get::<_, i64>(10)? as u64)),
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                let rows = rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, mut row)| {
+                        row.rank = offset + i as u32 + 1;
+                        row
                     })
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            let rows = rows
-                .into_iter()
-                .enumerate()
-                .map(|(i, mut row)| {
-                    row.rank = offset + i as u32 + 1;
-                    row
-                })
-                .collect();
-            Ok((total, rows))
+                    .collect();
+                Ok((total, rows))
+            })
         })
         .await
     }

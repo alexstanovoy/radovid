@@ -17,7 +17,7 @@ own output. It never carries game traffic, and clients can't report outcomes, so
   needs nothing, a locked one its password, which the service shows to nobody but the owner who set it. No approval
   step. Slots by team,
   spectators, and a game mode the owner chooses, which changes the rules but never how many may play.
-- **Glicko-2 ratings** and a ladder; a draw is half a win, a crashed or abandoned match changes nothing.
+- **Glicko-2 ratings** per mode, Humans/Bots leaderboards (top 100 by default), nickname search and the requester's own rank; a draw is half a win, a crashed or abandoned match changes nothing.
 - **Several games per account** at once (queues, lobbies, running matches), with no per-account cap by default; operators may set account and source limits.
 - **Game capacity:** a fixed number of servers run at once, and formed matches wait their turn in order.
 - **Replays and other match files** kept for a set time and fetched by the players who sat in the match (or everyone,
@@ -66,7 +66,7 @@ rulesets share one ladder, and its unrated queue explicitly references the rated
 For your own game, configure its executable or container image, wire fingerprint, arguments and public address
 according to the [launcher contract](DEVELOPMENT.md#launcher-contract). The game owns its rules, network protocol
 and client library; the service never imports them. The [generality audit](docs/generality.md) records guarantees
-and remaining boundaries. [Protocol 17 coordination](docs/protocol_17.md) describes the current upgrade boundary
+and remaining boundaries. [Protocol 18 coordination](docs/protocol_18.md) describes the current upgrade boundary
 and extends the [linked humans/everyone queues](docs/protocol_16.md).
 
 ## For developers

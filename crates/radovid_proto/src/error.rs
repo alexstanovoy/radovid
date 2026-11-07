@@ -123,6 +123,8 @@ pub enum Error {
     },
     /// Choose one or two distinct queue audiences: HumansOnly or Everyone.
     BadQueueAudiences,
+    /// A nickname prefix contains characters outside [A-Za-z0-9_] or exceeds 20 bytes.
+    BadLeaderboardSearch,
 }
 
 impl core::fmt::Display for Error {

@@ -3,7 +3,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AccountId, LobbyId, MatchId, ProposalId, QueueEntryId, RulesetId, Ticket, UnixMs};
+use crate::{
+    AccountId, LobbyId, MAX_LEADERBOARD_ROWS, MAX_RATED_MODES, MatchId, ProposalId, QueueEntryId,
+    RulesetId, Ticket, UnixMs,
+};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AccountKind {
@@ -74,6 +77,9 @@ pub struct RatingSummary {
     pub wins: u32,
     pub draws: u32,
     pub losses: u32,
+    /// Position in this account's Humans/Bots ladder when queried.
+    /// Profile responses include it for every mode with rated games.
+    pub rank: Option<u32>,
 }
 
 /// The largest rating spread each waiting player accepts, in rating points.
@@ -115,6 +121,7 @@ pub struct PublicAccount {
     pub kind: AccountKind,
     pub online: bool,
     pub bot_version: Option<String>,
+    #[serde(deserialize_with = "profile_ratings")]
     pub ratings: Vec<(RulesetId, RatingSummary)>,
 }
 
@@ -186,6 +193,69 @@ pub struct Limits {
     pub games_per_ipv6_48: u32,
     pub ranked_window: RatingWindow,
     pub unranked_window: RatingWindow,
+    /// Rows returned by the leaderboard endpoint; independent of the legacy Ladder page.
+    pub leaderboard_size: u16,
+}
+
+/// A mode's Humans or Bots ladder. Search results retain their unfiltered ranks.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct LeaderboardPage {
+    pub ruleset: RulesetId,
+    pub kind: AccountKind,
+    pub prefix: String,
+    pub limit: u16,
+    /// Rows matching the prefix, before the response limit.
+    pub total: u32,
+    #[serde(deserialize_with = "leaderboard_rows")]
+    pub rows: Vec<LadderRow>,
+    /// The requester's row in their own category, even when viewing the other category.
+    /// None means the requester has not played rated games in this mode.
+    pub own: Option<LadderRow>,
+}
+
+fn leaderboard_rows<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<LadderRow>, D::Error> {
+    bounded_list::<D, LadderRow, { MAX_LEADERBOARD_ROWS as usize }>(deserializer)
+}
+
+fn profile_ratings<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<(RulesetId, RatingSummary)>, D::Error> {
+    bounded_list::<D, (RulesetId, RatingSummary), { MAX_RATED_MODES }>(deserializer)
+}
+
+fn bounded_list<'de, D, T, const MAX: usize>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    struct Entries<T, const MAX: usize>(std::marker::PhantomData<T>);
+    impl<'de, T: serde::Deserialize<'de>, const MAX: usize> serde::de::Visitor<'de>
+        for Entries<T, MAX>
+    {
+        type Value = Vec<T>;
+        fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(formatter, "at most {MAX} entries")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> Result<Self::Value, A::Error> {
+            if sequence.size_hint().is_some_and(|size| size > MAX) {
+                return Err(serde::de::Error::custom("too many entries"));
+            }
+            let mut entries = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX));
+            while let Some(entry) = sequence.next_element()? {
+                if entries.len() == MAX {
+                    return Err(serde::de::Error::custom("too many entries"));
+                }
+                entries.push(entry);
+            }
+            Ok(entries)
+        }
+    }
+    deserializer.deserialize_seq(Entries::<T, MAX>(std::marker::PhantomData))
 }
 
 /// One queue entry and where it stands.

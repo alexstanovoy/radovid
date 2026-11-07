@@ -3,6 +3,7 @@
 //! at a time, so no limit can be broken by a race.
 
 mod admin;
+mod leaderboard;
 mod limits;
 mod lobby;
 mod matches;
@@ -102,8 +103,9 @@ pub fn event_channel() -> (mpsc::Sender<ServerMsg>, mpsc::Receiver<ServerMsg>) {
     mpsc::channel(EVENT_QUEUE)
 }
 
-/// What the hub keeps of an account that is online or has games in flight.
+/// An account with sessions, games in flight, or lookup debt still being refilled.
 struct Account {
+    lookup_budget: crate::throttle::TokenBucket,
     info: AccountInfo,
     bot_version: Option<String>,
     sessions: Vec<SessionId>,
@@ -121,7 +123,11 @@ impl Account {
     }
 
     fn is_idle(&self) -> bool {
-        self.sessions.is_empty() && self.in_flight() == 0
+        self.is_idle_at(std::time::Instant::now())
+    }
+
+    fn is_idle_at(&self, now: std::time::Instant) -> bool {
+        self.sessions.is_empty() && self.in_flight() == 0 && self.lookup_budget.is_full(now)
     }
 }
 
@@ -134,6 +140,7 @@ struct Session {
 }
 
 pub struct Hub {
+    lookup_budget: crate::throttle::TokenBucket,
     config: Arc<Config>,
     db: Db,
     me: mpsc::Sender<Cmd>,
@@ -227,6 +234,7 @@ pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle
 impl Hub {
     fn new(config: Arc<Config>, db: Db, me: mpsc::Sender<Cmd>) -> Self {
         Self {
+            lookup_budget: crate::throttle::TokenBucket::new(8, 8, std::time::Instant::now()),
             free_ports: config.game_ports.ports().collect(),
             config,
             db,
@@ -314,6 +322,7 @@ impl Hub {
             },
         );
         let entry = self.accounts.entry(id).or_insert_with(|| Account {
+            lookup_budget: crate::throttle::TokenBucket::new(4, 4, std::time::Instant::now()),
             info: account.info(),
             bot_version: None,
             sessions: Vec::new(),
@@ -506,7 +515,7 @@ impl Hub {
             | ClientMsg::ChangePassword { .. }
             | ClientMsg::DeleteAccount { .. } => Err(Error::Internal),
             ClientMsg::ChangeNickname { nickname } => self.change_nickname(id, nickname).await,
-            ClientMsg::Account { account } => self.public_account(account).await,
+            ClientMsg::Account { account } => self.public_account(id, account).await,
             ClientMsg::Rulesets => Ok(Reply::Rulesets {
                 list: self.config.ruleset_infos(self.kind_of(id)),
             }),
@@ -535,7 +544,12 @@ impl Hub {
                 ruleset,
                 offset,
                 limit,
-            } => self.ladder(ruleset, offset, limit).await,
+            } => self.ladder(id, ruleset, offset, limit).await,
+            ClientMsg::Leaderboard {
+                ruleset,
+                kind,
+                prefix,
+            } => self.leaderboard(id, ruleset, kind, prefix).await,
             ClientMsg::AdminBan {
                 account,
                 reason,
@@ -597,6 +611,7 @@ impl Hub {
 
     /// Once a second: queue statuses, and forgetting cooldowns that are over.
     fn tick(&mut self) {
+        self.sweep_lookup_accounts(std::time::Instant::now());
         self.pair_work = queue::QUEUE_SCAN_BUDGET;
         self.pair_all();
         self.send_queue_statuses();

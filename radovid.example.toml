@@ -9,6 +9,7 @@ lobby_teams = [1, 1]
 lobby_ruleset = "tic_tac_toe"
 
 # [limits]
+# leaderboard_size = 100                  # top N plus the requester's own rank, at most 1000
 # games_per_account = { human = 0, bot = 0 } # unlimited per account; service/source bounds remain
 # games_per_source = 8                     # tune for shared NATs
 # games_per_ipv6_48 = 64

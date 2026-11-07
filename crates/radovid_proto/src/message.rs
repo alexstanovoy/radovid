@@ -226,6 +226,12 @@ pub enum ClientMsg {
         ruleset: RulesetId,
         audiences: Vec<Audience>,
     },
+    /// A configured top-N board, optionally searched by a literal ASCII nickname prefix.
+    Leaderboard {
+        ruleset: RulesetId,
+        kind: AccountKind,
+        prefix: String,
+    },
 }
 
 impl ClientMsg {
@@ -309,6 +315,9 @@ pub enum Reply {
     QueuesJoined {
         #[serde(deserialize_with = "linked_queue_entries")]
         entries: Vec<QueueEntry>,
+    },
+    LeaderboardPage {
+        page: LeaderboardPage,
     },
 }
 

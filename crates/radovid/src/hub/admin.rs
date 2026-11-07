@@ -2,6 +2,7 @@
 
 use radovid_proto::*;
 
+use super::leaderboard::lookup_error;
 use super::matches::Phase;
 use super::{Hub, internal};
 use crate::config::ArtifactAccess;
@@ -9,32 +10,31 @@ use crate::db::{Ban, now_ms};
 use crate::supervisor::End;
 
 impl Hub {
-    pub(super) async fn public_account(&mut self, id: AccountId) -> Result<Reply, Error> {
-        let row = self
+    pub(super) async fn public_account(
+        &mut self,
+        requester: AccountId,
+        id: AccountId,
+    ) -> Result<Reply, Error> {
+        self.charge_lookup(requester)?;
+        let kind = self.kind_of(requester);
+        let modes = self
+            .config
+            .rulesets
+            .iter()
+            .filter(|rule| rule.rated && rule.admits(kind))
+            .map(|rule| rule.ruleset_id())
+            .collect();
+        let mut account = self
             .db
-            .account_by_id(id)
+            .public_profile(id, modes)
             .await
-            .map_err(internal)?
+            .map_err(lookup_error)?
             .ok_or(Error::UnknownAccount)?;
-        let ratings = self.db.ratings_of(id).await.map_err(internal)?;
-        let online = self
+        account.online = self
             .accounts
             .get(&id)
-            .is_some_and(|a| !a.sessions.is_empty());
-        let kind = row.kind;
-        Ok(Reply::Account {
-            account: PublicAccount {
-                id,
-                nickname: row.nickname,
-                kind,
-                online,
-                bot_version: row.bot_version.filter(|_| kind == AccountKind::Bot),
-                ratings: ratings
-                    .into_iter()
-                    .map(|(ruleset, rating)| (ruleset, rating.summary()))
-                    .collect(),
-            },
-        })
+            .is_some_and(|account| !account.sessions.is_empty());
+        Ok(Reply::Account { account })
     }
 
     pub(super) async fn recent_matches(
@@ -142,6 +142,7 @@ impl Hub {
 
     pub(super) async fn ladder(
         &mut self,
+        id: AccountId,
         ruleset: RulesetId,
         offset: u32,
         limit: u8,
@@ -150,11 +151,12 @@ impl Hub {
         if !config.rated {
             return Err(Error::NoQueue);
         }
+        self.charge_lookup(id)?;
         let (total, rows) = self
             .db
             .ladder(ruleset, offset, limit.min(MAX_LADDER_PAGE))
             .await
-            .map_err(internal)?;
+            .map_err(lookup_error)?;
         Ok(Reply::LadderPage { total, rows })
     }
 

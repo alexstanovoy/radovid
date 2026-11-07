@@ -222,6 +222,7 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
 /// test client comes from 127.0.0.1.
 pub fn test_limits() -> LimitsConfig {
     LimitsConfig {
+        leaderboard_size: 100,
         ranked_window: Default::default(),
         unranked_window: Default::default(),
         games_per_account: PerKind { human: 2, bot: 8 },

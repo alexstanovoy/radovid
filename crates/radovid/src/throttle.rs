@@ -353,6 +353,19 @@ pub struct TokenBucket {
 }
 
 impl TokenBucket {
+    /// Inspect without spending: an account already over its limit must not burn global tokens.
+    pub fn retry_after_ms(&self, now: Instant) -> Option<u32> {
+        let tokens = (self.tokens
+            + now.saturating_duration_since(self.last).as_secs_f64() * self.rate)
+            .min(self.burst);
+        (tokens < 1.0).then(|| (((1.0 - tokens) / self.rate) * 1000.0).ceil() as u32)
+    }
+
+    pub fn is_full(&self, now: Instant) -> bool {
+        self.tokens + now.saturating_duration_since(self.last).as_secs_f64() * self.rate
+            >= self.burst
+    }
+
     pub fn new(rate: u32, burst: u32, now: Instant) -> Self {
         TokenBucket {
             tokens: f64::from(burst),

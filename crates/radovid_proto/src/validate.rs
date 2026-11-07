@@ -18,6 +18,14 @@ pub fn valid_nickname(nickname: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
+/// Empty lists the board; underscores are literal nickname characters, never wildcards.
+pub fn valid_nickname_prefix(prefix: &str) -> bool {
+    prefix.len() <= MAX_NICKNAME_LEN
+        && prefix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
 /// A password: 8 to 128 bytes of UTF-8 (the type already guarantees UTF-8).
 pub fn valid_password(password: &str) -> bool {
     (MIN_PASSWORD_LEN..=MAX_PASSWORD_LEN).contains(&password.len())

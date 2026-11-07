@@ -209,6 +209,7 @@ impl LimitsConfig {
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct LimitsConfig {
+    pub leaderboard_size: u16,
     pub ranked_window: RatingWindowConfig,
     pub unranked_window: RatingWindowConfig,
     /// Games in flight per account: queue entries, lobbies and unfinished
@@ -244,6 +245,7 @@ pub struct LimitsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         LimitsConfig {
+            leaderboard_size: 100,
             ranked_window: RatingWindowConfig::default(),
             unranked_window: RatingWindowConfig::default(),
             games_per_account: PerKind { human: 0, bot: 0 },
@@ -610,6 +612,16 @@ impl Config {
         if self.rulesets.is_empty() {
             return Err("no ruleset is configured".to_owned());
         }
+        if self
+            .rulesets
+            .iter()
+            .filter(|rule| rule.rated)
+            .take(MAX_RATED_MODES + 1)
+            .count()
+            > MAX_RATED_MODES
+        {
+            return Err("at most 64 rated rulesets may be configured".into());
+        }
         if self.max_connections == 0 {
             return Err("max_connections must be at least 1".to_owned());
         }
@@ -877,6 +889,9 @@ impl Config {
 
     fn validate_limits(&self) -> Result<(), String> {
         let limits = &self.limits;
+        if !(1..=MAX_LEADERBOARD_ROWS).contains(&limits.leaderboard_size) {
+            return Err("limits.leaderboard_size must be 1 to 1000".into());
+        }
         if !(1..=65536).contains(&limits.custom_match_capacity)
             || !(1..=65536).contains(&limits.games_per_ipv6_48)
         {
@@ -992,6 +1007,7 @@ impl Config {
                 .find(|candidate| candidate.rating_ruleset.as_deref() == Some(&ranked.id))
         });
         Limits {
+            leaderboard_size: limits.leaderboard_size,
             retired_games_per_account: 0,
             games_per_account: wire_account_limit(
                 ruleset.map_or(limits.games_per_account.of(kind), |r| {
@@ -1442,6 +1458,42 @@ maximum = 3000
                 config.limits_for(AccountKind::Human, config.ruleset(&RulesetId(id.into())));
             assert_eq!(limits.ranked_window.initial, 200);
             assert_eq!(limits.unranked_window.maximum, 5000);
+        }
+    }
+
+    #[test]
+    fn per_mode_profiles_have_a_hard_bound_on_the_number_of_rated_modes() {
+        let mut config: Config = toml::from_str(&paired_window_text()).expect("config");
+        let template = config
+            .rulesets
+            .iter()
+            .find(|rule| rule.rated)
+            .expect("ranked")
+            .clone();
+        config.rulesets = (0..=MAX_RATED_MODES)
+            .map(|index| {
+                let mut rule = template.clone();
+                rule.id = format!("mode_{index}");
+                rule
+            })
+            .collect();
+        config.lobby_ruleset = Some("mode_0".into());
+        assert_eq!(
+            config.validate(),
+            Err("at most 64 rated rulesets may be configured".into())
+        );
+    }
+
+    #[test]
+    fn leaderboard_size_defaults_to_100_and_rejects_zero_or_more_than_1000() {
+        let mut config: Config = toml::from_str(&paired_window_text()).expect("config");
+        assert_eq!(config.limits.leaderboard_size, 100);
+        for size in [0, 1001] {
+            config.limits.leaderboard_size = size;
+            assert_eq!(
+                config.validate(),
+                Err("limits.leaderboard_size must be 1 to 1000".into())
+            );
         }
     }
 

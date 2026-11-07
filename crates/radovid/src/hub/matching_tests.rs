@@ -11,15 +11,15 @@ impl Drop for Scratch {
     }
 }
 
-struct Fixture {
-    hub: Hub,
+pub(super) struct Fixture {
+    pub(super) hub: Hub,
     _commands: mpsc::Receiver<Cmd>,
     events: Vec<mpsc::Receiver<ServerMsg>>,
     _directory: Scratch,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let directory = Scratch(std::env::temp_dir().join(format!(
             "radovid_windows_{}_{}",
@@ -55,7 +55,7 @@ impl Fixture {
         }
     }
 
-    async fn account(&mut self, name: &str) -> (AccountId, SessionId) {
+    pub(super) async fn account(&mut self, name: &str) -> (AccountId, SessionId) {
         let id = self
             .hub
             .db

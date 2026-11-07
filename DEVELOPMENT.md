@@ -69,6 +69,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `password.memory_kib`, `password.iterations` | `65536`, `3` | argon2id cost of new hashes; lower only for tests |
 | `password.max_waiting` | `64` | password checks waiting for a hash slot; more are answered `Throttled` |
 | `limits.games_per_account` | `{ human = 0, bot = 0 }` | games in flight per account: queue entries, lobbies, unfinished matches; 0 means unlimited (source and service limits still apply) |
+| `limits.leaderboard_size` | `100` | leaderboard rows per response, 1 to 1000, besides the requester's own row; served in `Limits` |
 | `limits.games_per_source` | `8` | the same for all accounts of an IPv4 address or IPv6 /64; raise for shared NATs, accepting more abuse exposure |
 | `limits.games_per_ipv6_48` | `64` | aggregate activities across IPv6 /64 sources in one /48, 1 to 65536 |
 | `limits.custom_match_capacity` | `256` | lobby countdowns plus starting, waiting and running lobby/solo matches across all accounts, 1 to 65536; `Limits` reports it |
@@ -161,6 +162,14 @@ most 64 KiB from a client, 4 MiB from the service.
   nested on the wire. Old binaries receive `ProtoMismatch`; consumers must rebuild and read the explicit limit.
   Zero remains only a configuration spelling, never an active numeric wire limit.
   Version 14 appends custom-match and IPv6-site capacity fields and refusal variants; it serves version 14 clients.
+
+## Leaderboards and profiles
+
+Each rated mode has Humans and Bots views of its accounts' ratings. The leaderboard returns
+the configured top N, literal nickname-prefix search results with absolute ranks, and the
+requester's own position even outside those results. Profiles include per-mode ranks. A service
+configures at most 64 rated modes. See [protocol 18](docs/protocol_18.md) for the request/reply
+contract, deterministic ordering, visibility, rate limits and database-work budget.
 
 ## Ratings
 

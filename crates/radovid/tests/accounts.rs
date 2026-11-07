@@ -347,6 +347,18 @@ fn version_16_is_refused_before_the_rating_window_catalog_is_served() {
 }
 
 #[test]
+fn version_17_is_refused_before_the_leaderboard_catalog_is_served() {
+    let env = start(rules());
+    let error = refused(Client::connect_as(&env.url, &env.tls, 17, FINGERPRINT));
+    assert_eq!(
+        error,
+        Error::ProtoMismatch {
+            server: PROTO_VERSION
+        }
+    );
+}
+
+#[test]
 fn another_protocol_version_is_refused_and_another_game_wire_cannot_play() {
     let env = start(rules());
     // The configured minimum is served; versions outside the range are refused.
