@@ -33,8 +33,12 @@ pub struct Env {
 }
 
 impl Env {
-    pub fn service(&self)->&Service { self.service.as_ref().expect("service") }
-    pub fn block_on<F:std::future::Future>(&self,future:F)->F::Output { self.runtime.block_on(future) }
+    pub fn service(&self) -> &Service {
+        self.service.as_ref().expect("service")
+    }
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
 
     pub fn db_path(&self) -> PathBuf {
         self.dir.join("radovid.db")

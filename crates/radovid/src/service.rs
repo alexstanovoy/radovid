@@ -30,9 +30,12 @@ pub struct Service {
 
 impl Service {
     #[cfg(test)]
-    pub(crate) async fn freeze_lookup_clock_for_test(&self,now:std::time::Instant) {
-        let (done,ready)=tokio::sync::oneshot::channel();
-        self.hub_tx.send(Cmd::FreezeLookupClock { now,done }).await.expect("hub");
+    pub(crate) async fn freeze_lookup_clock_for_test(&self, now: std::time::Instant) {
+        let (done, ready) = tokio::sync::oneshot::channel();
+        self.hub_tx
+            .send(Cmd::FreezeLookupClock { now, done })
+            .await
+            .expect("hub");
         ready.await.expect("clock installed");
     }
 

@@ -236,14 +236,16 @@ pub fn now_ms() -> UnixMs {
 
 impl Db {
     #[cfg(test)]
-    pub(crate) fn lookup_connection_for_test(&self)->&Mutex<Connection> {
-        self.readers.as_ref().map_or(self.conn.as_ref(),|readers| readers.first_connection())
+    pub(crate) fn lookup_connection_for_test(&self) -> &Mutex<Connection> {
+        self.readers
+            .as_ref()
+            .map_or(self.conn.as_ref(), |readers| readers.first_connection())
     }
 
     pub fn open(path: &Path) -> DbResult<Db> {
         let conn = Connection::open(path)?;
-        let mut db=Self::init(conn)?;
-        db.readers=Some(Arc::new(reader::ReadPool::open(path)?));
+        let mut db = Self::init(conn)?;
+        db.readers = Some(Arc::new(reader::ReadPool::open(path)?));
         Ok(db)
     }
 
@@ -255,18 +257,20 @@ impl Db {
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => {
-                let transaction=conn.transaction()?;
+                let transaction = conn.transaction()?;
                 transaction.execute_batch(SCHEMA)?;
                 transaction.execute_batch(RANKING_SCHEMA)?;
-                transaction.pragma_update(None,"user_version",SCHEMA_VERSION)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 transaction.commit()?;
             }
             2 => {
-                let transaction=conn.transaction()?;
-                transaction.execute_batch("ALTER TABLE ratings ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
-                    UPDATE ratings SET kind=(SELECT kind FROM accounts WHERE id=ratings.account);")?;
+                let transaction = conn.transaction()?;
+                transaction.execute_batch(
+                    "ALTER TABLE ratings ADD COLUMN kind INTEGER NOT NULL DEFAULT 0;
+                    UPDATE ratings SET kind=(SELECT kind FROM accounts WHERE id=ratings.account);",
+                )?;
                 transaction.execute_batch(RANKING_SCHEMA)?;
-                transaction.pragma_update(None,"user_version",SCHEMA_VERSION)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 transaction.commit()?;
             }
             SCHEMA_VERSION => {}
@@ -297,10 +301,13 @@ impl Db {
         .map_err(DbError::from)
     }
 
-    async fn read<T:Send+'static>(&self,work:impl FnOnce(&mut Connection)->rusqlite::Result<T>+Send+'static)->DbResult<T> {
+    async fn read<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
+    ) -> DbResult<T> {
         match &self.readers {
-            Some(readers)=>readers.run(work).await,
-            None=>self.run(work).await,
+            Some(readers) => readers.run(work).await,
+            None => self.run(work).await,
         }
     }
 

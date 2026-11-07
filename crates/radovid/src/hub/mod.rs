@@ -36,10 +36,15 @@ pub type SessionId = u64;
 /// Everything that reaches the hub.
 pub enum Cmd {
     #[cfg(test)]
-    FreezeLookupClock { now:std::time::Instant,done:oneshot::Sender<()> },
+    FreezeLookupClock {
+        now: std::time::Instant,
+        done: oneshot::Sender<()>,
+    },
     /// A connection logged in.
     Attach(Box<Attach>),
-    LookupDone { account:AccountId },
+    LookupDone {
+        account: AccountId,
+    },
     Request {
         session: SessionId,
         msg: ClientMsg,
@@ -131,7 +136,10 @@ impl Account {
     }
 
     fn is_idle_at(&self, now: std::time::Instant) -> bool {
-        self.sessions.is_empty() && self.in_flight() == 0 && !self.lookup_pending && self.lookup_budget.is_full(now)
+        self.sessions.is_empty()
+            && self.in_flight() == 0
+            && !self.lookup_pending
+            && self.lookup_budget.is_full(now)
     }
 }
 
@@ -145,7 +153,7 @@ struct Session {
 
 pub struct Hub {
     #[cfg(test)]
-    lookup_clock:Option<std::time::Instant>,
+    lookup_clock: Option<std::time::Instant>,
     config: Arc<Config>,
     db: Db,
     me: mpsc::Sender<Cmd>,
@@ -240,7 +248,7 @@ impl Hub {
     fn new(config: Arc<Config>, db: Db, me: mpsc::Sender<Cmd>) -> Self {
         Self {
             #[cfg(test)]
-            lookup_clock:None,
+            lookup_clock: None,
             free_ports: config.game_ports.ports().collect(),
             config,
             db,
@@ -269,17 +277,24 @@ impl Hub {
     async fn handle(&mut self, cmd: Cmd) {
         match cmd {
             #[cfg(test)]
-            Cmd::FreezeLookupClock { now,done }=>{ self.lookup_clock=Some(now); let _=done.send(()); },
+            Cmd::FreezeLookupClock { now, done } => {
+                self.lookup_clock = Some(now);
+                let _ = done.send(());
+            }
             Cmd::Attach(attach) => self.attach(*attach),
             Cmd::Request {
                 session,
                 msg,
                 reply,
             } => {
-                if leaderboard::is_lookup(&msg) { self.start_lookup(session,&msg,reply); }
-                else { let result=self.request(session,msg).await; let _=reply.send(result); }
+                if leaderboard::is_lookup(&msg) {
+                    self.start_lookup(session, &msg, reply);
+                } else {
+                    let result = self.request(session, msg).await;
+                    let _ = reply.send(result);
+                }
             }
-            Cmd::LookupDone { account }=>self.lookup_done(account),
+            Cmd::LookupDone { account } => self.lookup_done(account),
             Cmd::Detach { session } => self.detach(session),
             Cmd::EndOtherSessions { account, keep } => self.end_other_sessions(account, keep),
             Cmd::AccountDeleted { account, done } => {
@@ -332,7 +347,7 @@ impl Hub {
         );
         let entry = self.accounts.entry(id).or_insert_with(|| Account {
             lookup_budget: crate::throttle::TokenBucket::new(4, 4, std::time::Instant::now()),
-            lookup_pending:false,
+            lookup_pending: false,
             info: account.info(),
             bot_version: None,
             sessions: Vec::new(),
@@ -511,8 +526,8 @@ impl Hub {
 
     async fn request(&mut self, session: SessionId, msg: ClientMsg) -> Result<Reply, Error> {
         if leaderboard::is_lookup(&msg) {
-            let (account,query)=self.prepare_lookup(session,&msg)?;
-            let result=query.run(&self.db).await;
+            let (account, query) = self.prepare_lookup(session, &msg)?;
+            let result = query.run(&self.db).await;
             self.lookup_done(account);
             return result;
         }
@@ -531,7 +546,7 @@ impl Hub {
             | ClientMsg::ChangePassword { .. }
             | ClientMsg::DeleteAccount { .. } => Err(Error::Internal),
             ClientMsg::ChangeNickname { nickname } => self.change_nickname(id, nickname).await,
-            ClientMsg::Account { .. }=>Err(Error::Internal),
+            ClientMsg::Account { .. } => Err(Error::Internal),
             ClientMsg::Rulesets => Ok(Reply::Rulesets {
                 list: self.config.ruleset_infos(self.kind_of(id)),
             }),
@@ -556,7 +571,7 @@ impl Hub {
             ClientMsg::RecentMatches { account, limit } => {
                 self.recent_matches(account, limit).await
             }
-            ClientMsg::Ladder { .. }|ClientMsg::Leaderboard { .. }=>Err(Error::Internal),
+            ClientMsg::Ladder { .. } | ClientMsg::Leaderboard { .. } => Err(Error::Internal),
             ClientMsg::AdminBan {
                 account,
                 reason,

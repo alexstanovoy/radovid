@@ -61,24 +61,53 @@ pub(super) fn read_lookup<T>(
 }
 
 const ROW: &str = "r.account,a.nickname,r.kind,a.bot_version,r.rating,r.deviation,r.games,r.wins,r.draws,r.losses,r.last_played";
-pub(super) fn visible_at(now:UnixMs)->String {
+pub(super) fn visible_at(now: UnixMs) -> String {
     // The cutoff is server-generated numeric data, shared by every statement of a reply.
-    format!("r.games>0 AND a.deleted=0 AND (a.banned=0 OR a.ban_until BETWEEN 0 AND {})",now.0)
+    format!(
+        "r.games>0 AND a.deleted=0 AND (a.banned=0 OR a.ban_until BETWEEN 0 AND {})",
+        now.0
+    )
 }
 
 impl Db {
-    pub async fn leaderboard(&self,ruleset:RulesetId,kind:AccountKind,prefix:String,limit:u16,requester:AccountId)->DbResult<LeaderboardPage> {
-        if !valid_nickname_prefix(&prefix) { return Err(DbError::Sqlite(rusqlite::Error::InvalidParameterName("invalid nickname prefix".into()))); }
-        self.read(move |connection| read_lookup(connection,|connection| {
-            let limit=limit.clamp(1,MAX_LEADERBOARD_ROWS);
-            let visible=visible_at(now_ms());
-            let (total,mut rows)=if prefix.is_empty() {
-                category_top(connection,&ruleset,kind,limit,&visible)?
-            } else { prefix_top(connection,&ruleset,kind,&prefix,limit,&visible)? };
-            if !prefix.is_empty() { rank_selected(connection,&ruleset,kind,&mut rows,&visible)?; }
-            let own=own_row(connection,&ruleset,requester,&visible)?;
-            Ok(LeaderboardPage { ruleset,kind,prefix,limit,total,rows,own })
-        })).await
+    pub async fn leaderboard(
+        &self,
+        ruleset: RulesetId,
+        kind: AccountKind,
+        prefix: String,
+        limit: u16,
+        requester: AccountId,
+    ) -> DbResult<LeaderboardPage> {
+        if !valid_nickname_prefix(&prefix) {
+            return Err(DbError::Sqlite(rusqlite::Error::InvalidParameterName(
+                "invalid nickname prefix".into(),
+            )));
+        }
+        self.read(move |connection| {
+            read_lookup(connection, |connection| {
+                let limit = limit.clamp(1, MAX_LEADERBOARD_ROWS);
+                let visible = visible_at(now_ms());
+                let (total, mut rows) = if prefix.is_empty() {
+                    category_top(connection, &ruleset, kind, limit, &visible)?
+                } else {
+                    prefix_top(connection, &ruleset, kind, &prefix, limit, &visible)?
+                };
+                if !prefix.is_empty() {
+                    rank_selected(connection, &ruleset, kind, &mut rows, &visible)?;
+                }
+                let own = own_row(connection, &ruleset, requester, &visible)?;
+                Ok(LeaderboardPage {
+                    ruleset,
+                    kind,
+                    prefix,
+                    limit,
+                    total,
+                    rows,
+                    own,
+                })
+            })
+        })
+        .await
     }
 
     pub async fn public_profile(
@@ -89,7 +118,7 @@ impl Db {
     ) -> DbResult<Option<PublicAccount>> {
         self.read(move |connection| {
             read_lookup(connection, |connection| {
-                let now=now_ms();
+                let now = now_ms();
                 let row = connection
                     .query_row(
                         &format!("{ACCOUNT_SELECT} WHERE id=?1"),
@@ -100,7 +129,9 @@ impl Db {
                 let Some(row) = row else {
                     return Ok(None);
                 };
-                if requester!=account && row.active_ban(now).is_some() { return Ok(None); }
+                if requester != account && row.active_ban(now).is_some() {
+                    return Ok(None);
+                }
                 let ratings = profile_rows(connection, account, rulesets, &visible_at(now))?;
                 Ok(Some(PublicAccount {
                     id: account,
@@ -120,7 +151,7 @@ fn profile_rows(
     connection: &Connection,
     account: AccountId,
     rulesets: Vec<RulesetId>,
-    visible:&str,
+    visible: &str,
 ) -> rusqlite::Result<Vec<(RulesetId, RatingSummary)>> {
     if rulesets.len() > MAX_RATED_MODES {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -146,65 +177,147 @@ fn profile_rows(
     Ok(ratings)
 }
 
-fn category_top(connection:&Connection,ruleset:&RulesetId,kind:AccountKind,limit:u16,visible:&str)->rusqlite::Result<(u32,Vec<LadderRow>)> {
+fn category_top(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    kind: AccountKind,
+    limit: u16,
+    visible: &str,
+) -> rusqlite::Result<(u32, Vec<LadderRow>)> {
     let total=connection.query_row(&format!("SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible}"),params![ruleset.0,kind_code(kind)],|row| row.get(0))?;
     let mut statement=connection.prepare(&format!("SELECT {ROW},0 FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?3"))?;
-    let mut rows=statement.query_map(params![ruleset.0,kind_code(kind),limit],ladder_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-    for (index,row) in rows.iter_mut().enumerate() { row.rank=index as u32+1; }
-    Ok((total,rows))
+    let mut rows = statement
+        .query_map(params![ruleset.0, kind_code(kind), limit], ladder_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.rank = index as u32 + 1;
+    }
+    Ok((total, rows))
 }
 
-fn prefix_top(connection:&Connection,ruleset:&RulesetId,kind:AccountKind,prefix:&str,limit:u16,visible:&str)->rusqlite::Result<(u32,Vec<LadderRow>)> {
-    let lower=prefix.to_ascii_lowercase();
-    let mut upper=lower.as_bytes().to_vec();
-    if let Some(last)=upper.last_mut() { *last+=1; }
-    let upper=String::from_utf8(upper).map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let from=format!("FROM accounts a INDEXED BY accounts_nickname_key CROSS JOIN ratings r ON r.account=a.id AND r.ruleset=?1 WHERE r.kind=?2 AND {visible} AND lower(a.nickname)>=?3 AND lower(a.nickname)<?4");
-    let total=connection.query_row(&format!("SELECT COUNT(*) {from}"),params![ruleset.0,kind_code(kind),lower,upper],|row| row.get(0))?;
-    let mut statement=connection.prepare(&format!("SELECT {ROW},0 {from} ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?5"))?;
-    let rows=statement.query_map(params![ruleset.0,kind_code(kind),lower,upper,limit],ladder_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok((total,rows))
+fn prefix_top(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    kind: AccountKind,
+    prefix: &str,
+    limit: u16,
+    visible: &str,
+) -> rusqlite::Result<(u32, Vec<LadderRow>)> {
+    let lower = prefix.to_ascii_lowercase();
+    let mut upper = lower.as_bytes().to_vec();
+    if let Some(last) = upper.last_mut() {
+        *last += 1;
+    }
+    let upper = String::from_utf8(upper).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let from = format!(
+        "FROM accounts a INDEXED BY accounts_nickname_key CROSS JOIN ratings r ON r.account=a.id AND r.ruleset=?1 WHERE r.kind=?2 AND {visible} AND lower(a.nickname)>=?3 AND lower(a.nickname)<?4"
+    );
+    let total = connection.query_row(
+        &format!("SELECT COUNT(*) {from}"),
+        params![ruleset.0, kind_code(kind), lower, upper],
+        |row| row.get(0),
+    )?;
+    let mut statement = connection.prepare(&format!(
+        "SELECT {ROW},0 {from} ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?5"
+    ))?;
+    let rows = statement
+        .query_map(
+            params![ruleset.0, kind_code(kind), lower, upper, limit],
+            ladder_row,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok((total, rows))
 }
 
 // One ordered index pass ranks selected search rows; counting separately per row is quadratic.
-fn rank_selected(connection:&Connection,ruleset:&RulesetId,kind:AccountKind,picked:&mut [LadderRow],visible:&str)->rusqlite::Result<()> {
-    let mut remaining:std::collections::HashMap<_,_>=picked.iter().enumerate().map(|(index,row)| (row.account,index)).collect();
-    if remaining.is_empty() { return Ok(()); }
+fn rank_selected(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    kind: AccountKind,
+    picked: &mut [LadderRow],
+    visible: &str,
+) -> rusqlite::Result<()> {
+    let mut remaining: std::collections::HashMap<_, _> = picked
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.account, index))
+        .collect();
+    if remaining.is_empty() {
+        return Ok(());
+    }
     let mut statement=connection.prepare(&format!("SELECT r.account FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} ORDER BY r.rating DESC,r.deviation,r.account"))?;
-    let mut cursor=statement.query(params![ruleset.0,kind_code(kind)])?;
-    let mut rank=0u32;
-    while let Some(row)=cursor.next()? {
-        rank=rank.checked_add(1).ok_or(rusqlite::Error::InvalidQuery)?;
-        if let Some(index)=remaining.remove(&AccountId(row.get::<_,i64>(0)? as u64)) { picked[index].rank=rank; }
-        if remaining.is_empty() { break; }
+    let mut cursor = statement.query(params![ruleset.0, kind_code(kind)])?;
+    let mut rank = 0u32;
+    while let Some(row) = cursor.next()? {
+        rank = rank.checked_add(1).ok_or(rusqlite::Error::InvalidQuery)?;
+        if let Some(index) = remaining.remove(&AccountId(row.get::<_, i64>(0)? as u64)) {
+            picked[index].rank = rank;
+        }
+        if remaining.is_empty() {
+            break;
+        }
     }
     Ok(())
 }
 
-fn rank_of(connection:&Connection,ruleset:&RulesetId,row:&LadderRow,visible:&str)->rusqlite::Result<u32> {
-    let mut rank=1u32;
-    for range in ["r.rating>?3","r.rating=?3 AND r.deviation<?4","r.rating=?3 AND r.deviation=?4 AND r.account<?5"] {
-        let sql=format!("SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND {range} AND ?4 IS NOT NULL AND ?5 IS NOT NULL");
-        let count:u32=connection.query_row(&sql,params![ruleset.0,kind_code(row.kind),row.rating.rating,row.rating.deviation,row.account.0 as i64],|row| row.get(0))?;
-        rank=rank.checked_add(count).ok_or(rusqlite::Error::InvalidQuery)?;
+fn rank_of(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    row: &LadderRow,
+    visible: &str,
+) -> rusqlite::Result<u32> {
+    let mut rank = 1u32;
+    for range in [
+        "r.rating>?3",
+        "r.rating=?3 AND r.deviation<?4",
+        "r.rating=?3 AND r.deviation=?4 AND r.account<?5",
+    ] {
+        let sql = format!(
+            "SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND {range} AND ?4 IS NOT NULL AND ?5 IS NOT NULL"
+        );
+        let count: u32 = connection.query_row(
+            &sql,
+            params![
+                ruleset.0,
+                kind_code(row.kind),
+                row.rating.rating,
+                row.rating.deviation,
+                row.account.0 as i64
+            ],
+            |row| row.get(0),
+        )?;
+        rank = rank
+            .checked_add(count)
+            .ok_or(rusqlite::Error::InvalidQuery)?;
     }
     Ok(rank)
 }
 
-fn own_row(connection:&Connection,ruleset:&RulesetId,account:AccountId,visible:&str)->rusqlite::Result<Option<LadderRow>> {
+fn own_row(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    account: AccountId,
+    visible: &str,
+) -> rusqlite::Result<Option<LadderRow>> {
     let row=connection.query_row(&format!("SELECT {ROW},0 FROM ratings r CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.account=?2 AND {visible}"),params![ruleset.0,account.0 as i64],ladder_row).optional()?;
-    let Some(mut row)=row else { return Ok(None); };
-    row.rank=rank_of(connection,ruleset,&row,visible)?;
+    let Some(mut row) = row else {
+        return Ok(None);
+    };
+    row.rank = rank_of(connection, ruleset, &row, visible)?;
     Ok(Some(row))
 }
 
 fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
-    let kind=kind_of(row.get(2)?);
+    let kind = kind_of(row.get(2)?);
     Ok(LadderRow {
         account: AccountId(row.get::<_, i64>(0)? as u64),
         nickname: row.get(1)?,
         kind,
-        bot_version: if kind==AccountKind::Bot { row.get(3)? } else { None },
+        bot_version: if kind == AccountKind::Bot {
+            row.get(3)?
+        } else {
+            None
+        },
         rating: Rating {
             rating: row.get(4)?,
             deviation: row.get(5)?,
@@ -224,25 +337,92 @@ mod tests {
 
     #[tokio::test]
     async fn banned_profiles_are_hidden_from_others_and_expired_bans_restore_rank() {
-        let db=fixture();
-        db.set_ban(AccountId(2),Some(Ban { reason:"fixture".into(),until:None })).await.expect("ban");
-        let profile=db.public_profile(AccountId(2),vec![RulesetId("duel".into())],AccountId(1)).await.expect("profile lookup");
-        assert!(profile.is_none(),"other accounts cannot see a banned profile");
-        let own=db.public_profile(AccountId(2),vec![RulesetId("duel".into())],AccountId(2)).await.expect("own profile").expect("own metadata");
-        assert!(own.ratings.is_empty(),"a banned requester is not ranked");
-        let (_,legacy)=db.ladder(RulesetId("duel".into()),0,100).await.expect("legacy board");
-        assert!(legacy.iter().all(|row| row.account!=AccountId(2)),"legacy views hide the same ban");
-        let page=db.leaderboard(RulesetId("duel".into()),AccountKind::Human,"Be".into(),100,AccountId(2)).await.expect("search");
-        assert_eq!(page.total,0);
+        let db = fixture();
+        db.set_ban(
+            AccountId(2),
+            Some(Ban {
+                reason: "fixture".into(),
+                until: None,
+            }),
+        )
+        .await
+        .expect("ban");
+        let profile = db
+            .public_profile(AccountId(2), vec![RulesetId("duel".into())], AccountId(1))
+            .await
+            .expect("profile lookup");
+        assert!(
+            profile.is_none(),
+            "other accounts cannot see a banned profile"
+        );
+        let own = db
+            .public_profile(AccountId(2), vec![RulesetId("duel".into())], AccountId(2))
+            .await
+            .expect("own profile")
+            .expect("own metadata");
+        assert!(own.ratings.is_empty(), "a banned requester is not ranked");
+        let (_, legacy) = db
+            .ladder(RulesetId("duel".into()), 0, 100)
+            .await
+            .expect("legacy board");
+        assert!(
+            legacy.iter().all(|row| row.account != AccountId(2)),
+            "legacy views hide the same ban"
+        );
+        let page = db
+            .leaderboard(
+                RulesetId("duel".into()),
+                AccountKind::Human,
+                "Be".into(),
+                100,
+                AccountId(2),
+            )
+            .await
+            .expect("search");
+        assert_eq!(page.total, 0);
         assert!(page.rows.is_empty());
-        assert!(page.own.is_none(),"a banned requester has no ranked row");
-        db.set_ban(AccountId(2),Some(Ban { reason:"future".into(),until:Some(UnixMs(u64::MAX)) })).await.expect("future ban");
-        let future=db.leaderboard(RulesetId("duel".into()),AccountKind::Human,String::new(),100,AccountId(2)).await.expect("future ban lookup");
+        assert!(page.own.is_none(), "a banned requester has no ranked row");
+        db.set_ban(
+            AccountId(2),
+            Some(Ban {
+                reason: "future".into(),
+                until: Some(UnixMs(u64::MAX)),
+            }),
+        )
+        .await
+        .expect("future ban");
+        let future = db
+            .leaderboard(
+                RulesetId("duel".into()),
+                AccountKind::Human,
+                String::new(),
+                100,
+                AccountId(2),
+            )
+            .await
+            .expect("future ban lookup");
         assert!(future.own.is_none());
-        db.set_ban(AccountId(2),Some(Ban { reason:"expired".into(),until:Some(UnixMs(1)) })).await.expect("expired ban");
-        let page=db.leaderboard(RulesetId("duel".into()),AccountKind::Human,String::new(),100,AccountId(2)).await.expect("expired");
-        assert_eq!(page.total,3);
-        assert_eq!(page.own.expect("rank restored").rank,1);
+        db.set_ban(
+            AccountId(2),
+            Some(Ban {
+                reason: "expired".into(),
+                until: Some(UnixMs(1)),
+            }),
+        )
+        .await
+        .expect("expired ban");
+        let page = db
+            .leaderboard(
+                RulesetId("duel".into()),
+                AccountKind::Human,
+                String::new(),
+                100,
+                AccountId(2),
+            )
+            .await
+            .expect("expired");
+        assert_eq!(page.total, 3);
+        assert_eq!(page.own.expect("rank restored").rank, 1);
     }
 
     fn fixture() -> Db {
@@ -350,7 +530,16 @@ mod tests {
     #[tokio::test]
     async fn profile_ranks_are_per_mode_and_unplayed_accounts_have_no_position() {
         let db = fixture();
-        let ratings=db.public_profile(AccountId(1),vec![RulesetId("duel".into()),RulesetId("teams".into())],AccountId(1)).await.expect("profile").expect("account").ratings;
+        let ratings = db
+            .public_profile(
+                AccountId(1),
+                vec![RulesetId("duel".into()), RulesetId("teams".into())],
+                AccountId(1),
+            )
+            .await
+            .expect("profile")
+            .expect("account")
+            .ratings;
         assert_eq!(
             ratings
                 .iter()
@@ -406,26 +595,41 @@ mod tests {
         let writer = Connection::open(directory.0.join("ranks.db")).expect("other connection");
         read_lookup(&mut connection, |snapshot| {
             assert_eq!(
-                own_row(snapshot, &RulesetId("duel".into()), AccountId(1), &visible_at(now_ms()))?
-                    .expect("own")
-                    .kind,
+                own_row(
+                    snapshot,
+                    &RulesetId("duel".into()),
+                    AccountId(1),
+                    &visible_at(now_ms())
+                )?
+                .expect("own")
+                .kind,
                 AccountKind::Human
             );
             writer.execute("UPDATE accounts SET kind=1 WHERE id=1", [])?;
             assert_eq!(
-                own_row(snapshot, &RulesetId("duel".into()), AccountId(1), &visible_at(now_ms()))?
-                    .expect("same snapshot")
-                    .kind,
+                own_row(
+                    snapshot,
+                    &RulesetId("duel".into()),
+                    AccountId(1),
+                    &visible_at(now_ms())
+                )?
+                .expect("same snapshot")
+                .kind,
                 AccountKind::Human
             );
             Ok(())
         })
         .expect("consistent lookup");
         assert_eq!(
-            own_row(&connection, &RulesetId("duel".into()), AccountId(1), &visible_at(now_ms()))
-                .expect("next read")
-                .expect("own")
-                .kind,
+            own_row(
+                &connection,
+                &RulesetId("duel".into()),
+                AccountId(1),
+                &visible_at(now_ms())
+            )
+            .expect("next read")
+            .expect("own")
+            .kind,
             AccountKind::Bot
         );
     }
@@ -561,26 +765,52 @@ mod scale_tests {
             populate(&db, &["duel"], accounts);
             let started = std::time::Instant::now();
             let result = db
-                .leaderboard(RulesetId("duel".into()), AccountKind::Human, String::new(), 100, AccountId(1))
+                .leaderboard(
+                    RulesetId("duel".into()),
+                    AccountKind::Human,
+                    String::new(),
+                    100,
+                    AccountId(1),
+                )
                 .await;
             eprintln!(
                 "PROBE board accounts={accounts} ok={} elapsed={:?}",
                 result.is_ok(),
                 started.elapsed()
             );
-            assert!(result.is_ok(), "top board refused at {accounts}: {:?}", result.err());
-            assert!(started.elapsed()<std::time::Duration::from_secs(2), "indexed board exceeds its latency bound");
+            assert!(
+                result.is_ok(),
+                "top board refused at {accounts}: {:?}",
+                result.err()
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "indexed board exceeds its latency bound"
+            );
             let started = std::time::Instant::now();
             let result = db
-                .leaderboard(RulesetId("duel".into()), AccountKind::Human, "n1".into(), 100, AccountId(1))
+                .leaderboard(
+                    RulesetId("duel".into()),
+                    AccountKind::Human,
+                    "n1".into(),
+                    100,
+                    AccountId(1),
+                )
                 .await;
             eprintln!(
                 "PROBE search accounts={accounts} ok={} elapsed={:?}",
                 result.is_ok(),
                 started.elapsed()
             );
-            assert!(result.is_ok(), "search refused at {accounts} accounts: {:?}", result.err());
-            assert!(started.elapsed()<std::time::Duration::from_secs(2), "indexed search exceeds its latency bound");
+            assert!(
+                result.is_ok(),
+                "search refused at {accounts} accounts: {:?}",
+                result.err()
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "indexed search exceeds its latency bound"
+            );
         }
     }
 
@@ -592,9 +822,17 @@ mod scale_tests {
         populate(&db, &modes, 10_000);
         let started = std::time::Instant::now();
         let result = db
-            .public_profile(AccountId(1), modes.iter().map(|m| RulesetId((*m).into())).collect(),AccountId(1))
+            .public_profile(
+                AccountId(1),
+                modes.iter().map(|m| RulesetId((*m).into())).collect(),
+                AccountId(1),
+            )
             .await;
-        eprintln!("PROBE profile ok={} elapsed={:?}", result.is_ok(), started.elapsed());
+        eprintln!(
+            "PROBE profile ok={} elapsed={:?}",
+            result.is_ok(),
+            started.elapsed()
+        );
         assert!(result.is_ok(), "profile refused: {:?}", result.err());
     }
 
@@ -603,12 +841,33 @@ mod scale_tests {
     async fn probe_banned_account_is_not_listed() {
         let db = Db::init(Connection::open_in_memory().expect("db")).expect("schema");
         populate(&db, &["duel"], 3);
-        db.run(|c| c.execute("UPDATE accounts SET banned=1, ban_reason='cheat' WHERE id=2", []).map(|_| ())).await.expect("ban");
+        db.run(|c| {
+            c.execute(
+                "UPDATE accounts SET banned=1, ban_reason='cheat' WHERE id=2",
+                [],
+            )
+            .map(|_| ())
+        })
+        .await
+        .expect("ban");
         let page = db
-            .leaderboard(RulesetId("duel".into()), AccountKind::Human, String::new(), 100, AccountId(1))
+            .leaderboard(
+                RulesetId("duel".into()),
+                AccountKind::Human,
+                String::new(),
+                100,
+                AccountId(1),
+            )
             .await
             .expect("board");
-        assert!(page.rows.iter().all(|row| row.account != AccountId(2)), "banned account listed: {:?}", page.rows.iter().map(|r| (r.account, r.rank)).collect::<Vec<_>>());
+        assert!(
+            page.rows.iter().all(|row| row.account != AccountId(2)),
+            "banned account listed: {:?}",
+            page.rows
+                .iter()
+                .map(|r| (r.account, r.rank))
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Red: a human row must not carry a bot version (profile already filters it).
@@ -616,14 +875,38 @@ mod scale_tests {
     async fn probe_reclassified_human_row_has_no_bot_version() {
         let db = Db::init(Connection::open_in_memory().expect("db")).expect("schema");
         populate(&db, &["duel"], 2);
-        db.run(|c| c.execute("UPDATE accounts SET bot_version='secret-build-7' WHERE id=2", []).map(|_| ())).await.expect("ver");
+        db.run(|c| {
+            c.execute(
+                "UPDATE accounts SET bot_version='secret-build-7' WHERE id=2",
+                [],
+            )
+            .map(|_| ())
+        })
+        .await
+        .expect("ver");
         let page = db
-            .leaderboard(RulesetId("duel".into()), AccountKind::Human, String::new(), 100, AccountId(1))
+            .leaderboard(
+                RulesetId("duel".into()),
+                AccountKind::Human,
+                String::new(),
+                100,
+                AccountId(1),
+            )
             .await
             .expect("board");
-        assert!(page.rows.iter().all(|row| row.bot_version.is_none()), "human row leaks bot_version");
-        let (_,rows)=db.ladder(RulesetId("duel".into()),0,100).await.expect("legacy ladder");
-        assert!(rows.iter().filter(|row| row.kind==AccountKind::Human).all(|row| row.bot_version.is_none()),"legacy human row leaks bot_version");
+        assert!(
+            page.rows.iter().all(|row| row.bot_version.is_none()),
+            "human row leaks bot_version"
+        );
+        let (_, rows) = db
+            .ladder(RulesetId("duel".into()), 0, 100)
+            .await
+            .expect("legacy ladder");
+        assert!(
+            rows.iter()
+                .filter(|row| row.kind == AccountKind::Human)
+                .all(|row| row.bot_version.is_none()),
+            "legacy human row leaks bot_version"
+        );
     }
 }
-
