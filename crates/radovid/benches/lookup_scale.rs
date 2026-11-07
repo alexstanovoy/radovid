@@ -103,6 +103,7 @@ fn main() {
             .expect("profile");
         assert_eq!(profile.ratings.len(), MODES.len());
         assert!(profile.ratings.iter().all(|(_, rating)| rating.games == 1));
+        assert!(profile.ratings.iter().all(|(_,rating)|rating.rank==Some(ACCOUNTS as u32)),"all three one-million ranks fit the profile budget");
         eprintln!(
             "MILLION three-mode profile {:?}, ranks {:?}",
             began.elapsed(),

@@ -87,21 +87,23 @@ The response shapes, protocol minimum 19 and SDK calls are unchanged.
 ## Profile rank budgets
 
 A profile keeps each played mode's rating, games, wins, draws and losses even if
-its ordinal rank is too expensive. Each mode's rank has an independent 500,000
+its ordinal rank is too expensive. Each mode's rank has an independent five-million
 SQLite-instruction budget. Exhaustion yields `RatingSummary.rank = None` for
-that mode; later modes still get their own budget. Other database failures still
+that mode; later modes can use the remaining whole-profile budget. Other database failures still
 return a recoverable error. None therefore means a rank is unavailable, including
 budget exhaustion, and does not imply zero games. Clients keep rendering the
 rating and game counts with an unavailable rank.
 
 Account metadata and each mode's summary query have separate 10,000-instruction
-bounds. At most64 modes are queried, so a complete profile snapshot has at most
-32.65 million SQLite instructions. It stays consistent across modes, and its
+bounds. Rank walks also share a twenty-million-instruction whole-profile budget.
+At most64 modes are queried; metadata/summary queries add at most650,000
+instructions. Exhausting the total rank budget leaves remaining ranks unavailable
+while preserving all mode summaries. It stays consistent across modes, and its
 progress hook is cleared after every attempt, error and unwind. Boards retain
 their exact own-row contract and five-million-instruction whole-reply limit.
 
-WAL growth is controlled by closing reader admission and transferring the next
-writer turn to a background checkpoint. See [database bounds](database.md).
+WAL growth is controlled by short background checkpoints that briefly close reader
+admission without holding the writer turn, plus a separate emergency WAL cap. See [database bounds](database.md).
 Large population timings run explicitly with `cargo bench -p radovid --bench
 lookup_scale`. The benchmark keeps its one-million-account, three-mode fixture
 on disk under `CARGO_TARGET_DIR` (the workspace target by default), reuses the
