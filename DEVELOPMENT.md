@@ -143,7 +143,7 @@ most 64 KiB from a client, 4 MiB from the service.
   second device.
 - Each rated ruleset has humans and everyone queues. `QueueJoinAudiences` can link both places into one
   search; bots may use everyone only. The queue capacity counts raw entries; game limits count linked
-  searches once. See [protocol 15](docs/protocol_15.md) for reservation, cancellation and upgrade details.
+  searches once. See [protocol 16](docs/protocol_16.md) for reservation, cancellation and upgrade details.
 - `registry/wire.txt` lists every enum variant and field position and only grows. Every wire change bumps
   `PROTO_VERSION`; there is no rolling compatibility yet.
 - A position is never reused, like a protobuf field number. A message, variant or field that goes is retired: its line

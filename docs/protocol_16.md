@@ -1,6 +1,6 @@
-# Protocol 15: queue audiences
+# Protocol 16: queue audiences
 
-Rebuild the service and control clients together: `MIN_PROTO_VERSION = PROTO_VERSION = 15`.
+Rebuild the service and control clients together: `MIN_PROTO_VERSION = PROTO_VERSION = 16`.
 Older binaries receive `ProtoMismatch` before catalogs. All existing wire positions and
 payload types remain reserved; the new request, reply, reason and record fields are appended.
 

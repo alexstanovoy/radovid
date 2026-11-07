@@ -323,9 +323,21 @@ fn connections_past_the_limit_are_closed_and_their_places_come_back() {
 }
 
 #[test]
+fn version_15_is_refused_before_the_linked_queue_catalog_is_served() {
+    let env = start(rules());
+    let error = refused(Client::connect_as(&env.url, &env.tls, 15, FINGERPRINT));
+    assert_eq!(
+        error,
+        Error::ProtoMismatch {
+            server: PROTO_VERSION
+        }
+    );
+}
+
+#[test]
 fn another_protocol_version_is_refused_and_another_game_wire_cannot_play() {
     let env = start(rules());
-    // The previous version is still served, the one before it is not.
+    // The configured minimum is served; versions outside the range are refused.
     Client::connect_as(&env.url, &env.tls, MIN_PROTO_VERSION, FINGERPRINT)
         .expect("the oldest version served");
     let error = refused(Client::connect_as(

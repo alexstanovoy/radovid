@@ -492,7 +492,7 @@ field Error::TooManyGamesFromIpv6Site 0 limit: u32
 field Limits 8 custom_match_capacity: u32
 field Limits 9 games_per_ipv6_48: u32
 
-# Version 15: linked searches in humans and everyone queues.
+# Version 16: linked searches in humans and everyone queues.
 variant ClientMsg 40 QueueJoinAudiences {}
 field ClientMsg::QueueJoinAudiences 0 ruleset: RulesetId
 field ClientMsg::QueueJoinAudiences 1 audiences: Vec<Audience>
