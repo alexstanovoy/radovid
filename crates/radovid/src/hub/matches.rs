@@ -139,7 +139,9 @@ impl Hub {
                 source: *source,
             });
         }
-        let ratings = self.seat_ratings(&members, &ruleset.rating_ruleset_id()).await;
+        let ratings = self
+            .seat_ratings(&members, &ruleset.rating_ruleset_id())
+            .await;
         self.matches.insert(
             match_id,
             MatchState {
@@ -318,10 +320,13 @@ impl Hub {
         });
         // Concurrent games update the same ladder. Waiting searches must use the committed rating.
         for change in &changes {
-            let Some(account) = self.accounts.get(&change.account) else { continue; };
+            let Some(account) = self.accounts.get(&change.account) else {
+                continue;
+            };
             for id in &account.entries {
                 if let Some(entry) = self.entries.get_mut(id)
-                    && entry.rating_ruleset == state.ruleset {
+                    && entry.rating_ruleset == state.ruleset
+                {
                     entry.rating = change.after.rating;
                 }
             }

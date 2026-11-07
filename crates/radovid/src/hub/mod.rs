@@ -6,11 +6,11 @@ mod admin;
 mod limits;
 mod lobby;
 mod matches;
+#[cfg(test)]
+mod matching_tests;
 mod proposal;
 mod queue;
 mod slots;
-#[cfg(test)]
-mod matching_tests;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
@@ -229,16 +229,28 @@ impl Hub {
     fn new(config: Arc<Config>, db: Db, me: mpsc::Sender<Cmd>) -> Self {
         Self {
             free_ports: config.game_ports.ports().collect(),
-            config, db, me,
-            accounts: HashMap::new(), sessions: HashMap::new(), next_session: 1,
-            entries: HashMap::new(), queues: HashMap::new(), next_entry: 1,
-            pair_work: queue::QUEUE_SCAN_BUDGET, pair_reset: tokio::time::Instant::now(), pair_next: 0,
+            config,
+            db,
+            me,
+            accounts: HashMap::new(),
+            sessions: HashMap::new(),
+            next_session: 1,
+            entries: HashMap::new(),
+            queues: HashMap::new(),
+            next_entry: 1,
+            pair_work: queue::QUEUE_SCAN_BUDGET,
+            pair_reset: tokio::time::Instant::now(),
+            pair_next: 0,
             pairing: false,
             #[cfg(test)]
             position_scans: std::sync::atomic::AtomicUsize::new(0),
-            proposals: HashMap::new(), next_proposal: 1,
-            lobbies: BTreeMap::new(), next_lobby: 1,
-            matches: HashMap::new(), waiting: VecDeque::new(), penalties: HashMap::new(),
+            proposals: HashMap::new(),
+            next_proposal: 1,
+            lobbies: BTreeMap::new(),
+            next_lobby: 1,
+            matches: HashMap::new(),
+            waiting: VecDeque::new(),
+            penalties: HashMap::new(),
         }
     }
 

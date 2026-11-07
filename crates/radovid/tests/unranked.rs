@@ -17,7 +17,13 @@ fn an_unranked_game_uses_the_rated_ladder_and_leaves_every_rating_unchanged() {
     let before = alpha.wait_result();
     beta.wait_result();
     assert!(before.rated);
-    let board_before = alpha.ask(ClientMsg::Ladder { ruleset: rated.clone(), offset: 0, limit: 10 }).expect("ladder");
+    let board_before = alpha
+        .ask(ClientMsg::Ladder {
+            ruleset: rated.clone(),
+            offset: 0,
+            limit: 10,
+        })
+        .expect("ladder");
 
     let (first, second) = pair_up(&mut alpha, &mut beta, &RulesetId("casual".to_owned()));
     assert!(!first.rated);
@@ -28,7 +34,28 @@ fn an_unranked_game_uses_the_rated_ladder_and_leaves_every_rating_unchanged() {
     beta.wait_result();
     assert!(!result.rated);
     assert_eq!(result.outcome, Outcome::Winner { team: 0 });
-    assert!(result.seats.iter().all(|seat| seat.before.is_none() && seat.after.is_none()));
-    assert_eq!(alpha.ask(ClientMsg::Ladder { ruleset: rated, offset: 0, limit: 10 }).expect("ladder"), board_before);
-    assert_eq!(alpha.ask(ClientMsg::Ladder { ruleset: RulesetId("casual".to_owned()), offset: 0, limit: 10 }), Err(Error::NoQueue));
+    assert!(
+        result
+            .seats
+            .iter()
+            .all(|seat| seat.before.is_none() && seat.after.is_none())
+    );
+    assert_eq!(
+        alpha
+            .ask(ClientMsg::Ladder {
+                ruleset: rated,
+                offset: 0,
+                limit: 10
+            })
+            .expect("ladder"),
+        board_before
+    );
+    assert_eq!(
+        alpha.ask(ClientMsg::Ladder {
+            ruleset: RulesetId("casual".to_owned()),
+            offset: 0,
+            limit: 10
+        }),
+        Err(Error::NoQueue)
+    );
 }
