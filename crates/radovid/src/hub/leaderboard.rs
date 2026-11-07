@@ -1,4 +1,4 @@
-//! Costly read lookups share account and service work admission.
+//! Account-scoped admission for costly read lookups.
 use super::*;
 
 impl Hub {
@@ -8,12 +8,6 @@ impl Hub {
         now: std::time::Instant,
     ) -> Result<(), Error> {
         let account = self.accounts.get_mut(&id).ok_or(Error::NotLoggedIn)?;
-        if let Some(retry_after_ms) = account.lookup_budget.retry_after_ms(now) {
-            return Err(Error::Throttled { retry_after_ms });
-        }
-        self.lookup_budget
-            .take(now)
-            .map_err(|retry_after_ms| Error::Throttled { retry_after_ms })?;
         account
             .lookup_budget
             .take(now)
@@ -76,10 +70,27 @@ pub(super) fn lookup_error(error: crate::db::DbError) -> Error {
 mod tests {
     use super::super::matching_tests::Fixture;
     use super::*;
-    use crate::throttle::TokenBucket;
 
     #[tokio::test]
-    async fn account_lookup_limits_are_shared_by_sessions_and_rejected_spam_cannot_spend_global_tokens()
+    async fn two_accounts_at_their_own_rate_cannot_throttle_another_account() {
+        let mut fixture=Fixture::new();
+        let (alpha,_)=fixture.account("alpha").await;
+        let (beta,_)=fixture.account("beta").await;
+        let (victim,_)=fixture.account("victim").await;
+        let start=std::time::Instant::now();
+        for account in [alpha,beta] {
+            for _ in 0..4 { fixture.hub.charge_lookup_at(account,start).expect("account burst"); }
+        }
+        for step in 1..=40 {
+            let now=start+Duration::from_millis(step*250);
+            fixture.hub.charge_lookup_at(alpha,now).expect("alpha within its rate");
+            fixture.hub.charge_lookup_at(beta,now).expect("beta within its rate");
+            fixture.hub.charge_lookup_at(victim,now).expect("other accounts cannot consume the victim's quota");
+        }
+    }
+
+    #[tokio::test]
+    async fn account_lookup_limits_are_shared_by_sessions_but_independent_between_accounts()
      {
         let mut fixture = Fixture::new();
         let (alpha, first) = fixture.account("alpha").await;
@@ -104,37 +115,13 @@ mod tests {
         });
         let second = answer.await.expect("reply").expect("session").0;
         let now = std::time::Instant::now();
-        fixture.hub.lookup_budget = TokenBucket::new(8, 8, now);
         for session in [first, second, first, second] {
-            fixture
-                .hub
-                .charge_lookup_at(fixture.hub.sessions[&session].account, now)
-                .expect("four queries per account");
+            fixture.hub.charge_lookup_at(fixture.hub.sessions[&session].account, now).expect("shared account burst");
         }
-        for _ in 0..16 {
-            assert_eq!(
-                fixture.hub.charge_lookup_at(alpha, now),
-                Err(Error::Throttled {
-                    retry_after_ms: 250
-                })
-            );
+        assert_eq!(fixture.hub.charge_lookup_at(alpha, now), Err(Error::Throttled { retry_after_ms:250 }));
+        for account in [beta,gamma] {
+            for _ in 0..4 { fixture.hub.charge_lookup_at(account,now).expect("independent account quota"); }
         }
-        for _ in 0..4 {
-            fixture
-                .hub
-                .charge_lookup_at(beta, now)
-                .expect("rejected alpha spam left global tokens alone");
-        }
-        assert_eq!(
-            fixture.hub.charge_lookup_at(gamma, now),
-            Err(Error::Throttled {
-                retry_after_ms: 125
-            })
-        );
-        assert!(
-            fixture.hub.accounts[&gamma].lookup_budget.is_full(now),
-            "global rejection does not retain a fresh account"
-        );
     }
 
     #[tokio::test]
@@ -181,5 +168,26 @@ mod tests {
                 Err(Error::BadLeaderboardSearch)
             );
         }
+    }
+    /// Red: two free accounts, each within its own per-account rate, deny every other
+    /// account's profile/leaderboard/ladder lookups for as long as they keep going.
+    #[tokio::test]
+    async fn probe_two_accounts_at_their_own_rate_starve_everyone_else() {
+        let mut fixture = Fixture::new();
+        let (alpha, _) = fixture.account("alpha").await;
+        let (beta, _) = fixture.account("beta").await;
+        let (victim, _) = fixture.account("victim").await;
+        let start = std::time::Instant::now();
+        let mut victim_served = 0;
+        for tick in 0..400u64 {
+            let now = start + Duration::from_millis(tick * 25);
+            for attacker in [alpha, beta] {
+                let _ = fixture.hub.charge_lookup_at(attacker, now);
+            }
+            if tick % 40 == 39 && fixture.hub.charge_lookup_at(victim, now).is_ok() {
+                victim_served += 1;
+            }
+        }
+        eprintln!("PROBE victim served {victim_served} of 10"); assert!(victim_served >= 9, "victim starved");
     }
 }

@@ -140,7 +140,6 @@ struct Session {
 }
 
 pub struct Hub {
-    lookup_budget: crate::throttle::TokenBucket,
     config: Arc<Config>,
     db: Db,
     me: mpsc::Sender<Cmd>,
@@ -234,7 +233,6 @@ pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle
 impl Hub {
     fn new(config: Arc<Config>, db: Db, me: mpsc::Sender<Cmd>) -> Self {
         Self {
-            lookup_budget: crate::throttle::TokenBucket::new(8, 8, std::time::Instant::now()),
             free_ports: config.game_ports.ports().collect(),
             config,
             db,
