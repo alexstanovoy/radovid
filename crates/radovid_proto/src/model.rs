@@ -139,23 +139,37 @@ pub struct Avatar {
 
 /// The version actually cached by a caller; None requests any current image.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AvatarQuery {pub account: AccountId,pub version:Option<AvatarVersion>}
+pub struct AvatarQuery {
+    pub account: AccountId,
+    pub version: Option<AvatarVersion>,
+}
 
 /// A changed image, or an absent/hidden image whose cached copy must be cleared.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AvatarChange {pub account:AccountId,pub avatar:Option<Avatar>}
-
-pub fn valid_avatar_batch(accounts:&[AvatarQuery])->bool {
-    if accounts.is_empty() || accounts.len()>crate::MAX_AVATAR_BATCH {return false;}
-    let mut seen=std::collections::BTreeSet::new();
-    accounts.iter().all(|query|query.account.0>0 && query.account.0<=i64::MAX as u64 && seen.insert(query.account.0))
+pub struct AvatarChange {
+    pub account: AccountId,
+    pub avatar: Option<Avatar>,
 }
 
-pub(crate) fn avatar_queries<'de,D:serde::Deserializer<'de>>(deserializer:D)->Result<Vec<AvatarQuery>,D::Error> {
-    bounded_list::<D,AvatarQuery,{crate::MAX_AVATAR_BATCH}>(deserializer)
+pub fn valid_avatar_batch(accounts: &[AvatarQuery]) -> bool {
+    if accounts.is_empty() || accounts.len() > crate::MAX_AVATAR_BATCH {
+        return false;
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    accounts.iter().all(|query| {
+        query.account.0 > 0 && query.account.0 <= i64::MAX as u64 && seen.insert(query.account.0)
+    })
 }
-pub(crate) fn avatar_changes<'de,D:serde::Deserializer<'de>>(deserializer:D)->Result<Vec<AvatarChange>,D::Error> {
-    bounded_list::<D,AvatarChange,{crate::MAX_AVATAR_BATCH}>(deserializer)
+
+pub(crate) fn avatar_queries<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<AvatarQuery>, D::Error> {
+    bounded_list::<D, AvatarQuery, { crate::MAX_AVATAR_BATCH }>(deserializer)
+}
+pub(crate) fn avatar_changes<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<AvatarChange>, D::Error> {
+    bounded_list::<D, AvatarChange, { crate::MAX_AVATAR_BATCH }>(deserializer)
 }
 
 pub(crate) fn avatar_png<'de, D: serde::Deserializer<'de>>(

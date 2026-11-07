@@ -6,14 +6,16 @@ const PIXEL_CAP: usize = AVATAR_SIDE as usize * AVATAR_SIDE as usize * 4;
 const SCANLINE_CAP: usize = PIXEL_CAP + AVATAR_SIDE as usize;
 
 struct Pixels {
-    bytes:[u8;PIXEL_CAP],
-    size:usize,
-    color:png::ColorType,
-    palette:Option<Vec<u8>>,
-    transparency:Option<Vec<u8>>,
+    bytes: [u8; PIXEL_CAP],
+    size: usize,
+    color: png::ColorType,
+    palette: Option<Vec<u8>>,
+    transparency: Option<Vec<u8>>,
 }
 
-pub fn validate(bytes:&[u8])->Result<(),Error> {decode(bytes).map(|_|())}
+pub fn validate(bytes: &[u8]) -> Result<(), Error> {
+    decode(bytes).map(|_| ())
+}
 
 fn decode(bytes: &[u8]) -> Result<Pixels, Error> {
     let (compressed, channels) = avatar_image_data(bytes).ok_or(Error::BadAvatar)?;
@@ -63,81 +65,102 @@ fn decode(bytes: &[u8]) -> Result<Pixels, Error> {
         return Err(Error::BadAvatar);
     }
     reader.finish().map_err(|_| Error::BadAvatar)?;
-    Ok(Pixels{bytes:pixels,size:output.buffer_size(),color:output.color_type,
-        palette:reader.info().palette.as_ref().map(|bytes|bytes.to_vec()),
-        transparency:reader.info().trns.as_ref().map(|bytes|bytes.to_vec())})
+    Ok(Pixels {
+        bytes: pixels,
+        size: output.buffer_size(),
+        color: output.color_type,
+        palette: reader.info().palette.as_ref().map(|bytes| bytes.to_vec()),
+        transparency: reader.info().trns.as_ref().map(|bytes| bytes.to_vec()),
+    })
 }
 
 /// Only decoded pixel data and pixel transparency enter the fixed encoder.
-pub fn canonicalize(bytes:&[u8])->Result<Vec<u8>,Error> {
-    let mut decoded=decode(bytes)?;
-    if decoded.color==png::ColorType::Indexed {decoded.compact_palette()?;}
-    let mut output=BoundedPng(Vec::with_capacity(radovid_proto::MAX_AVATAR_BYTES));
+pub fn canonicalize(bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut decoded = decode(bytes)?;
+    if decoded.color == png::ColorType::Indexed {
+        decoded.compact_palette()?;
+    }
+    let mut output = BoundedPng(Vec::with_capacity(radovid_proto::MAX_AVATAR_BYTES));
     {
-        let mut encoder=png::Encoder::new(&mut output,AVATAR_SIDE,AVATAR_SIDE);
+        let mut encoder = png::Encoder::new(&mut output, AVATAR_SIDE, AVATAR_SIDE);
         encoder.set_color(decoded.color);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(png::Compression::Balanced);
         encoder.set_filter(png::Filter::Adaptive);
-        if decoded.color==png::ColorType::Indexed {
+        if decoded.color == png::ColorType::Indexed {
             encoder.set_palette(decoded.palette.ok_or(Error::BadAvatar)?);
         }
-        if let Some(transparency)=decoded.transparency {encoder.set_trns(encoder_transparency(decoded.color,transparency)?);}
-        let mut writer=encoder.write_header().map_err(|_|Error::BadAvatar)?;
-        writer.write_image_data(&decoded.bytes[..decoded.size]).map_err(|_|Error::BadAvatar)?;
-        writer.finish().map_err(|_|Error::BadAvatar)?;
+        if let Some(transparency) = decoded.transparency {
+            encoder.set_trns(encoder_transparency(decoded.color, transparency)?);
+        }
+        let mut writer = encoder.write_header().map_err(|_| Error::BadAvatar)?;
+        writer
+            .write_image_data(&decoded.bytes[..decoded.size])
+            .map_err(|_| Error::BadAvatar)?;
+        writer.finish().map_err(|_| Error::BadAvatar)?;
     }
     validate(&output.0)?;
     Ok(output.0)
 }
 
-fn encoder_transparency(color:png::ColorType,samples:Vec<u8>)->Result<Vec<u8>,Error> {
+fn encoder_transparency(color: png::ColorType, samples: Vec<u8>) -> Result<Vec<u8>, Error> {
     match color {
-        png::ColorType::Grayscale|png::ColorType::Rgb=>{
-            if samples.len()!=color.samples() {return Err(Error::BadAvatar);}
+        png::ColorType::Grayscale | png::ColorType::Rgb => {
+            if samples.len() != color.samples() {
+                return Err(Error::BadAvatar);
+            }
             // The decoder reduces these PNG 16-bit sample fields to our validated 8-bit values.
-            Ok(samples.into_iter().flat_map(|value|[0,value]).collect())
+            Ok(samples.into_iter().flat_map(|value| [0, value]).collect())
         }
-        png::ColorType::Indexed=>Ok(samples),
-        _=>Err(Error::BadAvatar),
+        png::ColorType::Indexed => Ok(samples),
+        _ => Err(Error::BadAvatar),
     }
 }
 
 impl Pixels {
-    fn compact_palette(&mut self)->Result<(),Error> {
-        let palette=self.palette.take().ok_or(Error::BadAvatar)?;
-        let transparency=self.transparency.take().unwrap_or_default();
-        let mut positions=[None;256];
-        let mut colors=Vec::new();let mut alpha=Vec::new();
+    fn compact_palette(&mut self) -> Result<(), Error> {
+        let palette = self.palette.take().ok_or(Error::BadAvatar)?;
+        let transparency = self.transparency.take().unwrap_or_default();
+        let mut positions = [None; 256];
+        let mut colors = Vec::new();
+        let mut alpha = Vec::new();
         for pixel in &mut self.bytes[..self.size] {
-            let old=usize::from(*pixel);
-            let next=match positions[old] {
-                Some(index)=>index,
-                None=>{
-                    let next=u8::try_from(colors.len()/3).map_err(|_|Error::BadAvatar)?;
-                    colors.extend_from_slice(palette.get(old*3..old*3+3).ok_or(Error::BadAvatar)?);
+            let old = usize::from(*pixel);
+            let next = match positions[old] {
+                Some(index) => index,
+                None => {
+                    let next = u8::try_from(colors.len() / 3).map_err(|_| Error::BadAvatar)?;
+                    colors.extend_from_slice(
+                        palette.get(old * 3..old * 3 + 3).ok_or(Error::BadAvatar)?,
+                    );
                     alpha.push(transparency.get(old).copied().unwrap_or(255));
-                    positions[old]=Some(next);next
+                    positions[old] = Some(next);
+                    next
                 }
             };
-            *pixel=next;
+            *pixel = next;
         }
-        while alpha.last()==Some(&255) {alpha.pop();}
-        self.palette=Some(colors);
-        self.transparency=(!alpha.is_empty()).then_some(alpha);
+        while alpha.last() == Some(&255) {
+            alpha.pop();
+        }
+        self.palette = Some(colors);
+        self.transparency = (!alpha.is_empty()).then_some(alpha);
         Ok(())
     }
 }
 
 struct BoundedPng(Vec<u8>);
 impl std::io::Write for BoundedPng {
-    fn write(&mut self,bytes:&[u8])->std::io::Result<usize> {
-        if bytes.len()>radovid_proto::MAX_AVATAR_BYTES.saturating_sub(self.0.len()) {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > radovid_proto::MAX_AVATAR_BYTES.saturating_sub(self.0.len()) {
             return Err(std::io::Error::other("encoded avatar exceeds byte limit"));
         }
-        self.0.extend_from_slice(bytes);Ok(bytes.len())
+        self.0.extend_from_slice(bytes);
+        Ok(bytes.len())
     }
-    fn flush(&mut self)->std::io::Result<()> {Ok(())}
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -172,75 +195,113 @@ pub(crate) mod tests {
         bytes
     }
 
-
-
     #[test]
     fn canonical_reencoding_preserves_grayscale_and_rgb_pixel_transparency() {
-        for (color,transparency) in [(png::ColorType::Grayscale,vec![0,128]),(png::ColorType::Rgb,vec![0,128,0,64,0,32])] {
-            let original=image_with_chunks(color,&[(png::chunk::tRNS,&transparency)]);
-            let canonical=canonicalize(&original).expect("supported transparency");
+        for (color, transparency) in [
+            (png::ColorType::Grayscale, vec![0, 128]),
+            (png::ColorType::Rgb, vec![0, 128, 0, 64, 0, 32]),
+        ] {
+            let original = image_with_chunks(color, &[(png::chunk::tRNS, &transparency)]);
+            let canonical = canonicalize(&original).expect("supported transparency");
             validate(&canonical).expect("canonical PNG is valid");
-            assert_eq!(canonicalize(&canonical).expect("stable transparency"),canonical);
-            let original=decode(&original).expect("pixels");
-            let decoded=decode(&canonical).expect("canonical pixels");
-            assert_eq!(decoded.transparency,original.transparency);
+            assert_eq!(
+                canonicalize(&canonical).expect("stable transparency"),
+                canonical
+            );
+            let original = decode(&original).expect("pixels");
+            let decoded = decode(&canonical).expect("canonical pixels");
+            assert_eq!(decoded.transparency, original.transparency);
         }
     }
 
     #[test]
     fn canonical_indexed_images_discard_unused_palette_and_transparency_entries() {
-        let mut palette=vec![3,7,9];palette.extend_from_slice(b"<script>payload</script>");
-        let original=image_with_chunks(png::ColorType::Indexed,&[(png::chunk::PLTE,&palette),(png::chunk::tRNS,b"abcdefghi")]);
-        let canonical=canonicalize(&original).expect("indexed image");
-        assert!(!canonical.windows(8).any(|bytes|bytes==b"<script>"),"unused palette is not pixel data");
-        let decoded=decode(&canonical).expect("canonical palette");
-        assert_eq!(decoded.palette,Some(vec![3,7,9]));
-        assert_eq!(decoded.transparency,Some(vec![b'a']));
-        assert!(decoded.bytes[..decoded.size].iter().all(|index|*index==0));
-        assert_eq!(canonicalize(&canonical).expect("stable palette"),canonical);
+        let mut palette = vec![3, 7, 9];
+        palette.extend_from_slice(b"<script>payload</script>");
+        let original = image_with_chunks(
+            png::ColorType::Indexed,
+            &[
+                (png::chunk::PLTE, &palette),
+                (png::chunk::tRNS, b"abcdefghi"),
+            ],
+        );
+        let canonical = canonicalize(&original).expect("indexed image");
+        assert!(
+            !canonical.windows(8).any(|bytes| bytes == b"<script>"),
+            "unused palette is not pixel data"
+        );
+        let decoded = decode(&canonical).expect("canonical palette");
+        assert_eq!(decoded.palette, Some(vec![3, 7, 9]));
+        assert_eq!(decoded.transparency, Some(vec![b'a']));
+        assert!(
+            decoded.bytes[..decoded.size]
+                .iter()
+                .all(|index| *index == 0)
+        );
+        assert_eq!(canonicalize(&canonical).expect("stable palette"), canonical);
     }
-
 
     #[test]
     fn indexed_palette_compaction_preserves_mixed_pixel_colors_and_alpha() {
-        let mut original=Vec::new();
+        let mut original = Vec::new();
         {
-            let mut encoder=png::Encoder::new(&mut original,32,32);
+            let mut encoder = png::Encoder::new(&mut original, 32, 32);
             encoder.set_color(png::ColorType::Indexed);
             encoder.set_depth(png::BitDepth::Eight);
             encoder.set_compression(png::Compression::High);
-            encoder.set_palette(vec![255,0,0,0,255,0,0,0,255]);
-            encoder.set_trns(vec![1,2,3]);
-            let mut writer=encoder.write_header().expect("header");
-            writer.write_image_data(&(0..1024).map(|index|if index%2==0 {2}else{0}).collect::<Vec<_>>()).expect("pixels");
+            encoder.set_palette(vec![255, 0, 0, 0, 255, 0, 0, 0, 255]);
+            encoder.set_trns(vec![1, 2, 3]);
+            let mut writer = encoder.write_header().expect("header");
+            writer
+                .write_image_data(
+                    &(0..1024)
+                        .map(|index| if index % 2 == 0 { 2 } else { 0 })
+                        .collect::<Vec<_>>(),
+                )
+                .expect("pixels");
         }
-        let canonical=canonicalize(&original).expect("indexed pixels");
-        let decoded=decode(&canonical).expect("canonical");
-        assert_eq!(decoded.palette,Some(vec![0,0,255,255,0,0]));
-        assert_eq!(decoded.transparency,Some(vec![3,1]));
-        for (index,pixel) in decoded.bytes[..decoded.size].iter().enumerate() {assert_eq!(*pixel,(index%2) as u8);}
-        assert_eq!(canonicalize(&canonical).expect("stable indexed image"),canonical);
+        let canonical = canonicalize(&original).expect("indexed pixels");
+        let decoded = decode(&canonical).expect("canonical");
+        assert_eq!(decoded.palette, Some(vec![0, 0, 255, 255, 0, 0]));
+        assert_eq!(decoded.transparency, Some(vec![3, 1]));
+        for (index, pixel) in decoded.bytes[..decoded.size].iter().enumerate() {
+            assert_eq!(*pixel, (index % 2) as u8);
+        }
+        assert_eq!(
+            canonicalize(&canonical).expect("stable indexed image"),
+            canonical
+        );
     }
 
     #[test]
     fn reencoding_preserves_nonuniform_pixels_and_is_idempotent() {
-        let pixels:Vec<u8>=(0..32*32).flat_map(|index|if (index/32+index%32)%2==0 {[255,1,128]}else{[2,254,77]}).collect();
-        let mut original=Vec::new();
+        let pixels: Vec<u8> = (0..32 * 32)
+            .flat_map(|index| {
+                if (index / 32 + index % 32) % 2 == 0 {
+                    [255, 1, 128]
+                } else {
+                    [2, 254, 77]
+                }
+            })
+            .collect();
+        let mut original = Vec::new();
         {
-            let mut encoder=png::Encoder::new(&mut original,32,32);
+            let mut encoder = png::Encoder::new(&mut original, 32, 32);
             encoder.set_color(png::ColorType::Rgb);
             encoder.set_depth(png::BitDepth::Eight);
             encoder.set_compression(png::Compression::High);
-            let mut writer=encoder.write_header().expect("header");
+            let mut writer = encoder.write_header().expect("header");
             writer.write_image_data(&pixels).expect("pixels");
         }
-        assert!(original.len()<=MAX_AVATAR_BYTES);
-        let canonical=canonicalize(&original).expect("canonical");
-        assert_eq!(canonicalize(&canonical).expect("idempotent"),canonical);
-        let mut reader=png::Decoder::new(Cursor::new(&canonical)).read_info().expect("PNG");
-        let mut decoded=[0;PIXEL_CAP];
-        let output=reader.next_frame(&mut decoded).expect("decoded pixels");
-        assert_eq!(&decoded[..output.buffer_size()],pixels);
+        assert!(original.len() <= MAX_AVATAR_BYTES);
+        let canonical = canonicalize(&original).expect("canonical");
+        assert_eq!(canonicalize(&canonical).expect("idempotent"), canonical);
+        let mut reader = png::Decoder::new(Cursor::new(&canonical))
+            .read_info()
+            .expect("PNG");
+        let mut decoded = [0; PIXEL_CAP];
+        let output = reader.next_frame(&mut decoded).expect("decoded pixels");
+        assert_eq!(&decoded[..output.buffer_size()], pixels);
     }
 
     #[test]

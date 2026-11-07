@@ -241,8 +241,8 @@ pub enum ClientMsg {
     },
     RemoveAvatar,
     GetAvatars {
-        #[serde(deserialize_with="crate::model::avatar_queries")]
-        accounts:Vec<AvatarQuery>,
+        #[serde(deserialize_with = "crate::model::avatar_queries")]
+        accounts: Vec<AvatarQuery>,
     },
 }
 
@@ -336,8 +336,8 @@ pub enum Reply {
         avatar: Option<crate::Avatar>,
     },
     Avatars {
-        #[serde(deserialize_with="crate::model::avatar_changes")]
-        changes:Vec<AvatarChange>,
+        #[serde(deserialize_with = "crate::model::avatar_changes")]
+        changes: Vec<AvatarChange>,
     },
 }
 

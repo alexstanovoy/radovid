@@ -561,7 +561,7 @@ impl Hub {
             ClientMsg::Logout
             | ClientMsg::ChangePassword { .. }
             | ClientMsg::DeleteAccount { .. } => Err(Error::Internal),
-            ClientMsg::GetAvatar { .. } | ClientMsg::GetAvatars {..} => Err(Error::Internal),
+            ClientMsg::GetAvatar { .. } | ClientMsg::GetAvatars { .. } => Err(Error::Internal),
             ClientMsg::SetAvatar { png } => self.change_avatar(id, Some(png)).await,
             ClientMsg::RemoveAvatar => self.change_avatar(id, None).await,
             ClientMsg::ChangeNickname { nickname } => self.change_nickname(id, nickname).await,

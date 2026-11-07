@@ -33,10 +33,13 @@ fuzz_target!(|data: &[u8]| {
         let _ = radovid::db::decode_pending_result(&record);
     }
     let _ = radovid::avatar::validate(data);
-    if let Ok(canonical)=radovid::avatar::canonicalize(data) {
-        assert!(canonical.len()<=radovid_proto::MAX_AVATAR_BYTES);
+    if let Ok(canonical) = radovid::avatar::canonicalize(data) {
+        assert!(canonical.len() <= radovid_proto::MAX_AVATAR_BYTES);
         assert!(radovid::avatar::validate(&canonical).is_ok());
-        assert_eq!(radovid::avatar::canonicalize(&canonical).expect("canonical avatar"),canonical);
+        assert_eq!(
+            radovid::avatar::canonicalize(&canonical).expect("canonical avatar"),
+            canonical
+        );
     }
     round_trip::<ClientFrame>(data);
     round_trip::<ServerMsg>(data);
