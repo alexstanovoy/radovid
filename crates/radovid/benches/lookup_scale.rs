@@ -67,13 +67,22 @@ fn main() {
         assert_eq!((total,rows.len()),(ACCOUNTS as u32,100));
         eprintln!("MILLION deep offset: {:?}",began.elapsed());
         let mut searches=Vec::new();
+        let (admitted,mut ready)=tokio::sync::mpsc::channel(16);
         for index in 0..16 {
             let database=db.clone();
-            searches.push(tokio::spawn(async move {database.leaderboard(RulesetId("duel".into()),AccountKind::Human,"a".into(),1000,AccountId(ACCOUNTS as u64-index*2000)).await}));
+            let admitted=admitted.clone();
+            searches.push(tokio::spawn(async move {
+                let mut request=Box::pin(database.leaderboard(RulesetId("duel".into()),AccountKind::Human,"a".into(),1000,AccountId(ACCOUNTS as u64-index*2000)));
+                let first=std::future::poll_fn(|context|std::task::Poll::Ready(request.as_mut().poll(context))).await;
+                admitted.send(()).await.expect("request first polled");
+                match first {std::task::Poll::Ready(result)=>result,std::task::Poll::Pending=>request.await}
+            }));
         }
+        for _ in 0..16 {ready.recv().await.expect("sixteen requests admitted or already complete");}
         let began=Instant::now();
         db.public_profile(AccountId(1),vec![RulesetId("duel".into())],AccountId(1)).await.expect("victim profile");
+        let victim=began.elapsed();
         for task in searches { task.await.expect("task").expect("search"); }
-        eprintln!("MILLION sixteen-search wave plus victim: {:?}",began.elapsed());
+        eprintln!("MILLION sixteen-first-polled-search victim {victim:?}, wave completion {:?}",began.elapsed());
     });
 }
