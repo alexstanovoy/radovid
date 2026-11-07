@@ -233,3 +233,16 @@ rated tic-tac-toe, clock expiry, fixed-tick team and free-for-all games, and a c
 loopback only, cap input/connection/work budgets, and validate opaque seat tickets in constant time. `python3` on `PATH` is a required test dependency; a missing interpreter fails the tests and gate. A game's own client
 library carries the tests against its real server. `tools/gate.sh` is the merge gate: clippy, the wasm check, the
 tests, the docker launcher test against a real docker, the fuzz targets' type check, `cargo deny check` and fmt.
+
+## Population benchmark and WAL regression
+
+`cargo bench -p radovid --bench lookup_scale` is the explicit optimized population
+benchmark. It seeds one million accounts in three modes on disk under
+`CARGO_TARGET_DIR` (the workspace target by default), verifies and reuses that
+fixture, and prints timings. It has no wall-clock pass/fail assertions and does
+not run in the lib suite. Remove its generated `lookup_scale/` directory when
+finished with the benchmark data.
+
+The ordinary suite checks deterministic SQLite instruction/covering-plan bounds,
+per-mode profile fallback, and WAL storage bounds with a small disk-backed fixture.
+See [database bounds](docs/database.md) for checkpoint admission and busy behavior.

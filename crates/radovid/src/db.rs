@@ -3,8 +3,6 @@
 mod leaderboard;
 mod reader;
 #[cfg(test)]
-mod scale_tests;
-#[cfg(test)]
 mod schema_tests;
 mod visibility;
 mod wal;

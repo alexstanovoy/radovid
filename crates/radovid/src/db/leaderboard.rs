@@ -286,6 +286,10 @@ fn rank_selected(
     Ok(())
 }
 
+fn rank_range_query(visible:&str,range:&str)->String {
+    format!("SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND {range} AND ?4 IS NOT NULL AND ?5 IS NOT NULL")
+}
+
 fn rank_of(
     connection: &Connection,
     ruleset: &RulesetId,
@@ -298,9 +302,7 @@ fn rank_of(
         "r.rating=?3 AND r.deviation<?4",
         "r.rating=?3 AND r.deviation=?4 AND r.account<?5",
     ] {
-        let sql = format!(
-            "SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND {range} AND ?4 IS NOT NULL AND ?5 IS NOT NULL"
-        );
+        let sql = rank_range_query(visible, range);
         let count: u32 = connection.query_row(
             &sql,
             params![
@@ -376,6 +378,17 @@ mod tests {
         assert_eq!(ratings.len(),3);
         assert_eq!(ratings.iter().map(|(_,summary)|summary.rank).collect::<Vec<_>>(),[None,None,Some(1)]);
         assert!(ratings.iter().all(|(_,summary)|summary.games==2 && summary.wins==1 && summary.losses==1));
+    }
+
+    #[test]
+    fn guard_only_rank_range_counts_use_covering_indexes_without_account_joins() {
+        let db=fixture();
+        let connection=db.conn.lock().expect("connection");
+        let query=format!("EXPLAIN QUERY PLAN {}",rank_range_query(VISIBLE,"r.rating>?3"));
+        let mut statement=connection.prepare(&query).expect("plan");
+        let plan=statement.query_map(params!["duel",0,1800.0,50.0,1],|row|row.get::<_,String>(3)).expect("rows").collect::<rusqlite::Result<Vec<_>>>().expect("plan descriptions");
+        assert!(plan.iter().any(|step|step.contains("COVERING INDEX ratings_kind_ladder")),"{plan:?}");
+        assert!(plan.iter().all(|step|!step.contains("accounts")),"{plan:?}");
     }
 
     #[test]

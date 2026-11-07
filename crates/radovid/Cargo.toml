@@ -34,3 +34,8 @@ radovid_client = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "lookup_scale"
+harness = false
+test = false
