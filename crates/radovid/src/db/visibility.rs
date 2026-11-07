@@ -55,16 +55,31 @@ impl Db {
     /// One tick's finite batch; permanent bans and negative stored timestamps are excluded.
     pub(crate) async fn expire_bans(&self, now: UnixMs) -> DbResult<usize> {
         self.run(move |connection| {
-            connection.execute("UPDATE accounts SET banned=0 WHERE id IN (
+            connection.execute(
+                "UPDATE accounts SET banned=0 WHERE id IN (
                 SELECT id FROM accounts INDEXED BY accounts_expiring_bans
                 WHERE banned!=0 AND ban_until>=0 AND ban_until<=?1
-                ORDER BY ban_until,id LIMIT 256)", [now.0 as i64])
-        }).await
+                ORDER BY ban_until,id LIMIT 256)",
+                [now.0 as i64],
+            )
+        })
+        .await
     }
 }
 
-pub(super) fn total(connection: &Connection, ruleset: &RulesetId, kind: AccountKind) -> rusqlite::Result<u32> {
-    connection.query_row("SELECT total FROM ladder_totals WHERE ruleset=?1 AND kind=?2",params![ruleset.0,kind_code(kind)],|row|row.get(0)).optional().map(|count|count.unwrap_or(0))
+pub(super) fn total(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    kind: AccountKind,
+) -> rusqlite::Result<u32> {
+    connection
+        .query_row(
+            "SELECT total FROM ladder_totals WHERE ruleset=?1 AND kind=?2",
+            params![ruleset.0, kind_code(kind)],
+            |row| row.get(0),
+        )
+        .optional()
+        .map(|count| count.unwrap_or(0))
 }
 
 #[cfg(test)]
@@ -73,8 +88,8 @@ mod tests {
 
     #[tokio::test]
     async fn timed_ban_sweep_restores_indexes_and_totals_in_a_bounded_batch() {
-        let db=Db::init(Connection::open_in_memory().expect("database")).expect("schema");
-        let now=now_ms();
+        let db = Db::init(Connection::open_in_memory().expect("database")).expect("schema");
+        let now = now_ms();
         db.run(move |connection| {
             let transaction=connection.transaction()?;
             for id in 1..=260i64 {
@@ -83,15 +98,37 @@ mod tests {
             }
             transaction.commit()
         }).await.expect("banned fixtures");
-        assert_eq!(db.expire_bans(now).await.expect("not expired"),0);
-        assert_eq!(db.expire_bans(UnixMs(now.0+60_000)).await.expect("first batch"),256);
-        let rule=RulesetId("duel".into());
-        let board=db.leaderboard(rule.clone(),AccountKind::Human,String::new(),100,AccountId(260)).await.expect("board");
-        assert_eq!(board.total,256);
+        assert_eq!(db.expire_bans(now).await.expect("not expired"), 0);
+        assert_eq!(
+            db.expire_bans(UnixMs(now.0 + 60_000))
+                .await
+                .expect("first batch"),
+            256
+        );
+        let rule = RulesetId("duel".into());
+        let board = db
+            .leaderboard(
+                rule.clone(),
+                AccountKind::Human,
+                String::new(),
+                100,
+                AccountId(260),
+            )
+            .await
+            .expect("board");
+        assert_eq!(board.total, 256);
         assert!(board.own.is_none());
-        assert_eq!(db.expire_bans(UnixMs(now.0+60_000)).await.expect("second batch"),4);
-        let board=db.leaderboard(rule,AccountKind::Human,String::new(),100,AccountId(260)).await.expect("restored");
-        assert_eq!(board.total,260);
-        assert_eq!(board.own.expect("restored rank").rank,260);
+        assert_eq!(
+            db.expire_bans(UnixMs(now.0 + 60_000))
+                .await
+                .expect("second batch"),
+            4
+        );
+        let board = db
+            .leaderboard(rule, AccountKind::Human, String::new(), 100, AccountId(260))
+            .await
+            .expect("restored");
+        assert_eq!(board.total, 260);
+        assert_eq!(board.own.expect("restored rank").rank, 260);
     }
 }

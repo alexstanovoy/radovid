@@ -87,7 +87,9 @@ impl Db {
                     prefix_top(connection, &ruleset, kind, &prefix, limit, visible)?
                 };
                 let mut own = find_own_row(connection, &ruleset, requester, visible)?;
-                if let Some(row) = &mut own && (prefix.is_empty() || rows.is_empty() || row.kind != kind) {
+                if let Some(row) = &mut own
+                    && (prefix.is_empty() || rows.is_empty() || row.kind != kind)
+                {
                     row.rank = rank_of(connection, &ruleset, row, visible)?;
                 }
                 if !prefix.is_empty() {
@@ -245,17 +247,21 @@ fn rank_selected(
     if remaining.is_empty() {
         return Ok(());
     }
-    let mut own_pending = own.as_ref().is_some_and(|row| row.kind == kind && row.rank == 0);
+    let mut own_pending = own
+        .as_ref()
+        .is_some_and(|row| row.kind == kind && row.rank == 0);
     let mut statement=connection.prepare(&format!("SELECT r.account FROM ratings r INDEXED BY ratings_kind_ladder WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} ORDER BY r.rating DESC,r.deviation,r.account"))?;
     let mut cursor = statement.query(params![ruleset.0, kind_code(kind)])?;
     let mut rank = 0u32;
     while let Some(row) = cursor.next()? {
         rank = rank.checked_add(1).ok_or(rusqlite::Error::InvalidQuery)?;
         let account = AccountId(row.get::<_, i64>(0)? as u64);
-        if let Some(index) = remaining.remove(&account) { picked[index].rank = rank; }
-        if own_pending && let Some(row) = own.as_mut().filter(|row|row.account==account) {
-            row.rank=rank;
-            own_pending=false;
+        if let Some(index) = remaining.remove(&account) {
+            picked[index].rank = rank;
+        }
+        if own_pending && let Some(row) = own.as_mut().filter(|row| row.account == account) {
+            row.rank = rank;
+            own_pending = false;
         }
         if remaining.is_empty() && !own_pending {
             break;
@@ -297,13 +303,25 @@ fn rank_of(
     Ok(rank)
 }
 
-fn find_own_row(connection: &Connection, ruleset: &RulesetId, account: AccountId, visible: &str) -> rusqlite::Result<Option<LadderRow>> {
+fn find_own_row(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    account: AccountId,
+    visible: &str,
+) -> rusqlite::Result<Option<LadderRow>> {
     connection.query_row(&format!("SELECT {ROW},0 FROM ratings r CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.account=?2 AND {visible}"),params![ruleset.0,account.0 as i64],ladder_row).optional()
 }
 
-fn own_row(connection: &Connection, ruleset: &RulesetId, account: AccountId, visible: &str) -> rusqlite::Result<Option<LadderRow>> {
-    let Some(mut row)=find_own_row(connection,ruleset,account,visible)? else { return Ok(None); };
-    row.rank=rank_of(connection,ruleset,&row,visible)?;
+fn own_row(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    account: AccountId,
+    visible: &str,
+) -> rusqlite::Result<Option<LadderRow>> {
+    let Some(mut row) = find_own_row(connection, ruleset, account, visible)? else {
+        return Ok(None);
+    };
+    row.rank = rank_of(connection, ruleset, &row, visible)?;
     Ok(Some(row))
 }
 
@@ -337,7 +355,12 @@ mod tests {
 
     #[test]
     fn guard_only_a_lookup_has_at_most_five_million_sqlite_instructions() {
-        const { assert!(LOOKUP_VM_STEPS<=5_000_000,"work limit must not be enlarged to mask a linear join"); }
+        const {
+            assert!(
+                LOOKUP_VM_STEPS <= 5_000_000,
+                "work limit must not be enlarged to mask a linear join"
+            );
+        }
     }
 
     #[tokio::test]
@@ -600,26 +623,16 @@ mod tests {
         let writer = Connection::open(directory.0.join("ranks.db")).expect("other connection");
         read_lookup(&mut connection, |snapshot| {
             assert_eq!(
-                own_row(
-                    snapshot,
-                    &RulesetId("duel".into()),
-                    AccountId(1),
-                    VISIBLE
-                )?
-                .expect("own")
-                .kind,
+                own_row(snapshot, &RulesetId("duel".into()), AccountId(1), VISIBLE)?
+                    .expect("own")
+                    .kind,
                 AccountKind::Human
             );
             writer.execute("UPDATE accounts SET kind=1 WHERE id=1", [])?;
             assert_eq!(
-                own_row(
-                    snapshot,
-                    &RulesetId("duel".into()),
-                    AccountId(1),
-                    VISIBLE
-                )?
-                .expect("same snapshot")
-                .kind,
+                own_row(snapshot, &RulesetId("duel".into()), AccountId(1), VISIBLE)?
+                    .expect("same snapshot")
+                    .kind,
                 AccountKind::Human
             );
             Ok(())

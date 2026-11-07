@@ -298,7 +298,7 @@ impl Hub {
                 }
             }
             Cmd::LookupDone { account } => self.lookup_done(account),
-            Cmd::VisibilitySweepDone => self.visibility_sweep_pending=false,
+            Cmd::VisibilitySweepDone => self.visibility_sweep_pending = false,
             Cmd::Detach { session } => self.detach(session),
             Cmd::EndOtherSessions { account, keep } => self.end_other_sessions(account, keep),
             Cmd::AccountDeleted { account, done } => {

@@ -2,11 +2,11 @@
 
 mod leaderboard;
 mod reader;
-mod visibility;
 #[cfg(test)]
 mod scale_tests;
 #[cfg(test)]
 mod schema_tests;
+mod visibility;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -240,7 +240,9 @@ pub fn now_ms() -> UnixMs {
 impl Db {
     #[cfg(test)]
     fn lookup_pending_for_test(&self) -> usize {
-        self.readers.as_ref().map_or(0,|pool|pool.pending_for_test())
+        self.readers
+            .as_ref()
+            .map_or(0, |pool| pool.pending_for_test())
     }
     #[cfg(test)]
     pub(crate) fn lookup_connection_for_test(&self) -> &Mutex<Connection> {
@@ -689,10 +691,12 @@ impl Db {
     ) -> DbResult<(u32, Vec<LadderRow>)> {
         self.read(move |connection| {
             leaderboard::read_lookup(connection, |c| {
-                let visible=leaderboard::VISIBLE;
+                let visible = leaderboard::VISIBLE;
                 let humans = visibility::total(c, &ruleset, AccountKind::Human)?;
                 let bots = visibility::total(c, &ruleset, AccountKind::Bot)?;
-                let total = humans.checked_add(bots).ok_or(rusqlite::Error::InvalidQuery)?;
+                let total = humans
+                    .checked_add(bots)
+                    .ok_or(rusqlite::Error::InvalidQuery)?;
                 let mut statement = c.prepare(&format!(
                     "WITH picked AS MATERIALIZED (
                         SELECT account FROM ratings r INDEXED BY ratings_global_ladder
@@ -702,16 +706,21 @@ impl Db {
                         r.games,r.wins,r.draws,r.losses,r.last_played
                     FROM picked p CROSS JOIN ratings r ON r.account=p.account AND r.ruleset=?1
                     CROSS JOIN accounts a ON a.id=r.account
-                    ORDER BY r.rating DESC,r.deviation,r.account"))?;
+                    ORDER BY r.rating DESC,r.deviation,r.account"
+                ))?;
                 let rows = statement
                     .query_map(params![ruleset.0, limit, offset], |row| {
-                        let kind=kind_of(row.get(2)?);
+                        let kind = kind_of(row.get(2)?);
                         Ok(LadderRow {
                             rank: 0,
                             account: AccountId(row.get::<_, i64>(0)? as u64),
                             nickname: row.get(1)?,
                             kind,
-                            bot_version: if kind==AccountKind::Bot { row.get(3)? } else { None },
+                            bot_version: if kind == AccountKind::Bot {
+                                row.get(3)?
+                            } else {
+                                None
+                            },
                             rating: Rating {
                                 rating: row.get(4)?,
                                 deviation: row.get(5)?,

@@ -3,14 +3,16 @@ use super::*;
 
 impl Hub {
     pub(super) fn start_visibility_sweep(&mut self) {
-        if self.visibility_sweep_pending { return; }
-        self.visibility_sweep_pending=true;
-        let (database,hub)=(self.db.clone(),self.me.clone());
+        if self.visibility_sweep_pending {
+            return;
+        }
+        self.visibility_sweep_pending = true;
+        let (database, hub) = (self.db.clone(), self.me.clone());
         tokio::spawn(async move {
-            if let Err(error)=database.expire_bans(crate::db::now_ms()).await {
+            if let Err(error) = database.expire_bans(crate::db::now_ms()).await {
                 eprintln!("ERROR: refreshing timed rating bans: {error}");
             }
-            let _=hub.send(Cmd::VisibilitySweepDone).await;
+            let _ = hub.send(Cmd::VisibilitySweepDone).await;
         });
     }
     pub(super) fn charge_lookup_at(
