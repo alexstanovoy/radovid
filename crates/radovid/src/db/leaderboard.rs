@@ -2,7 +2,7 @@
 use super::*;
 
 /// One expensive lookup, including all of a profile's modes, has one work budget.
-const LOOKUP_VM_STEPS: u32 = 50_000_000;
+const LOOKUP_VM_STEPS: u32 = 5_000_000;
 const PROGRESS_INTERVAL: i32 = 1000;
 
 pub(super) fn bounded<T>(
@@ -61,13 +61,7 @@ pub(super) fn read_lookup<T>(
 }
 
 const ROW: &str = "r.account,a.nickname,r.kind,a.bot_version,r.rating,r.deviation,r.games,r.wins,r.draws,r.losses,r.last_played";
-pub(super) fn visible_at(now: UnixMs) -> String {
-    // The cutoff is server-generated numeric data, shared by every statement of a reply.
-    format!(
-        "r.games>0 AND a.deleted=0 AND (a.banned=0 OR a.ban_until BETWEEN 0 AND {})",
-        now.0
-    )
-}
+pub(super) const VISIBLE: &str = "r.games>0 AND r.hidden=0";
 
 impl Db {
     pub async fn leaderboard(
@@ -86,16 +80,19 @@ impl Db {
         self.read(move |connection| {
             read_lookup(connection, |connection| {
                 let limit = limit.clamp(1, MAX_LEADERBOARD_ROWS);
-                let visible = visible_at(now_ms());
+                let visible = VISIBLE;
                 let (total, mut rows) = if prefix.is_empty() {
-                    category_top(connection, &ruleset, kind, limit, &visible)?
+                    category_top(connection, &ruleset, kind, limit, visible)?
                 } else {
-                    prefix_top(connection, &ruleset, kind, &prefix, limit, &visible)?
+                    prefix_top(connection, &ruleset, kind, &prefix, limit, visible)?
                 };
-                if !prefix.is_empty() {
-                    rank_selected(connection, &ruleset, kind, &mut rows, &visible)?;
+                let mut own = find_own_row(connection, &ruleset, requester, visible)?;
+                if let Some(row) = &mut own && (prefix.is_empty() || rows.is_empty() || row.kind != kind) {
+                    row.rank = rank_of(connection, &ruleset, row, visible)?;
                 }
-                let own = own_row(connection, &ruleset, requester, &visible)?;
+                if !prefix.is_empty() {
+                    rank_selected(connection, &ruleset, kind, &mut rows, &mut own, visible)?;
+                }
                 Ok(LeaderboardPage {
                     ruleset,
                     kind,
@@ -132,7 +129,7 @@ impl Db {
                 if requester != account && row.active_ban(now).is_some() {
                     return Ok(None);
                 }
-                let ratings = profile_rows(connection, account, rulesets, &visible_at(now))?;
+                let ratings = profile_rows(connection, account, rulesets, VISIBLE)?;
                 Ok(Some(PublicAccount {
                     id: account,
                     nickname: row.nickname,
@@ -184,7 +181,7 @@ fn category_top(
     limit: u16,
     visible: &str,
 ) -> rusqlite::Result<(u32, Vec<LadderRow>)> {
-    let total=connection.query_row(&format!("SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible}"),params![ruleset.0,kind_code(kind)],|row| row.get(0))?;
+    let total = super::visibility::total(connection, ruleset, kind)?;
     let mut statement=connection.prepare(&format!("SELECT {ROW},0 FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?3"))?;
     let mut rows = statement
         .query_map(params![ruleset.0, kind_code(kind), limit], ladder_row)?
@@ -210,7 +207,7 @@ fn prefix_top(
     }
     let upper = String::from_utf8(upper).map_err(|_| rusqlite::Error::InvalidQuery)?;
     let from = format!(
-        "FROM accounts a INDEXED BY accounts_nickname_key CROSS JOIN ratings r ON r.account=a.id AND r.ruleset=?1 WHERE r.kind=?2 AND {visible} AND lower(a.nickname)>=?3 AND lower(a.nickname)<?4"
+        "FROM ratings r INDEXED BY ratings_nickname WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND r.nickname_key>=?3 AND r.nickname_key<?4"
     );
     let total = connection.query_row(
         &format!("SELECT COUNT(*) {from}"),
@@ -218,7 +215,9 @@ fn prefix_top(
         |row| row.get(0),
     )?;
     let mut statement = connection.prepare(&format!(
-        "SELECT {ROW},0 {from} ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?5"
+        "WITH picked AS MATERIALIZED (SELECT r.account {from} ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?5)
+        SELECT {ROW},0 FROM picked p CROSS JOIN ratings r ON r.account=p.account AND r.ruleset=?1
+        CROSS JOIN accounts a ON a.id=r.account ORDER BY r.rating DESC,r.deviation,r.account"
     ))?;
     let rows = statement
         .query_map(
@@ -235,6 +234,7 @@ fn rank_selected(
     ruleset: &RulesetId,
     kind: AccountKind,
     picked: &mut [LadderRow],
+    own: &mut Option<LadderRow>,
     visible: &str,
 ) -> rusqlite::Result<()> {
     let mut remaining: std::collections::HashMap<_, _> = picked
@@ -245,15 +245,19 @@ fn rank_selected(
     if remaining.is_empty() {
         return Ok(());
     }
-    let mut statement=connection.prepare(&format!("SELECT r.account FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} ORDER BY r.rating DESC,r.deviation,r.account"))?;
+    let mut own_pending = own.as_ref().is_some_and(|row| row.kind == kind && row.rank == 0);
+    let mut statement=connection.prepare(&format!("SELECT r.account FROM ratings r INDEXED BY ratings_kind_ladder WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} ORDER BY r.rating DESC,r.deviation,r.account"))?;
     let mut cursor = statement.query(params![ruleset.0, kind_code(kind)])?;
     let mut rank = 0u32;
     while let Some(row) = cursor.next()? {
         rank = rank.checked_add(1).ok_or(rusqlite::Error::InvalidQuery)?;
-        if let Some(index) = remaining.remove(&AccountId(row.get::<_, i64>(0)? as u64)) {
-            picked[index].rank = rank;
+        let account = AccountId(row.get::<_, i64>(0)? as u64);
+        if let Some(index) = remaining.remove(&account) { picked[index].rank = rank; }
+        if own_pending && let Some(row) = own.as_mut().filter(|row|row.account==account) {
+            row.rank=rank;
+            own_pending=false;
         }
-        if remaining.is_empty() {
+        if remaining.is_empty() && !own_pending {
             break;
         }
     }
@@ -273,7 +277,7 @@ fn rank_of(
         "r.rating=?3 AND r.deviation=?4 AND r.account<?5",
     ] {
         let sql = format!(
-            "SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND {range} AND ?4 IS NOT NULL AND ?5 IS NOT NULL"
+            "SELECT COUNT(*) FROM ratings r INDEXED BY ratings_kind_ladder WHERE r.ruleset=?1 AND r.kind=?2 AND {visible} AND {range} AND ?4 IS NOT NULL AND ?5 IS NOT NULL"
         );
         let count: u32 = connection.query_row(
             &sql,
@@ -293,17 +297,13 @@ fn rank_of(
     Ok(rank)
 }
 
-fn own_row(
-    connection: &Connection,
-    ruleset: &RulesetId,
-    account: AccountId,
-    visible: &str,
-) -> rusqlite::Result<Option<LadderRow>> {
-    let row=connection.query_row(&format!("SELECT {ROW},0 FROM ratings r CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.account=?2 AND {visible}"),params![ruleset.0,account.0 as i64],ladder_row).optional()?;
-    let Some(mut row) = row else {
-        return Ok(None);
-    };
-    row.rank = rank_of(connection, ruleset, &row, visible)?;
+fn find_own_row(connection: &Connection, ruleset: &RulesetId, account: AccountId, visible: &str) -> rusqlite::Result<Option<LadderRow>> {
+    connection.query_row(&format!("SELECT {ROW},0 FROM ratings r CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.account=?2 AND {visible}"),params![ruleset.0,account.0 as i64],ladder_row).optional()
+}
+
+fn own_row(connection: &Connection, ruleset: &RulesetId, account: AccountId, visible: &str) -> rusqlite::Result<Option<LadderRow>> {
+    let Some(mut row)=find_own_row(connection,ruleset,account,visible)? else { return Ok(None); };
+    row.rank=rank_of(connection,ruleset,&row,visible)?;
     Ok(Some(row))
 }
 
@@ -334,6 +334,11 @@ fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guard_only_a_lookup_has_at_most_five_million_sqlite_instructions() {
+        const { assert!(LOOKUP_VM_STEPS<=5_000_000,"work limit must not be enlarged to mask a linear join"); }
+    }
 
     #[tokio::test]
     async fn banned_profiles_are_hidden_from_others_and_expired_bans_restore_rank() {
@@ -599,7 +604,7 @@ mod tests {
                     snapshot,
                     &RulesetId("duel".into()),
                     AccountId(1),
-                    &visible_at(now_ms())
+                    VISIBLE
                 )?
                 .expect("own")
                 .kind,
@@ -611,7 +616,7 @@ mod tests {
                     snapshot,
                     &RulesetId("duel".into()),
                     AccountId(1),
-                    &visible_at(now_ms())
+                    VISIBLE
                 )?
                 .expect("same snapshot")
                 .kind,
@@ -625,7 +630,7 @@ mod tests {
                 &connection,
                 &RulesetId("duel".into()),
                 AccountId(1),
-                &visible_at(now_ms())
+                VISIBLE
             )
             .expect("next read")
             .expect("own")
@@ -637,7 +642,7 @@ mod tests {
     #[test]
     fn every_statement_in_a_lookup_shares_one_work_budget_and_failure_leaves_the_database_usable() {
         let mut connection = Connection::open_in_memory().expect("database");
-        let query = "WITH RECURSIVE work(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM work WHERE i<1000000) SELECT sum(i) FROM work";
+        let query = "WITH RECURSIVE work(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM work WHERE i<100000) SELECT sum(i) FROM work";
         let mut completed = 0;
         let error = read_lookup(&mut connection, |snapshot| {
             for _ in 0..4 {
@@ -658,7 +663,7 @@ mod tests {
         let total: i64 = connection
             .query_row(query, [], |row| row.get(0))
             .expect("next query has no leaked budget");
-        assert_eq!(total, 500000500000);
+        assert_eq!(total, 5000050000);
         assert!(
             connection.is_autocommit(),
             "the failed read transaction was rolled back"

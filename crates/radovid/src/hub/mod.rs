@@ -45,6 +45,7 @@ pub enum Cmd {
     LookupDone {
         account: AccountId,
     },
+    VisibilitySweepDone,
     Request {
         session: SessionId,
         msg: ClientMsg,
@@ -152,6 +153,7 @@ struct Session {
 }
 
 pub struct Hub {
+    visibility_sweep_pending: bool,
     #[cfg(test)]
     lookup_clock: Option<std::time::Instant>,
     config: Arc<Config>,
@@ -247,6 +249,7 @@ pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle
 impl Hub {
     fn new(config: Arc<Config>, db: Db, me: mpsc::Sender<Cmd>) -> Self {
         Self {
+            visibility_sweep_pending: false,
             #[cfg(test)]
             lookup_clock: None,
             free_ports: config.game_ports.ports().collect(),
@@ -295,6 +298,7 @@ impl Hub {
                 }
             }
             Cmd::LookupDone { account } => self.lookup_done(account),
+            Cmd::VisibilitySweepDone => self.visibility_sweep_pending=false,
             Cmd::Detach { session } => self.detach(session),
             Cmd::EndOtherSessions { account, keep } => self.end_other_sessions(account, keep),
             Cmd::AccountDeleted { account, done } => {
@@ -633,6 +637,7 @@ impl Hub {
 
     /// Once a second: queue statuses, and forgetting cooldowns that are over.
     fn tick(&mut self) {
+        self.start_visibility_sweep();
         self.sweep_lookup_accounts(std::time::Instant::now());
         self.pair_work = queue::QUEUE_SCAN_BUDGET;
         self.pair_all();

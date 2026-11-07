@@ -1,7 +1,10 @@
-//! The database: one SQLite file in WAL mode behind one connection.
+//! One WAL database, one account/match writer and a bounded read-only pool.
 
 mod leaderboard;
 mod reader;
+mod visibility;
+#[cfg(test)]
+mod scale_tests;
 #[cfg(test)]
 mod schema_tests;
 
@@ -14,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::rating::Glicko;
 
 /// Schema 2 gains the denormalised category and indexes in one transaction.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = "
 CREATE TABLE accounts(
@@ -236,6 +239,10 @@ pub fn now_ms() -> UnixMs {
 
 impl Db {
     #[cfg(test)]
+    fn lookup_pending_for_test(&self) -> usize {
+        self.readers.as_ref().map_or(0,|pool|pool.pending_for_test())
+    }
+    #[cfg(test)]
     pub(crate) fn lookup_connection_for_test(&self) -> &Mutex<Connection> {
         self.readers
             .as_ref()
@@ -260,6 +267,7 @@ impl Db {
                 let transaction = conn.transaction()?;
                 transaction.execute_batch(SCHEMA)?;
                 transaction.execute_batch(RANKING_SCHEMA)?;
+                transaction.execute_batch(visibility::SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 transaction.commit()?;
             }
@@ -270,6 +278,13 @@ impl Db {
                     UPDATE ratings SET kind=(SELECT kind FROM accounts WHERE id=ratings.account);",
                 )?;
                 transaction.execute_batch(RANKING_SCHEMA)?;
+                transaction.execute_batch(visibility::SCHEMA)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                transaction.commit()?;
+            }
+            3 => {
+                let transaction = conn.transaction()?;
+                transaction.execute_batch(visibility::SCHEMA)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 transaction.commit()?;
             }
@@ -674,20 +689,20 @@ impl Db {
     ) -> DbResult<(u32, Vec<LadderRow>)> {
         self.read(move |connection| {
             leaderboard::read_lookup(connection, |c| {
-                let visible=leaderboard::visible_at(now_ms());
-                let total: u32 = c.query_row(
-                    &format!("SELECT COUNT(*) FROM ratings r INDEXED BY ratings_global_ladder CROSS JOIN accounts a ON a.id = r.account
-                 WHERE r.ruleset = ?1 AND {visible}"),
-                    [&ruleset.0],
-                    |row| row.get(0),
-                )?;
-                let mut statement = c.prepare(
-                    &format!("SELECT a.id, a.nickname, a.kind, a.bot_version,
-                        r.rating, r.deviation, r.games, r.wins, r.draws, r.losses, r.last_played
-                 FROM ratings r INDEXED BY ratings_global_ladder CROSS JOIN accounts a ON a.id = r.account
-                 WHERE r.ruleset = ?1 AND {visible}
-                 ORDER BY r.rating DESC, r.deviation ASC, r.account ASC LIMIT ?2 OFFSET ?3"),
-                )?;
+                let visible=leaderboard::VISIBLE;
+                let humans = visibility::total(c, &ruleset, AccountKind::Human)?;
+                let bots = visibility::total(c, &ruleset, AccountKind::Bot)?;
+                let total = humans.checked_add(bots).ok_or(rusqlite::Error::InvalidQuery)?;
+                let mut statement = c.prepare(&format!(
+                    "WITH picked AS MATERIALIZED (
+                        SELECT account FROM ratings r INDEXED BY ratings_global_ladder
+                        WHERE r.ruleset=?1 AND {visible}
+                        ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?2 OFFSET ?3)
+                    SELECT a.id,a.nickname,a.kind,a.bot_version,r.rating,r.deviation,
+                        r.games,r.wins,r.draws,r.losses,r.last_played
+                    FROM picked p CROSS JOIN ratings r ON r.account=p.account AND r.ruleset=?1
+                    CROSS JOIN accounts a ON a.id=r.account
+                    ORDER BY r.rating DESC,r.deviation,r.account"))?;
                 let rows = statement
                     .query_map(params![ruleset.0, limit, offset], |row| {
                         let kind=kind_of(row.get(2)?);
