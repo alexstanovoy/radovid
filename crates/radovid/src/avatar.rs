@@ -70,7 +70,8 @@ fn decode(bytes: &[u8]) -> Result<Pixels, Error> {
 
 /// Only decoded pixel data and pixel transparency enter the fixed encoder.
 pub fn canonicalize(bytes:&[u8])->Result<Vec<u8>,Error> {
-    let decoded=decode(bytes)?;
+    let mut decoded=decode(bytes)?;
+    if decoded.color==png::ColorType::Indexed {decoded.compact_palette()?;}
     let mut output=BoundedPng(Vec::with_capacity(radovid_proto::MAX_AVATAR_BYTES));
     {
         let mut encoder=png::Encoder::new(&mut output,AVATAR_SIDE,AVATAR_SIDE);
@@ -81,12 +82,51 @@ pub fn canonicalize(bytes:&[u8])->Result<Vec<u8>,Error> {
         if decoded.color==png::ColorType::Indexed {
             encoder.set_palette(decoded.palette.ok_or(Error::BadAvatar)?);
         }
-        if let Some(transparency)=decoded.transparency {encoder.set_trns(transparency);}
+        if let Some(transparency)=decoded.transparency {encoder.set_trns(encoder_transparency(decoded.color,transparency)?);}
         let mut writer=encoder.write_header().map_err(|_|Error::BadAvatar)?;
         writer.write_image_data(&decoded.bytes[..decoded.size]).map_err(|_|Error::BadAvatar)?;
         writer.finish().map_err(|_|Error::BadAvatar)?;
     }
+    validate(&output.0)?;
     Ok(output.0)
+}
+
+fn encoder_transparency(color:png::ColorType,samples:Vec<u8>)->Result<Vec<u8>,Error> {
+    match color {
+        png::ColorType::Grayscale|png::ColorType::Rgb=>{
+            if samples.len()!=color.samples() {return Err(Error::BadAvatar);}
+            // The decoder reduces these PNG 16-bit sample fields to our validated 8-bit values.
+            Ok(samples.into_iter().flat_map(|value|[0,value]).collect())
+        }
+        png::ColorType::Indexed=>Ok(samples),
+        _=>Err(Error::BadAvatar),
+    }
+}
+
+impl Pixels {
+    fn compact_palette(&mut self)->Result<(),Error> {
+        let palette=self.palette.take().ok_or(Error::BadAvatar)?;
+        let transparency=self.transparency.take().unwrap_or_default();
+        let mut positions=[None;256];
+        let mut colors=Vec::new();let mut alpha=Vec::new();
+        for pixel in &mut self.bytes[..self.size] {
+            let old=usize::from(*pixel);
+            let next=match positions[old] {
+                Some(index)=>index,
+                None=>{
+                    let next=u8::try_from(colors.len()/3).map_err(|_|Error::BadAvatar)?;
+                    colors.extend_from_slice(palette.get(old*3..old*3+3).ok_or(Error::BadAvatar)?);
+                    alpha.push(transparency.get(old).copied().unwrap_or(255));
+                    positions[old]=Some(next);next
+                }
+            };
+            *pixel=next;
+        }
+        while alpha.last()==Some(&255) {alpha.pop();}
+        self.palette=Some(colors);
+        self.transparency=(!alpha.is_empty()).then_some(alpha);
+        Ok(())
+    }
 }
 
 struct BoundedPng(Vec<u8>);
@@ -132,6 +172,55 @@ pub(crate) mod tests {
         bytes
     }
 
+
+
+    #[test]
+    fn canonical_reencoding_preserves_grayscale_and_rgb_pixel_transparency() {
+        for (color,transparency) in [(png::ColorType::Grayscale,vec![0,128]),(png::ColorType::Rgb,vec![0,128,0,64,0,32])] {
+            let original=image_with_chunks(color,&[(png::chunk::tRNS,&transparency)]);
+            let canonical=canonicalize(&original).expect("supported transparency");
+            validate(&canonical).expect("canonical PNG is valid");
+            assert_eq!(canonicalize(&canonical).expect("stable transparency"),canonical);
+            let original=decode(&original).expect("pixels");
+            let decoded=decode(&canonical).expect("canonical pixels");
+            assert_eq!(decoded.transparency,original.transparency);
+        }
+    }
+
+    #[test]
+    fn canonical_indexed_images_discard_unused_palette_and_transparency_entries() {
+        let mut palette=vec![3,7,9];palette.extend_from_slice(b"<script>payload</script>");
+        let original=image_with_chunks(png::ColorType::Indexed,&[(png::chunk::PLTE,&palette),(png::chunk::tRNS,b"abcdefghi")]);
+        let canonical=canonicalize(&original).expect("indexed image");
+        assert!(!canonical.windows(8).any(|bytes|bytes==b"<script>"),"unused palette is not pixel data");
+        let decoded=decode(&canonical).expect("canonical palette");
+        assert_eq!(decoded.palette,Some(vec![3,7,9]));
+        assert_eq!(decoded.transparency,Some(vec![b'a']));
+        assert!(decoded.bytes[..decoded.size].iter().all(|index|*index==0));
+        assert_eq!(canonicalize(&canonical).expect("stable palette"),canonical);
+    }
+
+
+    #[test]
+    fn indexed_palette_compaction_preserves_mixed_pixel_colors_and_alpha() {
+        let mut original=Vec::new();
+        {
+            let mut encoder=png::Encoder::new(&mut original,32,32);
+            encoder.set_color(png::ColorType::Indexed);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_compression(png::Compression::High);
+            encoder.set_palette(vec![255,0,0,0,255,0,0,0,255]);
+            encoder.set_trns(vec![1,2,3]);
+            let mut writer=encoder.write_header().expect("header");
+            writer.write_image_data(&(0..1024).map(|index|if index%2==0 {2}else{0}).collect::<Vec<_>>()).expect("pixels");
+        }
+        let canonical=canonicalize(&original).expect("indexed pixels");
+        let decoded=decode(&canonical).expect("canonical");
+        assert_eq!(decoded.palette,Some(vec![0,0,255,255,0,0]));
+        assert_eq!(decoded.transparency,Some(vec![3,1]));
+        for (index,pixel) in decoded.bytes[..decoded.size].iter().enumerate() {assert_eq!(*pixel,(index%2) as u8);}
+        assert_eq!(canonicalize(&canonical).expect("stable indexed image"),canonical);
+    }
 
     #[test]
     fn reencoding_preserves_nonuniform_pixels_and_is_idempotent() {

@@ -64,37 +64,31 @@ async fn avatar_upload_get_and_remove_use_authenticated_account_and_shared_read_
     );
 }
 
+async fn avatar_page(database:&crate::db::Db)->Vec<AvatarQuery> {
+    let png=crate::avatar::tests::image(32,32);
+    let mut queries=Vec::new();
+    for index in 0..100 {
+        let account=database.create_account(format!("row{index}"),"hash".into(),AccountKind::Human,None).await.expect("account");
+        database.change_avatar(account,Some(png.clone()),UnixMs(1)).await.expect("storage").expect("avatar");
+        queries.push(AvatarQuery{account,version:None});
+    }
+    queries
+}
+
 #[tokio::test]
 async fn one_batch_fetches_a_hundred_avatars_for_one_lookup_token_and_honors_cached_versions() {
     let mut fixture=Fixture::new();
     let (_viewer,session)=fixture.account("viewer").await;
     fixture.hub.lookup_clock=Some(std::time::Instant::now());
-    let png=crate::avatar::tests::image(32,32);
-    let mut accounts=Vec::new();
-    for index in 0..100 {
-        let id=fixture.hub.db.create_account(format!("row{index}"),"hash".into(),AccountKind::Human,None).await.expect("account");
-        fixture.hub.db.change_avatar(id,Some(png.clone()),UnixMs(1)).await.expect("storage").expect("avatar");
-        accounts.push((id,None::<AvatarVersion>));
-    }
-    #[derive(serde::Serialize)]
-    struct Batch {tag:u32,accounts:Vec<(AccountId,Option<AvatarVersion>)>}
-    let bytes=postcard::to_allocvec(&Batch{tag:45,accounts:accounts.clone()}).expect("future batch wire");
-    let request=radovid_proto::decode_payload::<ClientMsg>(&bytes).expect("bounded batch request");
-    let reply=fixture.hub.request(session,request).await.expect("batch");
-    #[derive(serde::Deserialize)]
-    struct Images {tag:u32,changes:Vec<(AccountId,Option<Avatar>)>}
-    let response:Images=postcard::from_bytes(&postcard::to_allocvec(&reply).expect("wire")).expect("batch reply");
-    assert_eq!(response.tag,18);
-    assert_eq!(response.changes.len(),100);
-    let cached:Vec<_>=response.changes.iter().map(|(id,image)|(*id,image.as_ref().map(|image|image.version))).collect();
-    assert!(response.changes.iter().all(|(_,image)|image.is_some()));
-    let bytes=postcard::to_allocvec(&Batch{tag:45,accounts:cached}).expect("cached wire");
-    let request=radovid_proto::decode_payload::<ClientMsg>(&bytes).expect("batch");
-    let reply=fixture.hub.request(session,request).await.expect("cached batch");
-    let response:Images=postcard::from_bytes(&postcard::to_allocvec(&reply).expect("wire")).expect("cached reply");
-    assert!(response.changes.is_empty(),"unchanged images cost no response bytes");
-    for _ in 0..2 {fixture.hub.request(session,ClientMsg::Account{account:accounts[0].0}).await.expect("remaining lookup tokens");}
-    assert_eq!(fixture.hub.request(session,ClientMsg::Account{account:accounts[0].0}).await,Err(Error::Throttled{retry_after_ms:250}));
+    let accounts=avatar_page(&fixture.hub.db).await;
+    let first=accounts[0].account;
+    let Reply::Avatars{changes}=fixture.hub.request(session,ClientMsg::GetAvatars{accounts}).await.expect("batch")
+        else {panic!("batch reply");};
+    assert_eq!(changes.len(),100);
+    let accounts=changes.iter().map(|change|AvatarQuery{account:change.account,version:Some(change.avatar.as_ref().expect("uncached image").version)}).collect();
+    assert_eq!(fixture.hub.request(session,ClientMsg::GetAvatars{accounts}).await,Ok(Reply::Avatars{changes:Vec::new()}));
+    for _ in 0..2 {fixture.hub.request(session,ClientMsg::Account{account:first}).await.expect("remaining lookup tokens");}
+    assert_eq!(fixture.hub.request(session,ClientMsg::Account{account:first}).await,Err(Error::Throttled{retry_after_ms:250}));
 }
 
 #[tokio::test]

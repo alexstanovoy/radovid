@@ -23,7 +23,9 @@ control decoder applies the same bounded image envelope to every batch entry.
 Image preparation and upload byte/dimension limits from protocol 20 still apply.
 The service decodes each upload and re-encodes its native eight-bit color type at
 32x32 using fixed Balanced compression and Adaptive filtering. Only indexed
-images retain PLTE; valid pixel transparency is retained. The stored image must
+images retain PLTE, with unused entries removed and pixel indices remapped in
+first-use order. Unused palette alpha entries are removed; valid pixel transparency
+is retained, including grayscale/RGB transparent samples. The stored image must
 also fit 512 bytes. An image that cannot fit after normalization is BadAvatar and
 consumes the upload attempt. Versions hash the stored, re-encoded bytes. The
 service does not store the original file or non-pixel suggested palettes.
