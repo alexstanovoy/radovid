@@ -131,6 +131,19 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn review_every_clock_tick_refills_the_pairing_budget() {
+    let mut fixture = Fixture::new();
+    fixture.hub.pair_work = 0;
+    let (_, first) = fixture.account("alpha").await;
+    let (_, second) = fixture.account("beta").await;
+    fixture.join(first, "ranked").await;
+    fixture.join(second, "ranked").await;
+    assert!(fixture.hub.proposals.is_empty());
+    fixture.hub.tick();
+    assert_eq!(fixture.hub.proposals.len(), 1, "a clock tick refills without a second elapsed-time gate");
+}
+
+#[tokio::test]
 async fn tick_widens_both_players_windows_using_persisted_mode_ratings() {
     let mut fixture = Fixture::new();
     let (alpha, first) = fixture.account("alpha").await;
@@ -191,7 +204,6 @@ async fn a_concurrent_rated_result_refreshes_ranked_and_unranked_searches() {
 async fn a_closed_event_channel_during_pairing_cannot_reserve_an_entry_twice() {
     let mut fixture = Fixture::new();
     fixture.hub.pair_work = 0;
-    fixture.hub.pair_reset = tokio::time::Instant::now() + Duration::from_secs(86_400);
     let mut entries = Vec::new();
     for name in ["alpha", "beta", "gamma", "delta"] {
         let (_, session) = fixture.account(name).await;
@@ -226,7 +238,6 @@ async fn a_closed_event_channel_during_pairing_cannot_reserve_an_entry_twice() {
 async fn a_status_sweep_inspects_queue_positions_at_most_once_per_entry() {
     let mut fixture = Fixture::new();
     fixture.hub.pair_work = 0;
-    fixture.hub.pair_reset = tokio::time::Instant::now() + Duration::from_secs(86_400);
     for index in 0..64 {
         let (_, session) = fixture.account(&format!("player_{index}")).await;
         fixture.join(session, "ranked").await;
@@ -244,7 +255,6 @@ async fn a_status_sweep_inspects_queue_positions_at_most_once_per_entry() {
 async fn a_queue_that_spends_the_budget_yields_to_other_queues_on_refill() {
     let mut fixture = Fixture::new();
     fixture.hub.pair_work = 0;
-    fixture.hub.pair_reset = tokio::time::Instant::now() + Duration::from_secs(86_400);
     for index in 0..8 {
         let (_, session) = fixture.account(&format!("player_{index}")).await;
         fixture
@@ -270,7 +280,6 @@ async fn a_queue_that_spends_the_budget_yields_to_other_queues_on_refill() {
 async fn a_queue_deferred_before_its_first_scan_goes_first_on_refill() {
     let mut fixture = Fixture::new();
     fixture.hub.pair_work = 0;
-    fixture.hub.pair_reset = tokio::time::Instant::now() + Duration::from_secs(86_400);
     for index in 0..8 {
         let (_, session) = fixture.account(&format!("player_{index}")).await;
         fixture
@@ -301,7 +310,6 @@ async fn pairing_calls_while_capacity_is_full_preserve_the_next_queues_turn() {
         .limits
         .lobby_games_max = 1;
     fixture.hub.pair_work = 0;
-    fixture.hub.pair_reset = tokio::time::Instant::now() + Duration::from_secs(86_400);
     for index in 0..8 {
         let (_, session) = fixture.account(&format!("player_{index}")).await;
         fixture

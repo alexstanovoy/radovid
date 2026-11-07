@@ -145,7 +145,6 @@ pub struct Hub {
     queues: HashMap<(RulesetId, Audience), Vec<QueueEntryId>>,
     next_entry: u32,
     pair_work: usize,
-    pair_reset: tokio::time::Instant,
     pair_next: usize,
     pairing: bool,
     #[cfg(test)]
@@ -239,7 +238,6 @@ impl Hub {
             queues: HashMap::new(),
             next_entry: 1,
             pair_work: queue::QUEUE_SCAN_BUDGET,
-            pair_reset: tokio::time::Instant::now(),
             pair_next: 0,
             pairing: false,
             #[cfg(test)]
@@ -599,6 +597,7 @@ impl Hub {
 
     /// Once a second: queue statuses, and forgetting cooldowns that are over.
     fn tick(&mut self) {
+        self.pair_work = queue::QUEUE_SCAN_BUDGET;
         self.pair_all();
         self.send_queue_statuses();
         self.sweep_penalties();
