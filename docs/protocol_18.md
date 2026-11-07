@@ -1,5 +1,8 @@
 # Protocol 18: category leaderboards and per-mode profile ranks
 
+The API layout below was introduced in18. [Protocol19](protocol_19.md) supersedes
+the lookup execution, moderation and rate/work-limit implementation described here.
+
 Rebuild the service and every client together. The minimum and current version are 18:
 `RatingSummary` and `Limits` have appended fields nested inside existing replies.
 Older clients receive `ProtoMismatch`. Existing field positions and variant numbers keep

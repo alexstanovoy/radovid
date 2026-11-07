@@ -41,3 +41,12 @@ are bounded to50ms; the writer retains its existing5s busy timeout.
 Response limits remain operator-configurable1..1000 (default100), with at most64
 rated modes in a profile. Menu clients can cap visible rows to100. Highlight/pin own
 metadata only for the selected kind and test membership against the displayed rows.
+
+## Moderation visibility
+
+Accounts with a currently active ban are excluded from board/search rows, counts and
+rank positions, including the legacy ladder. Each reply captures one server-time cutoff
+for ban expiry and uses it consistently throughout its snapshot. Expired bans restore
+the same stored rating. Other callers cannot fetch a banned account's public profile;
+the requester's own profile can show metadata without a ranked position. Human rows
+omit bot-version metadata in both ladder APIs, including after reclassification.
