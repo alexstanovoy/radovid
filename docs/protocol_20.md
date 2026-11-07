@@ -30,7 +30,9 @@ animation, SVG, URLs, filesystem paths and trailing bytes are refused.
 The service checks byte size, chunk framing and dimensions before invoking the
 pixel decoder. One zlib stream must consume all IDAT data and produce exactly the
 expected scanlines into a fixed 4,129-byte buffer, with its checksum verified.
-Pixel decoding verifies PNG CRCs, uses a 4,096-byte output buffer and a 64-KiB
+The palette/transparency chunks must obey their color type, order, length and
+eight-bit sample ranges. Decoder options explicitly reject ancillary CRC failures
+instead of discarding those chunks. Pixel decoding verifies PNG CRCs, uses a 4,096-byte output buffer and a 64-KiB
 intermediate allocation budget. No file is opened and no URL is fetched. Stored
 images are checked again before being served. A corrupt stored image causes a
 recoverable internal error, never unvalidated bytes sent to clients.
@@ -39,6 +41,11 @@ recoverable internal error, never unvalidated bytes sent to clients.
 rejects upload/download byte vectors above 512 before allocating their claimed
 size; an oversized raw wire upload is malformed, while SDK preflight returns
 `BadAvatar` without sending it.
+
+The shared client control decoder also checks the bounded image envelope before
+delivering an avatar to a UI image decoder. A malicious service cannot pass
+arbitrary dimensions, animation or metadata chunks through that boundary. Clients
+still handle an image-decoder error for corrupt bytes from an untrusted service.
 
 ## Limits and visibility
 

@@ -167,7 +167,7 @@ impl Db {
                     PROFILE_RANK_VM_STEPS,
                 )?;
                 Ok(Some(PublicAccount {
-                    avatar: super::avatar::version(connection,account)?,
+                    avatar: bounded_with_limit(connection,PROFILE_METADATA_VM_STEPS,|connection|super::avatar::version(connection,account))?,
                     id: account,
                     nickname: row.nickname,
                     kind: row.kind,

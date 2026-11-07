@@ -57,6 +57,23 @@ pub(super) fn version(connection: &Connection, account: AccountId) -> rusqlite::
 mod tests {
     use super::*;
 
+struct Scratch(std::path::PathBuf);
+impl Scratch {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        Self(std::env::temp_dir().join(format!("avatar_{}_{}.db",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed))))
+    }
+}
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        for suffix in ["","-wal","-shm"] { let _ = std::fs::remove_file(format!("{}{suffix}",self.0.display())); }
+    }
+}
+async fn account(db:&Db,name:&str) -> AccountId {
+    db.create_account(name.into(),"hash".into(),AccountKind::Human,None).await.expect("account")
+}
+
+
     #[tokio::test]
     async fn profiles_and_both_leaderboard_paths_publish_the_avatar_cache_version() {
         let db = Db::init(Connection::open_in_memory().expect("connection")).expect("db");
@@ -128,24 +145,4 @@ mod tests {
         db.run(|connection|connection.execute("UPDATE avatars SET version=zeroblob(32)",[]).map(|_|())).await.expect("corruption fixture");
         assert!(matches!(db.avatar(alpha,alpha).await,Err(DbError::Sqlite(rusqlite::Error::InvalidQuery))));
     }
-}
-
-#[cfg(test)]
-struct Scratch(std::path::PathBuf);
-#[cfg(test)]
-impl Scratch {
-    fn new() -> Self {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        Self(std::env::temp_dir().join(format!("avatar_{}_{}.db",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed))))
-    }
-}
-#[cfg(test)]
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        for suffix in ["","-wal","-shm"] { let _ = std::fs::remove_file(format!("{}{suffix}",self.0.display())); }
-    }
-}
-#[cfg(test)]
-async fn account(db:&Db,name:&str) -> AccountId {
-    db.create_account(name.into(),"hash".into(),AccountKind::Human,None).await.expect("account")
 }
