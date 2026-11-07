@@ -545,63 +545,134 @@ async fn pairing_calls_while_capacity_is_full_preserve_the_next_queues_turn() {
 
 #[tokio::test]
 async fn a_failed_rating_commit_keeps_the_match_pending_and_sends_no_false_result() {
-    let mut fixture=Fixture::new();
-    let (alpha,_)=fixture.account("alpha").await;
-    let (beta,_)=fixture.account("beta").await;
-    let game=fixture.game(&[alpha,beta]).await;
-    let external=rusqlite::Connection::open(&fixture.hub.config.database).expect("storage fixture");
+    let mut fixture = Fixture::new();
+    let (alpha, _) = fixture.account("alpha").await;
+    let (beta, _) = fixture.account("beta").await;
+    let game = fixture.game(&[alpha, beta]).await;
+    let external =
+        rusqlite::Connection::open(&fixture.hub.config.database).expect("storage fixture");
     external.execute_batch("CREATE TRIGGER reject_finish BEFORE UPDATE OF finished ON matches WHEN NEW.finished=1 BEGIN SELECT RAISE(ABORT,'storage unavailable');END;").expect("transient storage failure");
     fixture.win(game).await;
-    assert!(fixture.hub.matches.contains_key(&game),"a failed result commit must not discard its match state");
+    assert!(
+        fixture.hub.matches.contains_key(&game),
+        "a failed result commit must not discard its match state"
+    );
     assert!(fixture.hub.activities(alpha).matches.contains(&game));
     for receiver in &mut fixture.events {
-        while let Ok(message)=receiver.try_recv() { assert!(!matches!(message,ServerMsg::Event(Event::MatchResult{..})),"must not publish an uncommitted result"); }
+        while let Ok(message) = receiver.try_recv() {
+            assert!(
+                !matches!(message, ServerMsg::Event(Event::MatchResult { .. })),
+                "must not publish an uncommitted result"
+            );
+        }
     }
     fixture.hub.retry_finish();
-    let failed=tokio::time::timeout(Duration::from_secs(10),fixture._commands.recv()).await.expect("retry guard").expect("retry reply");
-    assert!(matches!(&failed,Cmd::FinishApplied {result:Err(_),..}));
+    let failed = tokio::time::timeout(Duration::from_secs(10), fixture._commands.recv())
+        .await
+        .expect("retry guard")
+        .expect("retry reply");
+    assert!(matches!(&failed, Cmd::FinishApplied { result: Err(_), .. }));
     fixture.hub.handle(failed).await;
-    external.execute_batch("DROP TRIGGER reject_finish").expect("storage restored");
+    external
+        .execute_batch("DROP TRIGGER reject_finish")
+        .expect("storage restored");
     fixture.hub.retry_finish();
-    let committed=tokio::time::timeout(Duration::from_secs(10),fixture._commands.recv()).await.expect("commit guard").expect("commit reply");
-    assert!(matches!(&committed,Cmd::FinishApplied {result:Ok(_),..}));
+    let committed = tokio::time::timeout(Duration::from_secs(10), fixture._commands.recv())
+        .await
+        .expect("commit guard")
+        .expect("commit reply");
+    assert!(matches!(
+        &committed,
+        Cmd::FinishApplied { result: Ok(_), .. }
+    ));
     fixture.hub.handle(committed).await;
     assert!(!fixture.hub.matches.contains_key(&game));
     assert!(!fixture.hub.activities(alpha).matches.contains(&game));
-    assert_eq!(fixture.hub.db.rating(alpha,RulesetId("ranked".into())).await.expect("rating").expect("played").games,1);
+    assert_eq!(
+        fixture
+            .hub
+            .db
+            .rating(alpha, RulesetId("ranked".into()))
+            .await
+            .expect("rating")
+            .expect("played")
+            .games,
+        1
+    );
     for receiver in &mut fixture.events {
-        let message=receiver.try_recv().expect("committed result event");
-        let ServerMsg::Event(Event::MatchResult{result})=message else {panic!("result event");};
-        assert_eq!(result.outcome,Outcome::Winner{team:0});
-        assert!(result.seats.iter().all(|seat|seat.before.is_some()&&seat.after.is_some()));
+        let message = receiver.try_recv().expect("committed result event");
+        let ServerMsg::Event(Event::MatchResult { result }) = message else {
+            panic!("result event");
+        };
+        assert_eq!(result.outcome, Outcome::Winner { team: 0 });
+        assert!(
+            result
+                .seats
+                .iter()
+                .all(|seat| seat.before.is_some() && seat.after.is_some())
+        );
     }
 }
 
 #[tokio::test]
 async fn an_unseated_rated_winner_is_a_null_crash_instead_of_an_unreplayable_result() {
-    let mut fixture=Fixture::new();
-    let (alpha,_)=fixture.account("alpha").await;
-    let (beta,_)=fixture.account("beta").await;
-    let game=fixture.game(&[alpha,beta]).await;
-    fixture.hub.match_ended(game,End::Result(GameResult{winner:Some(7),left:None,duration_ms:1000,report:Vec::new(),artifact_truncated:false})).await;
-    assert!(!fixture.hub.matches.contains_key(&game),"invalid game output must not block the durable result queue");
-    let result=fixture.hub.db.completed_result(game).await.expect("null result");
-    assert_eq!((result.outcome,result.reason),(Outcome::Null,EndReason::Crashed));
-    assert!(fixture.hub.db.rating(alpha,RulesetId("ranked".into())).await.expect("rating").is_none());
+    let mut fixture = Fixture::new();
+    let (alpha, _) = fixture.account("alpha").await;
+    let (beta, _) = fixture.account("beta").await;
+    let game = fixture.game(&[alpha, beta]).await;
+    fixture
+        .hub
+        .match_ended(
+            game,
+            End::Result(GameResult {
+                winner: Some(7),
+                left: None,
+                duration_ms: 1000,
+                report: Vec::new(),
+                artifact_truncated: false,
+            }),
+        )
+        .await;
+    assert!(
+        !fixture.hub.matches.contains_key(&game),
+        "invalid game output must not block the durable result queue"
+    );
+    let result = fixture
+        .hub
+        .db
+        .completed_result(game)
+        .await
+        .expect("null result");
+    assert_eq!(
+        (result.outcome, result.reason),
+        (Outcome::Null, EndReason::Crashed)
+    );
+    assert!(
+        fixture
+            .hub
+            .db
+            .rating(alpha, RulesetId("ranked".into()))
+            .await
+            .expect("rating")
+            .is_none()
+    );
 }
 
 #[tokio::test]
 async fn pairing_waits_for_pending_results_so_cached_queue_ratings_cannot_be_stale() {
-    let mut fixture=Fixture::new();
-    let (alpha,_)=fixture.account("alpha").await;
-    let (beta,_)=fixture.account("beta").await;
-    let game=fixture.game(&[alpha,beta]).await;
-    let storage=rusqlite::Connection::open(&fixture.hub.config.database).expect("storage");
+    let mut fixture = Fixture::new();
+    let (alpha, _) = fixture.account("alpha").await;
+    let (beta, _) = fixture.account("beta").await;
+    let game = fixture.game(&[alpha, beta]).await;
+    let storage = rusqlite::Connection::open(&fixture.hub.config.database).expect("storage");
     storage.execute_batch("CREATE TRIGGER reject_finish BEFORE UPDATE OF finished ON matches WHEN NEW.finished=1 BEGIN SELECT RAISE(ABORT,'storage unavailable');END;").expect("failure");
     fixture.win(game).await;
-    let (_,gamma)=fixture.account("gamma").await;
-    let (_,delta)=fixture.account("delta").await;
-    fixture.join(gamma,"ranked").await;
-    fixture.join(delta,"ranked").await;
-    assert!(fixture.hub.proposals.is_empty(),"do not pair from cached ratings while a completed result is uncommitted");
+    let (_, gamma) = fixture.account("gamma").await;
+    let (_, delta) = fixture.account("delta").await;
+    fixture.join(gamma, "ranked").await;
+    fixture.join(delta, "ranked").await;
+    assert!(
+        fixture.hub.proposals.is_empty(),
+        "do not pair from cached ratings while a completed result is uncommitted"
+    );
 }

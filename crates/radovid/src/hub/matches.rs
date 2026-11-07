@@ -266,8 +266,16 @@ impl Hub {
     /// Records the end, rates a rated match with a result (arrival order, one
     /// transaction each), tells every seat, and hands the slot on.
     pub(super) async fn match_ended(&mut self, match_id: MatchId, end: End) {
-        if self.matches.get(&match_id).is_some_and(|state|state.phase==Phase::Finishing) {return;}
-        let Some(mut state) = self.matches.remove(&match_id) else {return;};
+        if self
+            .matches
+            .get(&match_id)
+            .is_some_and(|state| state.phase == Phase::Finishing)
+        {
+            return;
+        }
+        let Some(mut state) = self.matches.remove(&match_id) else {
+            return;
+        };
         self.waiting.retain(|m| *m != match_id);
         let (outcome, reason, duration_ms, report) = match end {
             End::Result(result) => match result.winner {
@@ -295,10 +303,17 @@ impl Hub {
             }
             End::Stopped => (Outcome::Null, EndReason::Stopped, 0, Vec::new()),
         };
-        let (outcome,reason)=if state.rated && matches!(outcome,Outcome::Winner{team} if !state.seats.iter().any(|seat|seat.team==team)) {
-            eprintln!("WARN: match {} reported an unseated rated winner; recording a null result",match_id.0);
-            (Outcome::Null,EndReason::Crashed)
-        } else {(outcome,reason)};
+        let (outcome, reason) = if state.rated
+            && matches!(outcome,Outcome::Winner{team} if !state.seats.iter().any(|seat|seat.team==team))
+        {
+            eprintln!(
+                "WARN: match {} reported an unseated rated winner; recording a null result",
+                match_id.0
+            );
+            (Outcome::Null, EndReason::Crashed)
+        } else {
+            (outcome, reason)
+        };
         let finished_at = now_ms();
         let finish = Finish {
             match_id,
@@ -321,66 +336,125 @@ impl Hub {
         };
         if self.pending_finishes.is_empty() {
             match self.db.finish_match(finish.clone()).await {
-                Ok(changes)=> {
-                    let result=self.result_for(&state,&finish,&changes);
-                    self.deliver_result(state,result);
+                Ok(changes) => {
+                    let result = self.result_for(&state, &finish, &changes);
+                    self.deliver_result(state, result);
                     return;
                 }
-                Err(error)=>eprintln!("WARN: match {} result retained for retry: {error}",match_id.0),
+                Err(error) => eprintln!(
+                    "WARN: match {} result retained for retry: {error}",
+                    match_id.0
+                ),
             }
-        } else if let Err(error)=self.db.queue_finish(finish.clone()).await {
-            eprintln!("ERROR: queuing match {} result; retaining it in memory: {error}",match_id.0);
+        } else if let Err(error) = self.db.queue_finish(finish.clone()).await {
+            eprintln!(
+                "ERROR: queuing match {} result; retaining it in memory: {error}",
+                match_id.0
+            );
         }
-        state.phase=Phase::Finishing;
+        state.phase = Phase::Finishing;
         state.stop.take();
-        self.matches.insert(match_id,state);
+        self.matches.insert(match_id, state);
         self.pending_finishes.push_back(finish);
     }
 
     pub(super) fn retry_finish(&mut self) {
-        if self.finish_inflight {return;}
-        let Some(finish)=self.pending_finishes.front().cloned() else {return;};
-        self.finish_inflight=true;
-        let (database,hub)=(self.db.clone(),self.me.clone());
+        if self.finish_inflight {
+            return;
+        }
+        let Some(finish) = self.pending_finishes.front().cloned() else {
+            return;
+        };
+        self.finish_inflight = true;
+        let (database, hub) = (self.db.clone(), self.me.clone());
         tokio::spawn(async move {
-            let match_id=finish.match_id;
-            let result=match database.finish_match(finish).await {
-                Ok(_)=>database.completed_result(match_id).await,
-                Err(error)=>Err(error),
+            let match_id = finish.match_id;
+            let result = match database.finish_match(finish).await {
+                Ok(_) => database.completed_result(match_id).await,
+                Err(error) => Err(error),
             };
-            let _=hub.send(super::Cmd::FinishApplied {match_id,result}).await;
+            let _ = hub
+                .send(super::Cmd::FinishApplied { match_id, result })
+                .await;
         });
     }
 
-    pub(super) fn finish_applied(&mut self,match_id:MatchId,result:crate::db::DbResult<MatchResult>) {
-        if self.pending_finishes.front().is_none_or(|finish|finish.match_id!=match_id) {return;}
-        self.finish_inflight=false;
+    pub(super) fn finish_applied(
+        &mut self,
+        match_id: MatchId,
+        result: crate::db::DbResult<MatchResult>,
+    ) {
+        if self
+            .pending_finishes
+            .front()
+            .is_none_or(|finish| finish.match_id != match_id)
+        {
+            return;
+        }
+        self.finish_inflight = false;
         match result {
-            Ok(result)=> {
+            Ok(result) => {
                 self.pending_finishes.pop_front();
-                if let Some(state)=self.matches.remove(&match_id) {self.deliver_result(state,result);}
+                if let Some(state) = self.matches.remove(&match_id) {
+                    self.deliver_result(state, result);
+                }
                 self.retry_finish();
             }
-            Err(error)=>eprintln!("WARN: match {} result remains queued: {error}",match_id.0),
+            Err(error) => eprintln!("WARN: match {} result remains queued: {error}", match_id.0),
         }
     }
 
-    fn result_for(&self,state:&MatchState,finish:&Finish,changes:&[crate::db::RatingChange])->MatchResult {
-        MatchResult {match_id:finish.match_id,ruleset:finish.ruleset.clone(),rated:state.rated,outcome:finish.outcome,reason:finish.reason,duration_ms:finish.duration_ms,game_report:finish.report.clone(),finished_at:finish.finished_at,
-            seats:state.seats.iter().map(|seat| {
-                let info=self.seat_info(state,seat);
-                let change=changes.iter().find(|change|change.account==seat.account);
-                SeatResult {slot:info.slot,team:info.team,account:info.account,nickname:info.nickname,kind:info.kind,before:change.map(|change|change.before.public()),after:change.map(|change|change.after.public())}
-            }).collect()}
+    fn result_for(
+        &self,
+        state: &MatchState,
+        finish: &Finish,
+        changes: &[crate::db::RatingChange],
+    ) -> MatchResult {
+        MatchResult {
+            match_id: finish.match_id,
+            ruleset: finish.ruleset.clone(),
+            rated: state.rated,
+            outcome: finish.outcome,
+            reason: finish.reason,
+            duration_ms: finish.duration_ms,
+            game_report: finish.report.clone(),
+            finished_at: finish.finished_at,
+            seats: state
+                .seats
+                .iter()
+                .map(|seat| {
+                    let info = self.seat_info(state, seat);
+                    let change = changes.iter().find(|change| change.account == seat.account);
+                    SeatResult {
+                        slot: info.slot,
+                        team: info.team,
+                        account: info.account,
+                        nickname: info.nickname,
+                        kind: info.kind,
+                        before: change.map(|change| change.before.public()),
+                        after: change.map(|change| change.after.public()),
+                    }
+                })
+                .collect(),
+        }
     }
 
-    fn deliver_result(&mut self,state:MatchState,result:MatchResult) {
+    fn deliver_result(&mut self, state: MatchState, result: MatchResult) {
         for seat in &result.seats {
-            if let Some(after)=seat.after {self.refresh_queued_rating(seat.account,&result.ruleset,after.rating);}
+            if let Some(after) = seat.after {
+                self.refresh_queued_rating(seat.account, &result.ruleset, after.rating);
+            }
         }
         for seat in &state.seats {
-            if let Some(account)=self.accounts.get_mut(&seat.account) {account.matches.retain(|id|*id!=result.match_id);}
-            self.notify(seat.account,Event::MatchResult {result:result.clone()});
+            if let Some(account) = self.accounts.get_mut(&seat.account) {
+                account.matches.retain(|id| *id != result.match_id);
+            }
+            self.notify(
+                seat.account,
+                Event::MatchResult {
+                    result: result.clone(),
+                },
+            );
             self.forget_if_idle(seat.account);
         }
         self.try_launch();

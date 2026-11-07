@@ -1,16 +1,16 @@
 //! One WAL database, one account/match writer and a bounded read-only pool.
 
-mod results;
 mod leaderboard;
 mod reader;
+mod results;
+#[cfg(test)]
+mod results_tests;
 #[cfg(test)]
 mod schema_tests;
 mod visibility;
 mod wal;
 #[cfg(test)]
 mod wal_tests;
-#[cfg(test)]
-mod results_tests;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -229,10 +229,10 @@ pub struct Finish {
     pub outcome: Outcome,
     pub reason: EndReason,
     pub duration_ms: u32,
-    #[serde(deserialize_with="results::report")]
+    #[serde(deserialize_with = "results::report")]
     pub report: Vec<u8>,
     /// Slot by slot.
-    #[serde(deserialize_with="results::seats")]
+    #[serde(deserialize_with = "results::seats")]
     pub seats: Vec<NewSeat>,
     pub finished_at: UnixMs,
 }
@@ -243,11 +243,13 @@ pub struct Db {
     readers: Option<Arc<reader::ReadPool>>,
     writer_turn: Arc<tokio::sync::Semaphore>,
     wal: Option<Arc<wal::Wal>>,
-    results:Option<Arc<results::Results>>,
+    results: Option<Arc<results::Results>>,
 }
 
 /// Validates a bounded durable-result record without opening files.
-pub fn decode_pending_result(bytes:&[u8])->DbResult<(u64,Finish)> {results::decode_record(bytes)}
+pub fn decode_pending_result(bytes: &[u8]) -> DbResult<(u64, Finish)> {
+    results::decode_record(bytes)
+}
 
 pub fn now_ms() -> UnixMs {
     let since = std::time::SystemTime::now()
@@ -257,34 +259,53 @@ pub fn now_ms() -> UnixMs {
 }
 
 impl Db {
-    pub(crate) async fn recover_results(&self)->DbResult<usize> {
-        let Some(journal)=self.results.clone() else {return Ok(0);};
-        let mut recovered=0;
+    pub(crate) async fn recover_results(&self) -> DbResult<usize> {
+        let Some(journal) = self.results.clone() else {
+            return Ok(0);
+        };
+        let mut recovered = 0;
         for _ in 0..=results::MAX_PENDING {
-            let reader=Arc::clone(&journal);
-            let next=tokio::task::spawn_blocking(move||reader.first()).await.map_err(|_|DbError::Join)??;
-            let Some(finish)=next else {return Ok(recovered);};
-            if recovered>=results::MAX_PENDING {return Err(DbError::Io(std::io::Error::other("too many pending results")));}
-            let id=finish.match_id;
+            let reader = Arc::clone(&journal);
+            let next = tokio::task::spawn_blocking(move || reader.first())
+                .await
+                .map_err(|_| DbError::Join)??;
+            let Some(finish) = next else {
+                return Ok(recovered);
+            };
+            if recovered >= results::MAX_PENDING {
+                return Err(DbError::Io(std::io::Error::other(
+                    "too many pending results",
+                )));
+            }
+            let id = finish.match_id;
             self.commit_finish(finish).await?;
             self.ack_finish(id).await?;
-            recovered+=1;
+            recovered += 1;
         }
         Ok(recovered)
     }
 
-    pub(crate) async fn queue_finish(&self,finish:Finish)->DbResult<()> {
-        let Some(journal)=self.results.clone() else {return Ok(());};
-        tokio::task::spawn_blocking(move||journal.save(&finish)).await.map_err(|_|DbError::Join)?
+    pub(crate) async fn queue_finish(&self, finish: Finish) -> DbResult<()> {
+        let Some(journal) = self.results.clone() else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || journal.save(&finish))
+            .await
+            .map_err(|_| DbError::Join)?
     }
 
-    async fn ack_finish(&self,id:MatchId)->DbResult<()> {
-        let Some(journal)=self.results.clone() else {return Ok(());};
-        tokio::task::spawn_blocking(move||journal.remove(id)).await.map_err(|_|DbError::Join)?
+    async fn ack_finish(&self, id: MatchId) -> DbResult<()> {
+        let Some(journal) = self.results.clone() else {
+            return Ok(());
+        };
+        tokio::task::spawn_blocking(move || journal.remove(id))
+            .await
+            .map_err(|_| DbError::Join)?
     }
 
-    pub(crate) async fn completed_result(&self,id:MatchId)->DbResult<MatchResult> {
-        self.inspect(move|connection|load_result(connection,id.0 as i64)).await
+    pub(crate) async fn completed_result(&self, id: MatchId) -> DbResult<MatchResult> {
+        self.inspect(move |connection| load_result(connection, id.0 as i64))
+            .await
     }
     #[cfg(test)]
     fn lookup_pending_for_test(&self) -> usize {
@@ -308,7 +329,9 @@ impl Db {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             // Flush existing reservations before publishing independently durable results.
-            durable_write(&mut connection,|connection|connection.pragma_update(None,"user_version",SCHEMA_VERSION))?;
+            durable_write(&mut connection, |connection| {
+                connection.pragma_update(None, "user_version", SCHEMA_VERSION)
+            })?;
             let actual = connection
                 .path()
                 .filter(|path| !path.is_empty())
@@ -321,7 +344,7 @@ impl Db {
             &resolved,
             Arc::clone(&wal.snapshots),
         )?));
-        db.results=Some(Arc::new(results::Results::open(&resolved)?));
+        db.results = Some(Arc::new(results::Results::open(&resolved)?));
         db.wal = Some(wal);
         Ok(db)
     }
@@ -330,7 +353,7 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         // Checkpoints use the dedicated short-timeout connection, never a foreground commit.
-        conn.pragma_update(None,"wal_autocheckpoint",0)?;
+        conn.pragma_update(None, "wal_autocheckpoint", 0)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -372,7 +395,7 @@ impl Db {
             readers: None,
             writer_turn: Arc::new(tokio::sync::Semaphore::new(1)),
             wal: None,
-            results:None,
+            results: None,
         })
     }
 
@@ -381,12 +404,21 @@ impl Db {
         &self,
         work: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
     ) -> DbResult<T> {
-        self.run_inner(work,true).await
+        self.run_inner(work, true).await
     }
 
-    async fn inspect<T:Send+'static>(&self,work:impl FnOnce(&mut Connection)->rusqlite::Result<T>+Send+'static)->DbResult<T> {self.run_inner(work,false).await}
+    async fn inspect<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
+    ) -> DbResult<T> {
+        self.run_inner(work, false).await
+    }
 
-    async fn run_inner<T:Send+'static>(&self,work:impl FnOnce(&mut Connection)->rusqlite::Result<T>+Send+'static,mutation:bool)->DbResult<T> {
+    async fn run_inner<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
+        mutation: bool,
+    ) -> DbResult<T> {
         let conn = Arc::clone(&self.conn);
         let _turn = Arc::clone(&self.writer_turn)
             .acquire_owned()
@@ -395,8 +427,11 @@ impl Db {
         let wal = self.wal.clone();
         let runtime = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
-            let _turn=_turn;
-            if mutation && let Some(policy) = &wal && policy.exceeds_hard_limit() {
+            let _turn = _turn;
+            if mutation
+                && let Some(policy) = &wal
+                && policy.exceeds_hard_limit()
+            {
                 policy.schedule(runtime);
                 return Err(DbError::WalLimit);
             }
@@ -667,38 +702,50 @@ impl Db {
         seats: Vec<NewSeat>,
     ) -> DbResult<MatchId> {
         let now = now_ms().0 as i64;
-        self.run(move |c| durable_write(c,|c| {
-            let tx = c.transaction()?;
-            tx.execute(
-                "INSERT INTO matches(ruleset, rated, created) VALUES(?1, ?2, ?3)",
-                params![ruleset.0, rated, now],
-            )?;
-            let id = tx.last_insert_rowid();
-            for seat in &seats {
+        self.run(move |c| {
+            durable_write(c, |c| {
+                let tx = c.transaction()?;
                 tx.execute(
+                    "INSERT INTO matches(ruleset, rated, created) VALUES(?1, ?2, ?3)",
+                    params![ruleset.0, rated, now],
+                )?;
+                let id = tx.last_insert_rowid();
+                for seat in &seats {
+                    tx.execute(
                     "INSERT INTO match_seats(match_id, slot, team, account) VALUES(?1, ?2, ?3, ?4)",
                     params![id, seat.slot, seat.team, seat.account.0 as i64],
                 )?;
-            }
-            tx.commit()?;
-            Ok(MatchId(id as u64))
-        }))
+                }
+                tx.commit()?;
+                Ok(MatchId(id as u64))
+            })
+        })
         .await
     }
 
     /// Records the end of a match and, for a rated one, the Glicko-2 update
     /// of every member against the opposing teams as stored now, in one
     /// transaction (DEVELOPMENT.md "Ratings"). Returns the rating changes.
-    pub async fn finish_match(&self,finish:Finish)->DbResult<Vec<RatingChange>> {
-        let id=finish.match_id;
+    pub async fn finish_match(&self, finish: Finish) -> DbResult<Vec<RatingChange>> {
+        let id = finish.match_id;
         self.queue_finish(finish.clone()).await?;
-        let changes=self.commit_finish(finish).await?;
-        if let Err(error)=self.ack_finish(id).await {eprintln!("WARN: match {} committed; pending record retained for startup recovery: {error}",id.0);}
+        let changes = self.commit_finish(finish).await?;
+        if let Err(error) = self.ack_finish(id).await {
+            eprintln!(
+                "WARN: match {} committed; pending record retained for startup recovery: {error}",
+                id.0
+            );
+        }
         Ok(changes)
     }
 
-    async fn commit_finish(&self,finish:Finish)->DbResult<Vec<RatingChange>> {
-        self.run(move |connection|durable_write(connection,|connection|commit_finish_once(connection,&finish))).await
+    async fn commit_finish(&self, finish: Finish) -> DbResult<Vec<RatingChange>> {
+        self.run(move |connection| {
+            durable_write(connection, |connection| {
+                commit_finish_once(connection, &finish)
+            })
+        })
+        .await
     }
 
     /// Deletes the credentials, sessions and ratings of an account; its
@@ -1169,27 +1216,62 @@ fn reason_of(code: i64) -> EndReason {
     }
 }
 
-
 // A successful FULL commit flushes preceding WAL frames as well as this transaction.
-fn durable_write<T>(connection:&mut Connection,work:impl FnOnce(&mut Connection)->rusqlite::Result<T>)->rusqlite::Result<T> {
-    connection.pragma_update(None,"synchronous","FULL")?;
-    let result=work(connection);
-    let restored=connection.pragma_update(None,"synchronous","NORMAL");
-    match result {Ok(value)=>{restored?;Ok(value)},Err(error)=>Err(error)}
+fn durable_write<T>(
+    connection: &mut Connection,
+    work: impl FnOnce(&mut Connection) -> rusqlite::Result<T>,
+) -> rusqlite::Result<T> {
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    let result = work(connection);
+    let restored = connection.pragma_update(None, "synchronous", "NORMAL");
+    match result {
+        Ok(value) => {
+            restored?;
+            Ok(value)
+        }
+        Err(error) => Err(error),
+    }
 }
 
-fn commit_finish_once(connection:&mut Connection,finish:&Finish)->rusqlite::Result<Vec<RatingChange>> {
-            let transaction=connection.transaction()?;
-            let (finished,ruleset,rated):(bool,String,bool)=transaction.query_row("SELECT finished,ruleset,rated FROM matches WHERE id=?1",[finish.match_id.0 as i64],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
-            if finished {return Ok(Vec::new());}
-            if ruleset!=finish.ruleset.0 || (finish.rate && !rated) {return Err(rusqlite::Error::InvalidQuery);}
-            let reserved=transaction.prepare("SELECT account,slot,team FROM match_seats WHERE match_id=?1 ORDER BY slot")?.query_map([finish.match_id.0 as i64],|row|Ok(NewSeat{account:AccountId(row.get::<_,i64>(0)? as u64),slot:row.get(1)?,team:row.get(2)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            let mut seats=finish.seats.clone();seats.sort_by_key(|seat|seat.slot);
-            if seats!=reserved {return Err(rusqlite::Error::InvalidQuery);}
-            let changes=if finish.rate {rate(&transaction,finish)?}else{Vec::new()};
-            write_finish(&transaction,finish,&changes)?;
-            transaction.commit()?;
-            Ok(changes)
+fn commit_finish_once(
+    connection: &mut Connection,
+    finish: &Finish,
+) -> rusqlite::Result<Vec<RatingChange>> {
+    let transaction = connection.transaction()?;
+    let (finished, ruleset, rated): (bool, String, bool) = transaction.query_row(
+        "SELECT finished,ruleset,rated FROM matches WHERE id=?1",
+        [finish.match_id.0 as i64],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if finished {
+        return Ok(Vec::new());
+    }
+    if ruleset != finish.ruleset.0 || (finish.rate && !rated) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let reserved = transaction
+        .prepare("SELECT account,slot,team FROM match_seats WHERE match_id=?1 ORDER BY slot")?
+        .query_map([finish.match_id.0 as i64], |row| {
+            Ok(NewSeat {
+                account: AccountId(row.get::<_, i64>(0)? as u64),
+                slot: row.get(1)?,
+                team: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut seats = finish.seats.clone();
+    seats.sort_by_key(|seat| seat.slot);
+    if seats != reserved {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let changes = if finish.rate {
+        rate(&transaction, finish)?
+    } else {
+        Vec::new()
+    };
+    write_finish(&transaction, finish, &changes)?;
+    transaction.commit()?;
+    Ok(changes)
 }
 
 #[cfg(test)]

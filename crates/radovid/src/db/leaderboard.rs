@@ -5,7 +5,7 @@ use super::*;
 const LOOKUP_VM_STEPS: u32 = 5_000_000;
 const PROGRESS_INTERVAL: i32 = 1000;
 const PROFILE_RANK_VM_STEPS: u32 = 5_000_000;
-const PROFILE_TOTAL_RANK_VM_STEPS:u32=20_000_000;
+const PROFILE_TOTAL_RANK_VM_STEPS: u32 = 20_000_000;
 const PROFILE_METADATA_VM_STEPS: u32 = 10_000;
 
 pub(super) fn bounded<T>(
@@ -20,8 +20,13 @@ fn bounded_with_limit<T>(
     steps: u32,
     work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
-    if steps==0 {return Err(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(9),None));}
-    let interval=steps.min(PROGRESS_INTERVAL as u32);
+    if steps == 0 {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(9),
+            None,
+        ));
+    }
+    let interval = steps.min(PROGRESS_INTERVAL as u32);
     let mut remaining = steps / interval;
     connection.progress_handler(
         interval as i32,
@@ -182,24 +187,45 @@ fn profile_rows(
     visible: &str,
     rank_budget: u32,
 ) -> rusqlite::Result<Vec<(RulesetId, RatingSummary)>> {
-    profile_rows_capped(connection,account,rulesets,visible,rank_budget,PROFILE_TOTAL_RANK_VM_STEPS)
+    profile_rows_capped(
+        connection,
+        account,
+        rulesets,
+        visible,
+        rank_budget,
+        PROFILE_TOTAL_RANK_VM_STEPS,
+    )
 }
 
-fn profile_rows_capped(connection:&Connection,account:AccountId,rulesets:Vec<RulesetId>,visible:&str,rank_budget:u32,total_budget:u32)->rusqlite::Result<Vec<(RulesetId,RatingSummary)>> {
+fn profile_rows_capped(
+    connection: &Connection,
+    account: AccountId,
+    rulesets: Vec<RulesetId>,
+    visible: &str,
+    rank_budget: u32,
+    total_budget: u32,
+) -> rusqlite::Result<Vec<(RulesetId, RatingSummary)>> {
     if rulesets.len() > MAX_RATED_MODES {
         return Err(rusqlite::Error::InvalidParameterName(
             "profile mode limit exceeded".into(),
         ));
     }
     let mut ratings = Vec::new();
-    let mut total_budget=total_budget;
+    let mut total_budget = total_budget;
     for ruleset in rulesets {
         if let Some(row) =
             bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| {
                 find_own_row(connection, &ruleset, account, visible)
             })?
         {
-            let rank=profile_rank(connection,&ruleset,&row,visible,rank_budget,&mut total_budget)?;
+            let rank = profile_rank(
+                connection,
+                &ruleset,
+                &row,
+                visible,
+                rank_budget,
+                &mut total_budget,
+            )?;
             ratings.push((
                 ruleset,
                 RatingSummary {
@@ -216,20 +242,54 @@ fn profile_rows_capped(connection:&Connection,account:AccountId,rulesets:Vec<Rul
     Ok(ratings)
 }
 
-fn profile_rank(connection:&Connection,ruleset:&RulesetId,row:&LadderRow,visible:&str,mode_budget:u32,total:&mut u32)->rusqlite::Result<Option<u32>> {
-    let mut remaining=mode_budget;
-    let mut rank=1u32;
-    for range in ["r.rating>?3","r.rating=?3 AND r.deviation<?4","r.rating=?3 AND r.deviation=?4 AND r.account<?5"] {
-        let limit=remaining.min(*total);
-        if limit==0 {return Ok(None);}
-        let mut statement=connection.prepare(&rank_range_query(visible,range))?;
-        let result=bounded_with_limit(connection,limit,|_|statement.query_row(params![ruleset.0,kind_code(row.kind),row.rating.rating,row.rating.deviation,row.account.0 as i64],|row|row.get::<_,u32>(0)));
-        let used=u32::try_from(statement.get_status(rusqlite::StatementStatus::VmStep)).unwrap_or(u32::MAX);
-        remaining=remaining.saturating_sub(used);*total=total.saturating_sub(used);
+fn profile_rank(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    row: &LadderRow,
+    visible: &str,
+    mode_budget: u32,
+    total: &mut u32,
+) -> rusqlite::Result<Option<u32>> {
+    let mut remaining = mode_budget;
+    let mut rank = 1u32;
+    for range in [
+        "r.rating>?3",
+        "r.rating=?3 AND r.deviation<?4",
+        "r.rating=?3 AND r.deviation=?4 AND r.account<?5",
+    ] {
+        let limit = remaining.min(*total);
+        if limit == 0 {
+            return Ok(None);
+        }
+        let mut statement = connection.prepare(&rank_range_query(visible, range))?;
+        let result = bounded_with_limit(connection, limit, |_| {
+            statement.query_row(
+                params![
+                    ruleset.0,
+                    kind_code(row.kind),
+                    row.rating.rating,
+                    row.rating.deviation,
+                    row.account.0 as i64
+                ],
+                |row| row.get::<_, u32>(0),
+            )
+        });
+        let used = u32::try_from(statement.get_status(rusqlite::StatementStatus::VmStep))
+            .unwrap_or(u32::MAX);
+        remaining = remaining.saturating_sub(used);
+        *total = total.saturating_sub(used);
         match result {
-            Ok(count)=>rank=rank.checked_add(count).ok_or(rusqlite::Error::InvalidQuery)?,
-            Err(error) if error.sqlite_error_code()==Some(rusqlite::ErrorCode::OperationInterrupted)=>return Ok(None),
-            Err(error)=>return Err(error),
+            Ok(count) => {
+                rank = rank
+                    .checked_add(count)
+                    .ok_or(rusqlite::Error::InvalidQuery)?
+            }
+            Err(error)
+                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
         }
     }
     Ok(Some(rank))
@@ -442,19 +502,37 @@ mod tests {
 
     #[test]
     fn a_profiles_total_rank_budget_is_shared_across_modes_without_losing_summaries() {
-        let db=fixture();
-        let connection=db.conn.lock().expect("connection");
-        let ruleset=RulesetId("duel".into());
-        let own=find_own_row(&connection,&ruleset,AccountId(1),VISIBLE).expect("row").expect("played");
-        let mut remaining=100_000;
-        let rank=profile_rank(&connection,&ruleset,&own,VISIBLE,100_000,&mut remaining).expect("rank");
-        let used=100_000-remaining;
-        assert!(used>1);
-        let rows=profile_rows_capped(&connection,AccountId(1),vec![ruleset,RulesetId("teams".into())],VISIBLE,100_000,used+1).expect("profile survives aggregate exhaustion");
-        assert_eq!(rows.len(),2);
-        assert_eq!(rows[0].1.rank,rank);
-        assert_eq!(rows[1].1.rank,None);
-        assert_eq!(rows[1].1.games,2);
+        let db = fixture();
+        let connection = db.conn.lock().expect("connection");
+        let ruleset = RulesetId("duel".into());
+        let own = find_own_row(&connection, &ruleset, AccountId(1), VISIBLE)
+            .expect("row")
+            .expect("played");
+        let mut remaining = 100_000;
+        let rank = profile_rank(
+            &connection,
+            &ruleset,
+            &own,
+            VISIBLE,
+            100_000,
+            &mut remaining,
+        )
+        .expect("rank");
+        let used = 100_000 - remaining;
+        assert!(used > 1);
+        let rows = profile_rows_capped(
+            &connection,
+            AccountId(1),
+            vec![ruleset, RulesetId("teams".into())],
+            VISIBLE,
+            100_000,
+            used + 1,
+        )
+        .expect("profile survives aggregate exhaustion");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1.rank, rank);
+        assert_eq!(rows[1].1.rank, None);
+        assert_eq!(rows[1].1.games, 2);
     }
 
     #[test]

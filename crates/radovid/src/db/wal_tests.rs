@@ -68,7 +68,8 @@ async fn a_symlink_database_checkpoints_sqlites_actual_sidecar() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn checkpoint_closes_reader_admission_without_holding_the_writer_turn_while_snapshots_drain() {
+async fn checkpoint_closes_reader_admission_without_holding_the_writer_turn_while_snapshots_drain()
+{
     let (scratch, mut db) = fixture();
     Arc::get_mut(db.wal.as_mut().expect("WAL policy"))
         .expect("unique policy")
@@ -121,17 +122,28 @@ async fn checkpoint_closes_reader_admission_without_holding_the_writer_turn_whil
 
 #[tokio::test]
 async fn an_external_snapshot_keeps_normal_writes_and_login_reads_available_below_the_hard_cap() {
-    let (scratch,mut db)=fixture();
-    Arc::get_mut(db.wal.as_mut().expect("policy")).expect("unique").set_limit_for_test(0);
-    let outside=Connection::open(scratch.0.join("ratings.db")).expect("external");
-    outside.execute_batch("BEGIN; SELECT COUNT(*) FROM accounts;").expect("snapshot");
-    let mut failures=Vec::new();
+    let (scratch, mut db) = fixture();
+    Arc::get_mut(db.wal.as_mut().expect("policy"))
+        .expect("unique")
+        .set_limit_for_test(0);
+    let outside = Connection::open(scratch.0.join("ratings.db")).expect("external");
+    outside
+        .execute_batch("BEGIN; SELECT COUNT(*) FROM accounts;")
+        .expect("snapshot");
+    let mut failures = Vec::new();
     for round in 0..20 {
-        if let Err(error)=db.set_nickname(AccountId(1),format!("Kept{round}")).await {failures.push(error.to_string());}
-        if let Err(error)=db.account_by_login("l1".into()).await {failures.push(error.to_string());}
+        if let Err(error) = db.set_nickname(AccountId(1), format!("Kept{round}")).await {
+            failures.push(error.to_string());
+        }
+        if let Err(error) = db.account_by_login("l1".into()).await {
+            failures.push(error.to_string());
+        }
     }
     outside.execute_batch("COMMIT").expect("release external");
-    assert!(failures.is_empty(),"normal writes/login reads failed below hard cap: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "normal writes/login reads failed below hard cap: {failures:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -198,17 +210,36 @@ async fn probe_wal_stays_bounded_under_overlapping_reads() {
 
 #[tokio::test]
 async fn the_hard_wal_limit_refuses_mutations_but_keeps_authentication_reads_available() {
-    let (scratch,mut db)=fixture();
-    let policy=Arc::get_mut(db.wal.as_mut().expect("policy")).expect("unique");
-    policy.set_limit_for_test(0);policy.set_hard_limit_for_test(1024);
-    let external=Connection::open(scratch.0.join("ratings.db")).expect("external");
-    external.execute_batch("BEGIN;SELECT COUNT(*) FROM accounts;").expect("snapshot");
-    db.set_nickname(AccountId(1),"Kept".into()).await.expect("first commit");
-    let policy=Arc::clone(db.wal.as_ref().expect("policy"));
+    let (scratch, mut db) = fixture();
+    let policy = Arc::get_mut(db.wal.as_mut().expect("policy")).expect("unique");
+    policy.set_limit_for_test(0);
+    policy.set_hard_limit_for_test(1024);
+    let external = Connection::open(scratch.0.join("ratings.db")).expect("external");
+    external
+        .execute_batch("BEGIN;SELECT COUNT(*) FROM accounts;")
+        .expect("snapshot");
+    db.set_nickname(AccountId(1), "Kept".into())
+        .await
+        .expect("first commit");
+    let policy = Arc::clone(db.wal.as_ref().expect("policy"));
     policy.wait_for_test().await;
-    assert!(matches!(db.set_nickname(AccountId(1),"Rejected".into()).await,Err(DbError::WalLimit)));
-    assert_eq!(db.account_by_login("l1".into()).await.expect("login read").expect("account").nickname,"Kept");
+    assert!(matches!(
+        db.set_nickname(AccountId(1), "Rejected".into()).await,
+        Err(DbError::WalLimit)
+    ));
+    assert_eq!(
+        db.account_by_login("l1".into())
+            .await
+            .expect("login read")
+            .expect("account")
+            .nickname,
+        "Kept"
+    );
     external.execute_batch("COMMIT").expect("release");
-    policy.reset_retry_for_test();policy.schedule(tokio::runtime::Handle::current());policy.wait_for_test().await;
-    db.set_nickname(AccountId(1),"Recovered".into()).await.expect("write recovers");
+    policy.reset_retry_for_test();
+    policy.schedule(tokio::runtime::Handle::current());
+    policy.wait_for_test().await;
+    db.set_nickname(AccountId(1), "Recovered".into())
+        .await
+        .expect("write recovers");
 }
