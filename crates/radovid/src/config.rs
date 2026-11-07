@@ -1225,10 +1225,12 @@ fn wire_account_limit(value: u8) -> AccountGameLimit {
 }
 
 fn validate_rating_window(name: &str, window: RatingWindow) -> Result<(), String> {
+    if !(1..=MAX_RATING_WINDOW).contains(&window.maximum) {
+        return Err(format!("{name}.maximum must be 1 to {MAX_RATING_WINDOW}"));
+    }
     for (field, value) in [
         ("initial", window.initial),
         ("widen_per_minute", window.widen_per_minute),
-        ("maximum", window.maximum),
     ] {
         if value > MAX_RATING_WINDOW {
             return Err(format!("{name}.{field} must be 0 to {MAX_RATING_WINDOW}"));
@@ -1236,6 +1238,9 @@ fn validate_rating_window(name: &str, window: RatingWindow) -> Result<(), String
     }
     if window.initial > window.maximum {
         return Err(format!("{name}.initial must not exceed maximum"));
+    }
+    if window.widen_per_minute == 0 && window.initial < window.maximum {
+        return Err(format!("{name}.maximum is unreachable when widen_per_minute is zero"));
     }
     Ok(())
 }
@@ -1323,6 +1328,23 @@ maximum = 3000
             config.limits_for(AccountKind::Human, None).ranked_window,
             DEFAULT_RANKED_WINDOW
         );
+    }
+
+    #[test]
+    fn review_zero_maximum_rating_window_is_rejected() {
+        assert_eq!(
+            validate_rating_window("policy", RatingWindow { initial: 0, widen_per_minute: 0, maximum: 0 }),
+            Err("policy.maximum must be 1 to 10000".into())
+        );
+    }
+
+    #[test]
+    fn review_nonwidening_window_must_already_be_at_its_maximum() {
+        assert_eq!(
+            validate_rating_window("policy", RatingWindow { initial: 100, widen_per_minute: 0, maximum: 1000 }),
+            Err("policy.maximum is unreachable when widen_per_minute is zero".into())
+        );
+        assert!(validate_rating_window("policy", RatingWindow { initial: 100, widen_per_minute: 0, maximum: 100 }).is_ok());
     }
 
     #[test]
