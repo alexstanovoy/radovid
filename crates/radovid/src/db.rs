@@ -667,18 +667,19 @@ impl Db {
     ) -> DbResult<(u32, Vec<LadderRow>)> {
         self.read(move |connection| {
             leaderboard::read_lookup(connection, |c| {
+                let visible=leaderboard::visible_at(now_ms());
                 let total: u32 = c.query_row(
-                    "SELECT COUNT(*) FROM ratings r JOIN accounts a ON a.id = r.account
-                 WHERE r.ruleset = ?1 AND r.games > 0 AND a.deleted = 0",
+                    &format!("SELECT COUNT(*) FROM ratings r INDEXED BY ratings_global_ladder CROSS JOIN accounts a ON a.id = r.account
+                 WHERE r.ruleset = ?1 AND {visible}"),
                     [&ruleset.0],
                     |row| row.get(0),
                 )?;
                 let mut statement = c.prepare(
-                    "SELECT a.id, a.nickname, a.kind, a.bot_version,
+                    &format!("SELECT a.id, a.nickname, a.kind, a.bot_version,
                         r.rating, r.deviation, r.games, r.wins, r.draws, r.losses, r.last_played
-                 FROM ratings r JOIN accounts a ON a.id = r.account
-                 WHERE r.ruleset = ?1 AND r.games > 0 AND a.deleted = 0
-                 ORDER BY r.rating DESC, r.deviation ASC, a.id ASC LIMIT ?2 OFFSET ?3",
+                 FROM ratings r INDEXED BY ratings_global_ladder CROSS JOIN accounts a ON a.id = r.account
+                 WHERE r.ruleset = ?1 AND {visible}
+                 ORDER BY r.rating DESC, r.deviation ASC, a.id ASC LIMIT ?2 OFFSET ?3"),
                 )?;
                 let rows = statement
                     .query_map(params![ruleset.0, limit, offset], |row| {

@@ -34,6 +34,7 @@ impl Hub {
             }
             ClientMsg::Account { account }=>Lookup::Profile {
                 account:*account,
+                requester:id,
                 modes:self.config.rulesets.iter().filter(|rule| rule.rated && rule.admits(self.kind_of(id))).map(|rule| rule.ruleset_id()).collect(),
                 online:self.accounts.get(account).is_some_and(|account| !account.sessions.is_empty()),
             },
@@ -77,7 +78,7 @@ pub(super) fn is_lookup(message:&ClientMsg)->bool {
 
 pub(super) enum Lookup {
     Board { ruleset:RulesetId,kind:AccountKind,prefix:String,limit:u16,requester:AccountId },
-    Profile { account:AccountId,modes:Vec<RulesetId>,online:bool },
+    Profile { account:AccountId,requester:AccountId,modes:Vec<RulesetId>,online:bool },
     Legacy { ruleset:RulesetId,offset:u32,limit:u8 },
 }
 
@@ -88,8 +89,8 @@ impl Lookup {
                 let page=database.leaderboard(ruleset,kind,prefix,limit,requester).await.map_err(lookup_error)?;
                 Ok(Reply::LeaderboardPage { page })
             }
-            Self::Profile { account,modes,online }=>{
-                let mut account=database.public_profile(account,modes).await.map_err(lookup_error)?.ok_or(Error::UnknownAccount)?;
+            Self::Profile { account,requester,modes,online }=>{
+                let mut account=database.public_profile(account,modes,requester).await.map_err(lookup_error)?.ok_or(Error::UnknownAccount)?;
                 account.online=online; Ok(Reply::Account { account })
             }
             Self::Legacy { ruleset,offset,limit }=>{
