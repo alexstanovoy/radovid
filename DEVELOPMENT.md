@@ -174,7 +174,7 @@ skill window, and never changes ratings. A ruleset without `rated` or `rating_ru
 remains available only through lobbies or solo starts. The effective window widens with
 waiting time up to its configured maximum; all members must accept the group's full
 rating spread. Policy, selection and resource bounds are described in
-[protocol 16](docs/protocol_16.md); `examples/tic_tac_toe.toml` shows a ranked/unranked pair.
+[protocol 17](docs/protocol_17.md); `examples/tic_tac_toe.toml` shows a ranked/unranked pair.
 
 For two or more sides, each team is represented by its members' mean rating and deviation
 `sqrt(sum(member_deviation²)) / team_size`. Each member receives one Glicko-2 period against each opposing team

@@ -66,8 +66,8 @@ rulesets share one ladder, and its unrated queue explicitly references the rated
 For your own game, configure its executable or container image, wire fingerprint, arguments and public address
 according to the [launcher contract](DEVELOPMENT.md#launcher-contract). The game owns its rules, network protocol
 and client library; the service never imports them. The [generality audit](docs/generality.md) records guarantees
-and remaining boundaries. [Protocol 16 coordination](docs/protocol_16.md) describes the client upgrade boundary
-and the linked humans/everyone queues.
+and remaining boundaries. [Protocol 17 coordination](docs/protocol_17.md) describes the current upgrade boundary
+and extends the [linked humans/everyone queues](docs/protocol_16.md).
 
 ## For developers
 

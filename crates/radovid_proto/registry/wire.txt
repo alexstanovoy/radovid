@@ -505,7 +505,7 @@ variant QueueLeftReason 3 Matched
 variant Reply 15 QueuesJoined {}
 field Reply::QueuesJoined 0 entries: Vec<QueueEntry>
 
-# Protocol 16: explicit unrated queues and served widening skill policies.
+# Protocol 17: explicit unrated queues and served widening skill policies.
 field Limits 10 ranked_window: RatingWindow
 field Limits 11 unranked_window: RatingWindow
 field RatingWindow 0 initial: u32

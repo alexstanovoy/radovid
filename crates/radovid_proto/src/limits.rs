@@ -1,12 +1,12 @@
 //! Limits both sides hold.
 
 /// The version of every wire type here. Bumped on every change of any of them.
-pub const PROTO_VERSION: u16 = 16;
+pub const PROTO_VERSION: u16 = 17;
 
 /// The oldest version a server still serves: a client of it keeps working while the changes since
 /// are only appended fields and variants (postcard leaves trailing bytes of a message unread).
 /// Raised only with a change an older client cannot read.
-pub const MIN_PROTO_VERSION: u16 = 16;
+pub const MIN_PROTO_VERSION: u16 = 17;
 
 /// One linked search can enter humans and everyone, once each.
 pub const MAX_QUEUE_AUDIENCES: usize = 2;
