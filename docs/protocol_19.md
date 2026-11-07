@@ -32,8 +32,8 @@ events while a reader waits. Completion releases the account's in-flight state b
 its response is delivered. Read-only connections cannot acquire the account/match writer's
 application mutex. A snapshot transaction covers each reply.
 
-One five-million-instruction SQLite work counter spans a lookup, including every profile
-mode; the hook is cleared on success, error and unwind. If this final safety bound trips,
+One five-million-instruction SQLite work counter spans a board or legacy lookup;
+the hook is cleared on success, error and unwind. Profile rank limits are described below. If this final safety bound trips,
 LookupTooExpensive has no retry delay. Throttled remains temporary: account quota,
 an already-running lookup, full read capacity or database contention. Reader busy waits
 are bounded to50ms; the writer retains its existing5s busy timeout.
@@ -76,10 +76,34 @@ transaction, preserving account/rating data and backfilling visibility and total
 
 All four readers draw from one FIFO admission queue, not a queue per connection.
 An idle connection immediately serves the oldest waiting lookup. Queued/running
-work remains capped at 64, with one pending lookup per account. A reply has one
-**five-million-instruction** budget, shared across all its statements and profile
-modes. The deterministic instruction bound limits work without classifying a slow
+work remains capped at 64, with one pending lookup per account. A board or legacy reply has one
+**five-million-instruction** budget shared across its statements. The deterministic instruction bound limits work without classifying a slow
 machine as a permanently invalid request. Exhaustion remains `LookupTooExpensive`,
-not an invitation to retry unchanged. Very large searches or multi-mode profiles
-can reach that final bound; the service does not hold unbounded read snapshots.
+not an invitation to retry unchanged. Very large searches can reach that final bound. Profile rank work uses the separate
+per-mode policy below; no read snapshot has unbounded query work.
 The response shapes, protocol minimum 19 and SDK calls are unchanged.
+
+
+## Profile rank budgets
+
+A profile keeps each played mode's rating, games, wins, draws and losses even if
+its ordinal rank is too expensive. Each mode's rank has an independent 500,000
+SQLite-instruction budget. Exhaustion yields `RatingSummary.rank = None` for
+that mode; later modes still get their own budget. Other database failures still
+return a recoverable error. None therefore means a rank is unavailable, including
+budget exhaustion, and does not imply zero games. Clients keep rendering the
+rating and game counts with an unavailable rank.
+
+Account metadata and each mode's summary query have separate 10,000-instruction
+bounds. At most64 modes are queried, so a complete profile snapshot has at most
+32.65 million SQLite instructions. It stays consistent across modes, and its
+progress hook is cleared after every attempt, error and unwind. Boards retain
+their exact own-row contract and five-million-instruction whole-reply limit.
+
+WAL growth is controlled by closing reader admission and transferring the next
+writer turn to a background checkpoint. See [database bounds](database.md).
+Large population timings run explicitly with `cargo bench -p radovid --bench
+lookup_scale`. The benchmark keeps its one-million-account, three-mode fixture
+on disk under `CARGO_TARGET_DIR` (the workspace target by default), reuses the
+verified fixture, and reports timings without wall-clock pass/fail assertions.
+The lib suite keeps deterministic work/plan and small disk-backed WAL regressions.

@@ -1,15 +1,21 @@
 //! Mode/category ranking and profile lookups.
 use super::*;
 
-/// One expensive lookup, including all of a profile's modes, has one work budget.
+/// A board or legacy ladder walk has one deterministic work budget.
 const LOOKUP_VM_STEPS: u32 = 5_000_000;
 const PROGRESS_INTERVAL: i32 = 1000;
+const PROFILE_RANK_VM_STEPS:u32=500_000;
+const PROFILE_METADATA_VM_STEPS:u32=10_000;
 
 pub(super) fn bounded<T>(
     connection: &Connection,
     work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
-    let mut remaining = LOOKUP_VM_STEPS / PROGRESS_INTERVAL as u32;
+    bounded_with_limit(connection,LOOKUP_VM_STEPS,work)
+}
+
+fn bounded_with_limit<T>(connection:&Connection,steps:u32,work:impl FnOnce(&Connection)->rusqlite::Result<T>)->rusqlite::Result<T> {
+    let mut remaining = steps / PROGRESS_INTERVAL as u32;
     connection.progress_handler(
         PROGRESS_INTERVAL,
         Some(move || {
@@ -54,8 +60,12 @@ pub(super) fn read_lookup<T>(
     connection: &mut Connection,
     work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
-    let transaction = connection.transaction()?;
-    let result = bounded(&transaction, work)?;
+    read_snapshot(connection,|snapshot|bounded(snapshot,work))
+}
+
+fn read_snapshot<T>(connection:&mut Connection,work:impl FnOnce(&Connection)->rusqlite::Result<T>)->rusqlite::Result<T> {
+    let transaction=connection.transaction()?;
+    let result=work(&transaction)?;
     transaction.commit()?;
     Ok(result)
 }
@@ -116,22 +126,22 @@ impl Db {
         requester: AccountId,
     ) -> DbResult<Option<PublicAccount>> {
         self.read(move |connection| {
-            read_lookup(connection, |connection| {
+            read_snapshot(connection, |connection| {
                 let now = now_ms();
-                let row = connection
+                let row = bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| connection
                     .query_row(
                         &format!("{ACCOUNT_SELECT} WHERE id=?1"),
                         [account.0 as i64],
                         account_row,
                     )
-                    .optional()?;
+                    .optional())?;
                 let Some(row) = row else {
                     return Ok(None);
                 };
                 if requester != account && row.active_ban(now).is_some() {
                     return Ok(None);
                 }
-                let ratings = profile_rows(connection, account, rulesets, VISIBLE)?;
+                let ratings = profile_rows(connection, account, rulesets, VISIBLE, PROFILE_RANK_VM_STEPS)?;
                 Ok(Some(PublicAccount {
                     id: account,
                     nickname: row.nickname,
@@ -151,6 +161,7 @@ fn profile_rows(
     account: AccountId,
     rulesets: Vec<RulesetId>,
     visible: &str,
+    rank_budget:u32,
 ) -> rusqlite::Result<Vec<(RulesetId, RatingSummary)>> {
     if rulesets.len() > MAX_RATED_MODES {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -159,7 +170,12 @@ fn profile_rows(
     }
     let mut ratings = Vec::new();
     for ruleset in rulesets {
-        if let Some(row) = own_row(connection, &ruleset, account, visible)? {
+        if let Some(row) = bounded_with_limit(connection,PROFILE_METADATA_VM_STEPS,|connection|find_own_row(connection,&ruleset,account,visible))? {
+            let rank = match bounded_with_limit(connection,rank_budget,|connection|rank_of(connection,&ruleset,&row,visible)) {
+                Ok(rank)=>Some(rank),
+                Err(error) if error.sqlite_error_code()==Some(rusqlite::ErrorCode::OperationInterrupted)=>None,
+                Err(error)=>return Err(error),
+            };
             ratings.push((
                 ruleset,
                 RatingSummary {
@@ -168,7 +184,7 @@ fn profile_rows(
                     wins: row.wins,
                     draws: row.draws,
                     losses: row.losses,
-                    rank: Some(row.rank),
+                    rank,
                 },
             ));
         }
@@ -312,19 +328,6 @@ fn find_own_row(
     connection.query_row(&format!("SELECT {ROW},0 FROM ratings r CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.account=?2 AND {visible}"),params![ruleset.0,account.0 as i64],ladder_row).optional()
 }
 
-fn own_row(
-    connection: &Connection,
-    ruleset: &RulesetId,
-    account: AccountId,
-    visible: &str,
-) -> rusqlite::Result<Option<LadderRow>> {
-    let Some(mut row) = find_own_row(connection, ruleset, account, visible)? else {
-        return Ok(None);
-    };
-    row.rank = rank_of(connection, ruleset, &row, visible)?;
-    Ok(Some(row))
-}
-
 fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
     let kind = kind_of(row.get(2)?);
     Ok(LadderRow {
@@ -354,7 +357,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn guard_only_a_lookup_has_at_most_five_million_sqlite_instructions() {
+    fn profile_keeps_each_modes_summary_when_its_rank_budget_is_exhausted() {
+        let db=Db::init(Connection::open_in_memory().expect("database")).expect("schema");
+        let mut connection=db.conn.lock().expect("writer");
+        {
+            let transaction=connection.transaction().expect("seed");
+            for id in 1..=4096i64 {
+                transaction.execute("INSERT INTO accounts(id,login,nickname,hash,kind,created) VALUES(?1,'l'||?1,'a'||?1,'fixture',0,0)",[id]).expect("account");
+                for mode in ["deep","other"] {
+                    transaction.execute("INSERT INTO ratings(account,ruleset,rating,deviation,volatility,games,wins,draws,losses,last_played) VALUES(?1,?2,?3,50,0.06,2,1,0,1,1)",params![id,mode,1000+id]).expect("rating");
+                }
+            }
+            transaction.execute("INSERT INTO ratings(account,ruleset,rating,deviation,volatility,games,wins,draws,losses,last_played) VALUES(1,'tiny',1800,50,0.06,2,1,0,1,1)",[]).expect("cheap rank");
+            transaction.commit().expect("commit");
+        }
+        let modes=["deep","other","tiny"].map(|name|RulesetId(name.into())).to_vec();
+        let ratings=read_snapshot(&mut connection,|snapshot|profile_rows(snapshot,AccountId(1),modes,VISIBLE,1000)).expect("profile renders");
+        assert_eq!(ratings.len(),3);
+        assert_eq!(ratings.iter().map(|(_,summary)|summary.rank).collect::<Vec<_>>(),[None,None,Some(1)]);
+        assert!(ratings.iter().all(|(_,summary)|summary.games==2 && summary.wins==1 && summary.losses==1));
+    }
+
+    #[test]
+    fn guard_only_board_walks_have_at_most_five_million_sqlite_instructions() {
         const {
             assert!(
                 LOOKUP_VM_STEPS <= 5_000_000,
@@ -623,14 +648,14 @@ mod tests {
         let writer = Connection::open(directory.0.join("ranks.db")).expect("other connection");
         read_lookup(&mut connection, |snapshot| {
             assert_eq!(
-                own_row(snapshot, &RulesetId("duel".into()), AccountId(1), VISIBLE)?
+                find_own_row(snapshot, &RulesetId("duel".into()), AccountId(1), VISIBLE)?
                     .expect("own")
                     .kind,
                 AccountKind::Human
             );
             writer.execute("UPDATE accounts SET kind=1 WHERE id=1", [])?;
             assert_eq!(
-                own_row(snapshot, &RulesetId("duel".into()), AccountId(1), VISIBLE)?
+                find_own_row(snapshot, &RulesetId("duel".into()), AccountId(1), VISIBLE)?
                     .expect("same snapshot")
                     .kind,
                 AccountKind::Human
@@ -639,7 +664,7 @@ mod tests {
         })
         .expect("consistent lookup");
         assert_eq!(
-            own_row(
+            find_own_row(
                 &connection,
                 &RulesetId("duel".into()),
                 AccountId(1),

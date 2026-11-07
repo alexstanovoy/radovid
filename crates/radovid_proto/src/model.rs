@@ -78,7 +78,7 @@ pub struct RatingSummary {
     pub draws: u32,
     pub losses: u32,
     /// Position in this account's Humans/Bots ladder when queried.
-    /// Profile responses include it for every mode with rated games.
+    /// Profiles keep the mode summary with None when its rank work budget is exhausted.
     pub rank: Option<u32>,
 }
 
