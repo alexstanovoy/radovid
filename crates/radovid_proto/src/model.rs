@@ -137,7 +137,9 @@ pub struct Avatar {
     pub png: Vec<u8>,
 }
 
-pub(crate) fn avatar_png<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+pub(crate) fn avatar_png<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<u8>, D::Error> {
     bounded_list::<D, u8, { crate::MAX_AVATAR_BYTES }>(deserializer)
 }
 

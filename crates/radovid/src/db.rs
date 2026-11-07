@@ -875,7 +875,7 @@ impl Db {
                     .query_map(params![ruleset.0, limit, offset], |row| {
                         let kind = kind_of(row.get(2)?);
                         Ok(LadderRow {
-                            avatar: row.get::<_,Option<[u8;32]>>(11)?.map(AvatarVersion),
+                            avatar: row.get::<_, Option<[u8; 32]>>(11)?.map(AvatarVersion),
                             rank: 0,
                             account: AccountId(row.get::<_, i64>(0)? as u64),
                             nickname: row.get(1)?,

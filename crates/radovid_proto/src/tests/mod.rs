@@ -1,4 +1,4 @@
+mod avatar;
 mod frames;
 mod leaderboard;
 mod registry;
-mod avatar;

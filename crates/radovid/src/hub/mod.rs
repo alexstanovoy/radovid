@@ -3,14 +3,14 @@
 //! at a time, so no limit can be broken by a race.
 
 mod admin;
+#[cfg(test)]
+mod avatar_tests;
 mod leaderboard;
 mod limits;
 mod lobby;
 mod matches;
 #[cfg(test)]
 mod matching_tests;
-#[cfg(test)]
-mod avatar_tests;
 mod proposal;
 mod queue;
 mod slots;

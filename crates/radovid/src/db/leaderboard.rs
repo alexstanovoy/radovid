@@ -167,7 +167,11 @@ impl Db {
                     PROFILE_RANK_VM_STEPS,
                 )?;
                 Ok(Some(PublicAccount {
-                    avatar: bounded_with_limit(connection,PROFILE_METADATA_VM_STEPS,|connection|super::avatar::version(connection,account))?,
+                    avatar: bounded_with_limit(
+                        connection,
+                        PROFILE_METADATA_VM_STEPS,
+                        |connection| super::avatar::version(connection, account),
+                    )?,
                     id: account,
                     nickname: row.nickname,
                     kind: row.kind,
@@ -439,7 +443,7 @@ fn find_own_row(
 fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
     let kind = kind_of(row.get(2)?);
     Ok(LadderRow {
-        avatar: row.get::<_,Option<[u8;32]>>(11)?.map(AvatarVersion),
+        avatar: row.get::<_, Option<[u8; 32]>>(11)?.map(AvatarVersion),
         account: AccountId(row.get::<_, i64>(0)? as u64),
         nickname: row.get(1)?,
         kind,
