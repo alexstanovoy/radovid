@@ -1,8 +1,9 @@
 //! The docker launcher against a real docker: a game gets one writable file, its match's
 //! artifact, and nothing else of the container is writable.
 //!
-//! Needs a docker that can run `DOCKER_TEST_IMAGE` (any image with `/bin/sh`, e.g. an ubuntu
-//! one that is already pulled); run with `cargo test --test docker -- --ignored`.
+//! Needs a docker that can run `DOCKER_TEST_IMAGE` (an image already pulled, with `/bin/sh` and no
+//! entrypoint: the game's command is `/bin/sh`, which an entrypoint would take as its argument, e.g.
+//! `debian:trixie-slim`); run with `cargo test --test docker -- --ignored`.
 
 mod common;
 

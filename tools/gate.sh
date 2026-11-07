@@ -4,8 +4,8 @@
 #   tools/gate.sh
 #
 # Steps: ignored-audit (every #[ignore]d test has a step that runs it), fuzz-check (the fuzz targets compile), clippy, wasm (the
-# browser client compiles), test (profile test-release), docker-test (the ignored launcher test against a real docker: an image
-# from DOCKER_TEST_IMAGE, else the first tagged one docker holds; none fails the gate), deny, then fmt (last: it changes no code).
+# browser client compiles), test (profile test-release), docker-test (the ignored launcher test against a real docker: the image
+# DOCKER_TEST_IMAGE, default debian:trixie-slim, which must already be pulled), deny, then fmt (last: it changes no code).
 # A step that does not run fails the gate; nothing is skipped quietly.
 # Environment:
 #   GATE_STEP_LOG=FILE   append the seconds each step took to FILE (tab separated)
@@ -38,9 +38,11 @@ step fuzz-check fuzz/fuzz.sh check
 step clippy cargo clippy --all-targets -- -D warnings
 step wasm cargo check --target wasm32-unknown-unknown -p radovid_client --no-default-features --features web
 step test cargo test --profile test-release
-image=${DOCKER_TEST_IMAGE:-$(docker images --format '{{.Repository}}:{{.Tag}}' 2> /dev/null | grep -v '<none>' | head -n 1)}
-if [ -z "$image" ]; then
-    echo "GATE-FAIL docker-test (no docker image to run: set DOCKER_TEST_IMAGE, or pull one)"
+# An explicit image: the test runs `/bin/sh` as the container's command, which an image whose entrypoint is a program (an ffmpeg
+# one, say) takes as that program's argument. Whatever image docker lists first is not a choice, and it changes when someone pulls.
+image=${DOCKER_TEST_IMAGE:-debian:trixie-slim}
+if ! docker image inspect "$image" > /dev/null 2>&1; then
+    echo "GATE-FAIL docker-test (the docker image $image is not available: pull it with \`docker pull $image\`, or set DOCKER_TEST_IMAGE to a pulled image with /bin/sh and no entrypoint)"
     exit 1
 fi
 step docker-test env DOCKER_TEST_IMAGE="$image" cargo test --release -p radovid --test docker -- --ignored
