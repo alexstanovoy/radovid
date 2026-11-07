@@ -81,19 +81,6 @@ impl Db {
         })).await
     }
 
-    pub async fn profile_ratings(
-        &self,
-        account: AccountId,
-        rulesets: Vec<RulesetId>,
-    ) -> DbResult<Vec<(RulesetId, RatingSummary)>> {
-        self.read(move |connection| {
-            read_lookup(connection, |connection| {
-                profile_rows(connection, account, rulesets, &visible_at(now_ms()))
-            })
-        })
-        .await
-    }
-
     pub async fn public_profile(
         &self,
         account: AccountId,
@@ -363,13 +350,7 @@ mod tests {
     #[tokio::test]
     async fn profile_ranks_are_per_mode_and_unplayed_accounts_have_no_position() {
         let db = fixture();
-        let ratings = db
-            .profile_ratings(
-                AccountId(1),
-                vec![RulesetId("duel".into()), RulesetId("teams".into())],
-            )
-            .await
-            .expect("profile");
+        let ratings=db.public_profile(AccountId(1),vec![RulesetId("duel".into()),RulesetId("teams".into())],AccountId(1)).await.expect("profile").expect("account").ratings;
         assert_eq!(
             ratings
                 .iter()

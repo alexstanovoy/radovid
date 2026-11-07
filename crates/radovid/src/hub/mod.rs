@@ -35,6 +35,8 @@ pub type SessionId = u64;
 
 /// Everything that reaches the hub.
 pub enum Cmd {
+    #[cfg(test)]
+    FreezeLookupClock { now:std::time::Instant,done:oneshot::Sender<()> },
     /// A connection logged in.
     Attach(Box<Attach>),
     LookupDone { account:AccountId },
@@ -142,6 +144,8 @@ struct Session {
 }
 
 pub struct Hub {
+    #[cfg(test)]
+    lookup_clock:Option<std::time::Instant>,
     config: Arc<Config>,
     db: Db,
     me: mpsc::Sender<Cmd>,
@@ -235,6 +239,8 @@ pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle
 impl Hub {
     fn new(config: Arc<Config>, db: Db, me: mpsc::Sender<Cmd>) -> Self {
         Self {
+            #[cfg(test)]
+            lookup_clock:None,
             free_ports: config.game_ports.ports().collect(),
             config,
             db,
@@ -262,6 +268,8 @@ impl Hub {
 
     async fn handle(&mut self, cmd: Cmd) {
         match cmd {
+            #[cfg(test)]
+            Cmd::FreezeLookupClock { now,done }=>{ self.lookup_clock=Some(now); let _=done.send(()); },
             Cmd::Attach(attach) => self.attach(*attach),
             Cmd::Request {
                 session,

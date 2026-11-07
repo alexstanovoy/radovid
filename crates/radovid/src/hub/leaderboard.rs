@@ -15,7 +15,10 @@ impl Hub {
     }
 
     pub(super) fn charge_lookup(&mut self, id: AccountId) -> Result<(), Error> {
-        self.charge_lookup_at(id, std::time::Instant::now())
+        let now=std::time::Instant::now();
+        #[cfg(test)]
+        let now=self.lookup_clock.unwrap_or(now);
+        self.charge_lookup_at(id, now)
     }
 
     pub(super) fn sweep_lookup_accounts(&mut self, now: std::time::Instant) {

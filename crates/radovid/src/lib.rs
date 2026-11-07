@@ -1,6 +1,9 @@
 //! radovid: accounts, matchmaking, ratings and the launching of game servers,
 //! for any game that honours the launcher contract (DEVELOPMENT.md).
 
+#[cfg(test)]
+extern crate self as radovid;
+
 pub mod artifacts;
 pub mod config;
 mod control;

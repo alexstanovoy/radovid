@@ -1,5 +1,8 @@
 //! Starting and stopping the whole service.
 
+#[cfg(test)]
+mod leaderboard_tests;
+
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
@@ -26,6 +29,13 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(test)]
+    pub(crate) async fn freeze_lookup_clock_for_test(&self,now:std::time::Instant) {
+        let (done,ready)=tokio::sync::oneshot::channel();
+        self.hub_tx.send(Cmd::FreezeLookupClock { now,done }).await.expect("hub");
+        ready.await.expect("clock installed");
+    }
+
     /// Checks every ruleset's game servers (`version_probe`), opens the
     /// database, cleans up after an earlier run and starts listening.
     pub async fn start(config: Config, identity: &Identity) -> Result<Service, String> {
