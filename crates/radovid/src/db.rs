@@ -112,6 +112,7 @@ pub enum DbError {
     Join,
     ReadBusy,
     CheckpointBusy,
+    Io(std::io::Error),
 }
 
 impl From<rusqlite::Error> for DbError {
@@ -128,6 +129,7 @@ impl std::fmt::Display for DbError {
             DbError::Join => write!(f, "database task failed"),
             DbError::ReadBusy => write!(f, "database read queue is full"),
             DbError::CheckpointBusy => write!(f,"database WAL checkpoint is blocked; write not executed"),
+            DbError::Io(error)=>write!(f,"database file: {error}"),
         }
     }
 }
@@ -259,8 +261,14 @@ impl Db {
     pub fn open(path: &Path) -> DbResult<Db> {
         let conn = Connection::open(path)?;
         let mut db = Self::init(conn)?;
-        let wal=Arc::new(wal::Wal::new(path,&db.conn.lock().unwrap_or_else(|poisoned|poisoned.into_inner()))?);
-        db.readers = Some(Arc::new(reader::ReadPool::open(path,Arc::clone(&wal.snapshots))?));
+        let (resolved,wal)={
+            let connection=db.conn.lock().unwrap_or_else(|poisoned|poisoned.into_inner());
+            let actual=connection.path().filter(|path|!path.is_empty()).ok_or_else(||DbError::Sqlite(rusqlite::Error::InvalidPath(path.to_owned())))?;
+            let resolved=std::fs::canonicalize(actual).map_err(DbError::Io)?;
+            let wal=Arc::new(wal::Wal::new(&resolved,&connection)?);
+            (resolved,wal)
+        };
+        db.readers = Some(Arc::new(reader::ReadPool::open(&resolved,Arc::clone(&wal.snapshots))?));
         db.wal=Some(wal);
         Ok(db)
     }

@@ -1,7 +1,8 @@
 # SQLite readers and WAL bounds
 
 The service owns one writer turn and four read-only connections to one WAL database.
-Reader admission is FIFO, capped at 64 queued/running lookups. Each lookup holds
+The database path reported by SQLite is resolved before opening readers or measuring
+its WAL, including when configuration names a symlink. Reader admission is FIFO, capped at 64 queued/running lookups. Each lookup holds
 one snapshot. Read queries have fixed instruction budgets, with profile ranks
 budgeted separately per mode.
 

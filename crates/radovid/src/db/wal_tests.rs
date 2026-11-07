@@ -24,6 +24,23 @@ fn fixture()->(Scratch,Db) {
     (directory,db)
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlink_database_checkpoints_sqlites_actual_sidecar() {
+    let (scratch,db)=fixture();
+    drop(db);
+    let aliases=scratch.0.join("aliases");
+    std::fs::create_dir(&aliases).expect("alias directory");
+    let alias=aliases.join("linked.db");
+    std::os::unix::fs::symlink(std::fs::canonicalize(scratch.0.join("ratings.db")).expect("actual database"),&alias).expect("database symlink");
+    let mut db=Db::open(&alias).expect("open through symlink");
+    Arc::get_mut(db.wal.as_mut().expect("WAL policy")).expect("unique policy").set_limit_for_test(0);
+    db.set_nickname(AccountId(1),"Changed".into()).await.expect("write");
+    db.run(|_|Ok(())).await.expect("checkpoint barrier");
+    assert!(!aliases.join("linked.db-wal").exists());
+    assert_eq!(std::fs::metadata(scratch.0.join("ratings.db-wal")).map(|file|file.len()).unwrap_or(0),0,"measure the resolved database's WAL, not the symlink name");
+}
+
 #[tokio::test(flavor="multi_thread")]
 async fn checkpoint_closes_reader_admission_and_holds_the_next_writer_turn_until_snapshots_drain() {
     let (scratch,mut db)=fixture();
