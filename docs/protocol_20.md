@@ -1,6 +1,7 @@
 # Protocol 20: small account avatars
 
-Current and minimum versions are 20. Rebuild clients and service together. Nested
+Avatar fields require minimum version20; current version21 adds conditional batches
+and canonical storage (see protocol_21.md). Nested
 profile and ladder records gain a trailing avatar-version field, so version 19
 cannot decode the new records. Every earlier wire position remains reserved.
 

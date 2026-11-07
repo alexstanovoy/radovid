@@ -49,6 +49,10 @@ impl Hub {
             .map(|session| session.account)
             .ok_or(Error::NotLoggedIn)?;
         let lookup = match message {
+            ClientMsg::GetAvatars {accounts} => {
+                if !valid_avatar_batch(accounts) {return Err(Error::BadAvatarBatch);}
+                Lookup::Avatars {accounts:accounts.clone(),requester:id}
+            },
             ClientMsg::GetAvatar { account } => Lookup::Avatar {
                 account: *account,
                 requester: id,
@@ -162,10 +166,12 @@ pub(super) fn is_lookup(message: &ClientMsg) -> bool {
             | ClientMsg::Account { .. }
             | ClientMsg::Ladder { .. }
             | ClientMsg::GetAvatar { .. }
+            | ClientMsg::GetAvatars { .. }
     )
 }
 
 pub(super) enum Lookup {
+    Avatars {accounts:Vec<AvatarQuery>,requester:AccountId},
     Avatar {
         account: AccountId,
         requester: AccountId,
@@ -193,6 +199,7 @@ pub(super) enum Lookup {
 impl Lookup {
     pub(super) async fn run(self, database: &Db) -> Result<Reply, Error> {
         match self {
+            Self::Avatars{accounts,requester}=>Ok(Reply::Avatars{changes:database.avatars(accounts,requester).await.map_err(lookup_error)?}),
             Self::Avatar { account, requester } => {
                 let avatar = database
                     .avatar(account, requester)

@@ -5,7 +5,17 @@ use std::io::Cursor;
 const PIXEL_CAP: usize = AVATAR_SIDE as usize * AVATAR_SIDE as usize * 4;
 const SCANLINE_CAP: usize = PIXEL_CAP + AVATAR_SIDE as usize;
 
-pub fn validate(bytes: &[u8]) -> Result<(), Error> {
+struct Pixels {
+    bytes:[u8;PIXEL_CAP],
+    size:usize,
+    color:png::ColorType,
+    palette:Option<Vec<u8>>,
+    transparency:Option<Vec<u8>>,
+}
+
+pub fn validate(bytes:&[u8])->Result<(),Error> {decode(bytes).map(|_|())}
+
+fn decode(bytes: &[u8]) -> Result<Pixels, Error> {
     let (compressed, channels) = avatar_image_data(bytes).ok_or(Error::BadAvatar)?;
     // A tiny compressed stream may advertise arbitrary inflated data. Require exactly
     // the scanlines, the checksum and the end of the one zlib stream before pixel decoding.
@@ -53,7 +63,41 @@ pub fn validate(bytes: &[u8]) -> Result<(), Error> {
         return Err(Error::BadAvatar);
     }
     reader.finish().map_err(|_| Error::BadAvatar)?;
-    Ok(())
+    Ok(Pixels{bytes:pixels,size:output.buffer_size(),color:output.color_type,
+        palette:reader.info().palette.as_ref().map(|bytes|bytes.to_vec()),
+        transparency:reader.info().trns.as_ref().map(|bytes|bytes.to_vec())})
+}
+
+/// Only decoded pixel data and pixel transparency enter the fixed encoder.
+pub fn canonicalize(bytes:&[u8])->Result<Vec<u8>,Error> {
+    let decoded=decode(bytes)?;
+    let mut output=BoundedPng(Vec::with_capacity(radovid_proto::MAX_AVATAR_BYTES));
+    {
+        let mut encoder=png::Encoder::new(&mut output,AVATAR_SIDE,AVATAR_SIDE);
+        encoder.set_color(decoded.color);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Balanced);
+        encoder.set_filter(png::Filter::Adaptive);
+        if decoded.color==png::ColorType::Indexed {
+            encoder.set_palette(decoded.palette.ok_or(Error::BadAvatar)?);
+        }
+        if let Some(transparency)=decoded.transparency {encoder.set_trns(transparency);}
+        let mut writer=encoder.write_header().map_err(|_|Error::BadAvatar)?;
+        writer.write_image_data(&decoded.bytes[..decoded.size]).map_err(|_|Error::BadAvatar)?;
+        writer.finish().map_err(|_|Error::BadAvatar)?;
+    }
+    Ok(output.0)
+}
+
+struct BoundedPng(Vec<u8>);
+impl std::io::Write for BoundedPng {
+    fn write(&mut self,bytes:&[u8])->std::io::Result<usize> {
+        if bytes.len()>radovid_proto::MAX_AVATAR_BYTES.saturating_sub(self.0.len()) {
+            return Err(std::io::Error::other("encoded avatar exceeds byte limit"));
+        }
+        self.0.extend_from_slice(bytes);Ok(bytes.len())
+    }
+    fn flush(&mut self)->std::io::Result<()> {Ok(())}
 }
 
 #[cfg(test)]
@@ -64,7 +108,7 @@ pub(crate) mod tests {
     type ChunkData<'a> = (png::chunk::ChunkType, &'a [u8]);
     type ChunkCase<'a> = (png::ColorType, &'a [ChunkData<'a>]);
 
-    fn image_with_chunks(color: png::ColorType, chunks: &[ChunkData<'_>]) -> Vec<u8> {
+    pub(crate) fn image_with_chunks(color: png::ColorType, chunks: &[ChunkData<'_>]) -> Vec<u8> {
         use std::io::Write;
         let mut zip = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
         zip.write_all(&vec![0; 32 * (1 + 32 * color.samples())])
@@ -86,6 +130,28 @@ pub(crate) mod tests {
                 .expect("pixels");
         }
         bytes
+    }
+
+
+    #[test]
+    fn reencoding_preserves_nonuniform_pixels_and_is_idempotent() {
+        let pixels:Vec<u8>=(0..32*32).flat_map(|index|if (index/32+index%32)%2==0 {[255,1,128]}else{[2,254,77]}).collect();
+        let mut original=Vec::new();
+        {
+            let mut encoder=png::Encoder::new(&mut original,32,32);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_compression(png::Compression::High);
+            let mut writer=encoder.write_header().expect("header");
+            writer.write_image_data(&pixels).expect("pixels");
+        }
+        assert!(original.len()<=MAX_AVATAR_BYTES);
+        let canonical=canonicalize(&original).expect("canonical");
+        assert_eq!(canonicalize(&canonical).expect("idempotent"),canonical);
+        let mut reader=png::Decoder::new(Cursor::new(&canonical)).read_info().expect("PNG");
+        let mut decoded=[0;PIXEL_CAP];
+        let output=reader.next_frame(&mut decoded).expect("decoded pixels");
+        assert_eq!(&decoded[..output.buffer_size()],pixels);
     }
 
     #[test]

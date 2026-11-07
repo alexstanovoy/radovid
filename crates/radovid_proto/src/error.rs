@@ -129,6 +129,8 @@ pub enum Error {
     LookupTooExpensive,
     /// Not a static 32x32 PNG of at most 512 bytes in the avatar format.
     BadAvatar,
+    /// Batch must contain one to 100 distinct valid account IDs.
+    BadAvatarBatch,
 }
 
 impl core::fmt::Display for Error {

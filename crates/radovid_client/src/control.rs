@@ -71,16 +71,13 @@ impl Control {
             decode_payload(payload).map_err(|e| ClientError::Protocol(e.to_string()))?;
         Ok(match msg {
             ServerMsg::Reply { seq, reply } => {
-                if let Reply::Avatar {
-                    avatar: Some(avatar),
-                    ..
-                } = &reply
-                    && avatar_image_data(&avatar.png).is_none()
-                {
-                    return Err(ClientError::Protocol(
-                        "invalid avatar image envelope".into(),
-                    ));
-                }
+                let valid=|avatar:&Avatar|avatar_image_data(&avatar.png).is_some();
+                let safe=match &reply {
+                    Reply::Avatar{avatar,..}=>avatar.as_ref().is_none_or(valid),
+                    Reply::Avatars{changes}=>changes.iter().all(|change|change.avatar.as_ref().is_none_or(valid)),
+                    _=>true,
+                };
+                if !safe {return Err(ClientError::Protocol("invalid avatar image envelope".into()));}
                 self.note(&reply);
                 Incoming::Reply {
                     seq,
@@ -162,4 +159,11 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn batch_downloads_reject_unsafe_images_before_delivering_any_rows_to_a_decoder() {
+        let message=ServerMsg::Reply{seq:1,reply:Reply::Avatars{changes:vec![AvatarChange{account:AccountId(1),avatar:Some(Avatar{version:AvatarVersion([0;32]),png:b"<svg/>".to_vec()})}]}};
+        let encoded=encode_frame_to_vec(&message).expect("malicious peer");
+        assert!(matches!(Control::new().receive(&encoded),Err(ClientError::Protocol(message)) if message=="invalid avatar image envelope"));
+    }
+
 }

@@ -21,51 +21,79 @@ impl Db {
                 }
             }
             transaction.execute("INSERT INTO avatars(account,attempted_at) VALUES(?1,?2) ON CONFLICT(account) DO UPDATE SET attempted_at=excluded.attempted_at",params![account.0 as i64,now.0 as i64])?;
-            if let Some(bytes) = &png && let Err(error) = crate::avatar::validate(bytes) {
-                transaction.commit()?;
-                return Ok(Err(error));
-            }
-            let avatar = png.map(|png| Avatar { version: AvatarVersion(Sha256::digest(&png).into()), png });
+            let avatar=match png.map(|bytes|crate::avatar::canonicalize(&bytes)).transpose() {
+                Ok(png)=>png.map(image),
+                Err(error)=>{transaction.commit()?;return Ok(Err(error));}
+            };
             transaction.execute("UPDATE avatars SET version=?2,png=?3 WHERE account=?1",params![account.0 as i64,avatar.as_ref().map(|image|image.version.0.as_slice()),avatar.as_ref().map(|image|image.png.as_slice())])?;
             transaction.commit()?;
             Ok(Ok(avatar))
         }).await
     }
 
-    pub(crate) async fn avatar(
-        &self,
-        account: AccountId,
-        requester: AccountId,
-    ) -> DbResult<Result<Option<Avatar>, Error>> {
-        self.read(move |connection| {
-            super::leaderboard::read_lookup(connection, |connection| {
-                if !can_view(connection, account, requester, now_ms())? {
-                    return Ok(Err(Error::UnknownAccount));
-                }
-                let avatar = connection
-                    .query_row(
-                        "SELECT version,png FROM avatars WHERE account=?1 AND png IS NOT NULL",
-                        [account.0 as i64],
-                        |row| {
-                            let version = AvatarVersion(row.get(0)?);
-                            let bytes = row.get_ref(1)?.as_blob()?;
-                            if crate::avatar::validate(bytes).is_err()
-                                || Sha256::digest(bytes).as_slice() != version.0
-                            {
-                                return Err(rusqlite::Error::InvalidQuery);
-                            }
-                            Ok(Avatar {
-                                version,
-                                png: bytes.to_vec(),
-                            })
-                        },
-                    )
-                    .optional()?;
-                Ok(Ok(avatar))
-            })
-        })
-        .await
+    pub(crate) async fn avatar(&self,account:AccountId,requester:AccountId)->DbResult<Result<Option<Avatar>,Error>> {
+        let (result,rewrites)=self.read(move|connection|super::leaderboard::read_lookup(connection,|connection| {
+            if !can_view(connection,account,requester,now_ms())? {return Ok((Err(Error::UnknownAccount),Vec::new()));}
+            let (avatar,rewrite)=stored_image(connection,account)?;
+            Ok((Ok(avatar),rewrite.into_iter().collect()))
+        })).await?;
+        self.rewrite_avatars(rewrites).await;
+        Ok(result)
     }
+
+    pub(crate) async fn avatars(&self,accounts:Vec<AvatarQuery>,requester:AccountId)->DbResult<Vec<AvatarChange>> {
+        if !valid_avatar_batch(&accounts) {return Err(DbError::Sqlite(rusqlite::Error::InvalidQuery));}
+        let (changes,rewrites)=self.read(move|connection|super::leaderboard::read_lookup(connection,|connection| {
+            let mut changes=Vec::new();let mut rewrites=Vec::new();
+            let now=now_ms();
+            for query in accounts {
+                let (avatar,rewrite)=if can_view(connection,query.account,requester,now)? {stored_image(connection,query.account)?}else{(None,None)};
+                rewrites.extend(rewrite);
+                if avatar.as_ref().map(|image|image.version)!=query.version {
+                    changes.push(AvatarChange{account:query.account,avatar});
+                }
+            }
+            Ok((changes,rewrites))
+        })).await?;
+        self.rewrite_avatars(rewrites).await;
+        Ok(changes)
+    }
+
+    async fn rewrite_avatars(&self,rewrites:Vec<Rewrite>) {
+        if rewrites.is_empty() {return;}
+        // Older valid uploads are normalized lazily; a concurrent upload must win.
+        if let Err(error)=self.run(move|connection| {
+            let transaction=connection.transaction()?;
+            for rewrite in rewrites {
+                transaction.execute("UPDATE avatars SET version=?2,png=?3 WHERE account=?1 AND version=?4 AND png=?5",
+                    params![rewrite.account.0 as i64,rewrite.image.version.0.as_slice(),rewrite.image.png,rewrite.version.0.as_slice(),rewrite.bytes])?;
+            }
+            transaction.commit()
+        }).await {eprintln!("WARN: deferred canonical avatar storage: {error}");}
+    }
+}
+
+struct Rewrite {account:AccountId,version:AvatarVersion,bytes:Vec<u8>,image:Avatar}
+
+fn image(png:Vec<u8>)->Avatar {Avatar{version:AvatarVersion(Sha256::digest(&png).into()),png}}
+
+fn stored_image(connection:&Connection,account:AccountId)->rusqlite::Result<(Option<Avatar>,Option<Rewrite>)> {
+    connection.query_row("SELECT CASE WHEN typeof(version)='blob' AND length(version)=32 THEN version END,CASE WHEN typeof(png)='blob' AND length(png) BETWEEN 1 AND 512 THEN png END FROM avatars WHERE account=?1 AND png IS NOT NULL",[account.0 as i64],|row| {
+        let version=row.get_ref(0)?.as_blob();
+        let png=row.get_ref(1)?.as_blob();
+        if let (Ok(version),Ok(bytes))=(version,png)
+            && let Ok(hash)=<[u8;32]>::try_from(version)
+            && bytes.len()<=MAX_AVATAR_BYTES
+            && Sha256::digest(bytes).as_slice()==hash
+            && let Ok(canonical)=crate::avatar::canonicalize(bytes)
+        {
+            let avatar=image(canonical);
+            let rewrite=(avatar.png!=bytes).then(||Rewrite{account,version:AvatarVersion(hash),bytes:bytes.to_vec(),image:avatar.clone()});
+            return Ok((Some(avatar),rewrite));
+        }
+        eprintln!("WARN: account {} has an invalid stored avatar; treating it as absent",account.0);
+        Ok((None,None))
+    }).optional().map(|row|row.unwrap_or((None,None)))
 }
 
 fn can_view(
@@ -94,23 +122,18 @@ pub(super) fn version(
 mod tests {
     use super::*;
 
-    struct Scratch(std::path::PathBuf);
+    struct Scratch {database:std::path::PathBuf,directory:std::path::PathBuf}
     impl Scratch {
-        fn new() -> Self {
-            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            Self(std::env::temp_dir().join(format!(
-                "avatar_{}_{}.db",
-                std::process::id(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            )))
+        fn new()->Self {
+            use std::os::unix::fs::DirBuilderExt;
+            static NEXT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
+            let directory=std::env::temp_dir().join(format!("avatar_storage_{}_{}",std::process::id(),NEXT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)));
+            std::fs::DirBuilder::new().mode(0o700).create(&directory).expect("unique private scratch directory");
+            Self{database:directory.join("avatar.db"),directory}
         }
     }
     impl Drop for Scratch {
-        fn drop(&mut self) {
-            for suffix in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(format!("{}{suffix}", self.0.display()));
-            }
-        }
+        fn drop(&mut self) {let _=std::fs::remove_dir_all(&self.directory);}
     }
     async fn account(db: &Db, name: &str) -> AccountId {
         db.create_account(name.into(), "hash".into(), AccountKind::Human, None)
@@ -158,7 +181,7 @@ mod tests {
     #[tokio::test]
     async fn avatar_writes_are_per_account_and_persist_rate_debt_across_database_reopen() {
         let scratch = Scratch::new();
-        let db = Db::open(&scratch.0).expect("database");
+        let db = Db::open(&scratch.database).expect("database");
         let alpha = account(&db, "alpha").await;
         let beta = account(&db, "beta").await;
         let now = UnixMs(100_000);
@@ -182,7 +205,7 @@ mod tests {
                 .expect("other account")
                 .is_ok()
         );
-        let reopened = Db::open(&scratch.0).expect("reopen");
+        let reopened = Db::open(&scratch.database).expect("reopen");
         assert_eq!(
             reopened
                 .change_avatar(alpha, None, UnixMs(now.0 + 1))
@@ -296,7 +319,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn corrupt_stored_avatar_hash_is_refused_without_serving_unvalidated_bytes() {
+    async fn corrupt_stored_avatar_hash_is_absent_without_serving_unvalidated_bytes() {
         let db = Db::init(Connection::open_in_memory().expect("connection")).expect("db");
         let alpha = account(&db, "alpha").await;
         db.change_avatar(alpha, Some(crate::avatar::tests::image(32, 32)), UnixMs(1))
@@ -310,9 +333,71 @@ mod tests {
         })
         .await
         .expect("corruption fixture");
-        assert!(matches!(
-            db.avatar(alpha, alpha).await,
-            Err(DbError::Sqlite(rusqlite::Error::InvalidQuery))
-        ));
+        assert_eq!(db.avatar(alpha, alpha).await.expect("corrupt images are absent"),Ok(None));
     }
+    #[tokio::test]
+    async fn uploaded_rgb_images_store_only_reencoded_pixels_without_suggested_palette_payloads() {
+        let db=Db::init(Connection::open_in_memory().expect("connection")).expect("db");
+        let owner=account(&db,"owner").await;
+        let raw=crate::avatar::tests::image_with_chunks(png::ColorType::Rgb,&[(png::chunk::PLTE,b"<script>payload</script>")]);
+        crate::avatar::validate(&raw).expect("valid RGB carrier");
+        let stored=db.change_avatar(owner,Some(raw),UnixMs(1)).await.expect("storage").expect("upload").expect("image");
+        assert!(!stored.png.windows(8).any(|bytes|bytes==b"<script>"),"untrusted suggested palette must not be stored verbatim");
+        assert!(!stored.png.windows(4).any(|bytes|bytes==b"PLTE"),"RGB canonical encoding has no palette");
+        assert_eq!(stored.version,AvatarVersion(Sha256::digest(&stored.png).into()));
+    }
+
+    #[test]
+    fn avatar_storage_scratch_removes_the_pending_result_sidecar() {
+        let path;
+        {
+            let scratch=Scratch::new();
+            path=std::path::PathBuf::from(format!("{}.pending_results",scratch.database.display()));
+            drop(Db::open(&scratch.database).expect("database"));
+            assert!(path.is_dir());
+        }
+        assert!(!path.exists(),"storage fixture must remove its pending-result directory");
+    }
+
+    #[tokio::test]
+    async fn a_stored_image_that_no_longer_decodes_is_absent_instead_of_an_internal_error() {
+        let db=Db::init(Connection::open_in_memory().expect("db")).expect("schema");
+        let owner=account(&db,"owner").await;
+        db.run(move|connection|connection.execute("INSERT INTO avatars(account,version,png,attempted_at) VALUES(?1,zeroblob(32),x'00',0)",[owner.0 as i64]).map(|_|())).await.expect("corruption fixture");
+        assert_eq!(db.avatar(owner,owner).await.expect("recoverable image"),Ok(None));
+    }
+
+    #[tokio::test]
+    async fn batch_fetch_hides_banned_unknown_and_corrupt_images_and_clears_cached_versions() {
+        let db=Db::init(Connection::open_in_memory().expect("db")).expect("schema");
+        let owner=account(&db,"owner").await;
+        let viewer=account(&db,"viewer").await;
+        let avatar=db.change_avatar(owner,Some(crate::avatar::tests::image(32,32)),UnixMs(1)).await.expect("storage").expect("upload").expect("image");
+        db.set_ban(owner,Some(Ban{reason:"fixture".into(),until:None})).await.expect("ban");
+        let query=AvatarQuery{account:owner,version:Some(avatar.version)};
+        assert_eq!(db.avatars(vec![query],viewer).await.expect("hidden"),vec![AvatarChange{account:owner,avatar:None}]);
+        assert!(db.avatars(vec![AvatarQuery{account:owner,version:None}],viewer).await.expect("no cached image").is_empty());
+        db.set_ban(owner,None).await.expect("unban");
+        db.run(move|connection|connection.execute("UPDATE avatars SET png=x'00' WHERE account=?1",[owner.0 as i64]).map(|_|())).await.expect("corrupt fixture");
+        assert_eq!(db.avatars(vec![query],viewer).await.expect("corrupt means absent"),vec![AvatarChange{account:owner,avatar:None}]);
+        db.delete_account(owner).await.expect("delete");
+        assert_eq!(db.avatars(vec![query],viewer).await.expect("deleted"),vec![AvatarChange{account:owner,avatar:None}]);
+    }
+
+    #[tokio::test]
+    async fn legacy_valid_images_are_canonicalized_on_fetch_without_spending_upload_quota() {
+        let db=Db::init(Connection::open_in_memory().expect("db")).expect("schema");
+        let owner=account(&db,"owner").await;
+        let raw=crate::avatar::tests::image_with_chunks(png::ColorType::Rgb,&[(png::chunk::PLTE,b"<script>payload</script>")]);
+        let version=AvatarVersion(Sha256::digest(&raw).into());
+        db.run(move|connection|connection.execute("INSERT INTO avatars(account,version,png,attempted_at) VALUES(?1,?2,?3,100)",params![owner.0 as i64,version.0.as_slice(),raw]).map(|_|())).await.expect("legacy image");
+        let changes=db.avatars(vec![AvatarQuery{account:owner,version:Some(version)}],owner).await.expect("canonical fetch");
+        let image=changes[0].avatar.as_ref().expect("new version");
+        assert_ne!(image.version,version);
+        assert!(!image.png.windows(4).any(|part|part==b"PLTE"));
+        assert_eq!(db.avatar(owner,owner).await.expect("stored canonical"),Ok(Some(image.clone())));
+        assert_eq!(db.change_avatar(owner,None,UnixMs(101)).await.expect("quota intact"),Err(Error::Throttled{retry_after_ms:59_999}));
+        assert!(db.avatars(vec![AvatarQuery{account:owner,version:Some(image.version)}],owner).await.expect("cached").is_empty());
+    }
+
 }

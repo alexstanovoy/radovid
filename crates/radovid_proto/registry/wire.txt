@@ -551,3 +551,14 @@ field PublicAccount 6 avatar: Option<AvatarVersion>
 variant Reply 17 Avatar {}
 field Reply::Avatar 0 account: AccountId
 field Reply::Avatar 1 avatar: Option<Avatar>
+
+# Protocol 21: conditional bounded avatar batches.
+field AvatarQuery 0 account: AccountId
+field AvatarQuery 1 version: Option<AvatarVersion>
+field AvatarChange 0 account: AccountId
+field AvatarChange 1 avatar: Option<Avatar>
+variant ClientMsg 45 GetAvatars {}
+field ClientMsg::GetAvatars 0 accounts: Vec<AvatarQuery>
+variant Reply 18 Avatars {}
+field Reply::Avatars 0 changes: Vec<AvatarChange>
+variant Error 60 BadAvatarBatch
