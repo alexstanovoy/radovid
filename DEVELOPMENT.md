@@ -76,7 +76,9 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `limits.decline_cooldown_secs` | `120` | out of the queues after a decline or silence (at most a day) |
 | `limits.game_capacity` | `8` | games running at once; formed matches wait in order (`MatchQueued`) and the pairer pauses while this many wait |
 | `limits.lobby_games_max` | `6` | of those, the most lobby and solo games may hold, so queues always have slots |
-| `limits.queue_capacity` | `256` | queue entries across rulesets; past it `QueueFull` |
+| `limits.queue_capacity` | `256` | queue entries across rulesets (1 to 65536); past it `QueueFull` |
+| `limits.ranked_window` | `{ initial = 100, widen_per_minute = 100, maximum = 1000 }` | ranked skill window, in rating points |
+| `limits.unranked_window` | `{ initial = 600, widen_per_minute = 300, maximum = 3000 }` | unrated skill window; at least as loose as ranked |
 | `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the cap, are deleted hourly |
 | `limits.artifact_max_mib` | `64` | the most one artifact may have; a docker game cannot write more, a longer file is not served |
 | `lobby_teams` | `[1, 1]` | the slots of every lobby, at most 10 seats; no ruleset caps how many sit on a side |
@@ -86,7 +88,9 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `ruleset.name`, `ruleset.game` | | display name (1 to 64 bytes); the game's label (1 to 32) |
 | `ruleset.game_fingerprint` | | 16 hex digits: the wire clients and servers must speak |
 | `ruleset.teams` | | team sizes, two or more sides of any size, at most 10 seats |
-| `ruleset.rated` | | queue and ladder |
+| `ruleset.rated` | | queued games update this ruleset's ladder; lobbies remain unrated |
+| `ruleset.rating_ruleset` | none | an unrated queue's rated sibling; same game, fingerprint and teams, at most one unrated sibling per ladder |
+| `ruleset.rating_window` | mode's policy from `limits` | partial overrides of `initial`, `widen_per_minute`, `maximum`; values 0 to 10000, initial ≤ maximum |
 | `ruleset.info` | `""` | hex bytes shown to clients, the game's own meaning |
 | `ruleset.max_duration_secs` | `7200` | a longer match is killed (a null) |
 | `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit |
@@ -164,6 +168,13 @@ Glicko-2 (1500, 350, 0.06, tau 0.5), one rating period per game, with deviation 
 Each account has one rating per ruleset ladder. Concurrent games update that same rating in result-arrival order,
 in one SQLite transaction per result. Every member's `before` is read before any member's `after` is written.
 A null changes nothing. Custom lobbies remain unrated.
+
+An unrated queue references its mode's rated ladder with `rating_ruleset`, uses a looser
+skill window, and never changes ratings. A ruleset without `rated` or `rating_ruleset`
+remains available only through lobbies or solo starts. The effective window widens with
+waiting time up to its configured maximum; all members must accept the group's full
+rating spread. Policy, selection and resource bounds are described in
+[protocol 16](docs/protocol_16.md); `examples/tic_tac_toe.toml` shows a ranked/unranked pair.
 
 For two or more sides, each team is represented by its members' mean rating and deviation
 `sqrt(sum(member_deviation²)) / team_size`. Each member receives one Glicko-2 period against each opposing team

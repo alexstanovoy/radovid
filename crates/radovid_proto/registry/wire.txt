@@ -504,3 +504,12 @@ field QueueEntry 8 search: QueueEntryId
 variant QueueLeftReason 3 Matched
 variant Reply 15 QueuesJoined {}
 field Reply::QueuesJoined 0 entries: Vec<QueueEntry>
+
+# Protocol 16: explicit unrated queues and served widening skill policies.
+field Limits 10 ranked_window: RatingWindow
+field Limits 11 unranked_window: RatingWindow
+field RatingWindow 0 initial: u32
+field RatingWindow 1 widen_per_minute: u32
+field RatingWindow 2 maximum: u32
+field RulesetInfo 12 rating_ruleset: Option<RulesetId>
+field RulesetInfo 13 rating_window: Option<RatingWindow>

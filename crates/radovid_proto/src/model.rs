@@ -76,6 +76,22 @@ pub struct RatingSummary {
     pub losses: u32,
 }
 
+/// The largest rating spread each waiting player accepts, in rating points.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RatingWindow {
+    pub initial: u32,
+    pub widen_per_minute: u32,
+    pub maximum: u32,
+}
+
+impl RatingWindow {
+    /// Saturates at the configured maximum, including for untrusted wire values.
+    pub fn after_ms(self, waiting_ms: u32) -> u32 {
+        let growth = u64::from(self.widen_per_minute) * u64::from(waiting_ms) / 60_000;
+        (u64::from(self.initial) + growth).min(u64::from(self.maximum)) as u32
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct ClientInfo {
     pub bot_version: Option<String>,
@@ -114,7 +130,7 @@ pub struct RulesetInfo {
     pub game_fingerprint: u64,
     /// Team sizes; slots are numbered team by team.
     pub teams: Vec<u8>,
-    /// Has a queue and a ladder; its queued matches are rated.
+    /// Owns a ladder; its queued matches are rated.
     pub rated: bool,
     /// The game's own description of the rules, opaque to radovid.
     pub info: Vec<u8>,
@@ -131,6 +147,10 @@ pub struct RulesetInfo {
     pub lobby_default: bool,
     /// Games in flight for this ruleset, as they apply to the caller.
     pub games_per_account: AccountGameLimit,
+    /// An unrated queue uses this rated sibling's ladder for matchmaking only.
+    pub rating_ruleset: Option<RulesetId>,
+    /// None for a ruleset offered only through lobbies or solo starts.
+    pub rating_window: Option<RatingWindow>,
 }
 
 /// An explicit per-account cap. No numeric value is repurposed as unlimited.
@@ -164,6 +184,8 @@ pub struct Limits {
     pub custom_match_capacity: u32,
     /// Activities across all /64 sources in one IPv6 /48.
     pub games_per_ipv6_48: u32,
+    pub ranked_window: RatingWindow,
+    pub unranked_window: RatingWindow,
 }
 
 /// One queue entry and where it stands.

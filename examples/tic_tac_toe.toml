@@ -21,3 +21,25 @@ public_url = "tcp://127.0.0.1:{port}"
 version_probe = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--probe"]
 args = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--port", "{port}"]
 env = { GAME_SEATS = "{seats}" }
+
+# Same game, separate unrated queue; matching uses the rated sibling's ladder.
+[[ruleset]]
+id = "tic_tac_toe_unranked"
+name = "Unranked tic-tac-toe fixture"
+game = "ttt"
+game_fingerprint = "7474740000000001"
+teams = [1, 1]
+rated = false
+rating_ruleset = "tic_tac_toe"
+max_duration_secs = 180
+[ruleset.rating_window]
+initial = 600
+widen_per_minute = 300
+maximum = 3000
+[ruleset.launcher]
+kind = "local"
+binary = "python3"
+public_url = "tcp://127.0.0.1:{port}"
+version_probe = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--probe"]
+args = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--port", "{port}"]
+env = { GAME_SEATS = "{seats}" }

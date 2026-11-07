@@ -179,6 +179,8 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
         game_fingerprint: FINGERPRINT,
         teams: vec![1, 1],
         rated,
+        rating_ruleset: None,
+        rating_window: Default::default(),
         info: vec![1, 2, 3],
         max_duration_secs: 600,
         artifact_max_mib: None,
@@ -220,6 +222,8 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
 /// test client comes from 127.0.0.1.
 pub fn test_limits() -> LimitsConfig {
     LimitsConfig {
+        ranked_window: Default::default(),
+        unranked_window: Default::default(),
         games_per_account: PerKind { human: 2, bot: 8 },
         games_per_source: 200,
         games_per_ipv6_48: 800,

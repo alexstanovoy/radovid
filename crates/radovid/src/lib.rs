@@ -6,6 +6,7 @@ pub mod config;
 mod control;
 pub mod db;
 mod hub;
+mod matching;
 pub mod launcher;
 pub mod password;
 pub mod private;

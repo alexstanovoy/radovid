@@ -9,6 +9,8 @@ mod matches;
 mod proposal;
 mod queue;
 mod slots;
+#[cfg(test)]
+mod matching_tests;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
@@ -142,6 +144,10 @@ pub struct Hub {
     /// Entry ids per ruleset, oldest first.
     queues: HashMap<(RulesetId, Audience), Vec<QueueEntryId>>,
     next_entry: u32,
+    pair_work: usize,
+    pair_reset: tokio::time::Instant,
+    pair_next: usize,
+    pairing: bool,
     proposals: HashMap<ProposalId, proposal::ProposalState>,
     next_proposal: u32,
     lobbies: BTreeMap<LobbyId, lobby::Lobby>,
@@ -186,25 +192,7 @@ fn prune_artifacts(config: &Arc<Config>) {
 pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle<()>) {
     prune_artifacts(&config);
     let (tx, mut rx) = mpsc::channel(1024);
-    let mut hub = Hub {
-        free_ports: config.game_ports.ports().collect(),
-        config,
-        db,
-        me: tx.clone(),
-        accounts: HashMap::new(),
-        sessions: HashMap::new(),
-        next_session: 1,
-        entries: HashMap::new(),
-        queues: HashMap::new(),
-        next_entry: 1,
-        proposals: HashMap::new(),
-        next_proposal: 1,
-        lobbies: BTreeMap::new(),
-        next_lobby: 1,
-        matches: HashMap::new(),
-        waiting: VecDeque::new(),
-        penalties: HashMap::new(),
-    };
+    let mut hub = Hub::new(config, db, tx.clone());
     let clock = tx.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(TICK);
@@ -236,6 +224,20 @@ pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle
 }
 
 impl Hub {
+    fn new(config: Arc<Config>, db: Db, me: mpsc::Sender<Cmd>) -> Self {
+        Self {
+            free_ports: config.game_ports.ports().collect(),
+            config, db, me,
+            accounts: HashMap::new(), sessions: HashMap::new(), next_session: 1,
+            entries: HashMap::new(), queues: HashMap::new(), next_entry: 1,
+            pair_work: queue::QUEUE_SCAN_BUDGET, pair_reset: tokio::time::Instant::now(), pair_next: 0,
+            pairing: false,
+            proposals: HashMap::new(), next_proposal: 1,
+            lobbies: BTreeMap::new(), next_lobby: 1,
+            matches: HashMap::new(), waiting: VecDeque::new(), penalties: HashMap::new(),
+        }
+    }
+
     async fn handle(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Attach(attach) => self.attach(*attach),
@@ -581,6 +583,7 @@ impl Hub {
 
     /// Once a second: queue statuses, and forgetting cooldowns that are over.
     fn tick(&mut self) {
+        self.pair_all();
         self.send_queue_statuses();
         self.sweep_penalties();
     }

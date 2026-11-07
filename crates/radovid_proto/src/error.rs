@@ -40,7 +40,7 @@ pub enum Error {
     Forbidden,
     UnknownAccount,
     UnknownRuleset,
-    /// The ruleset is not rated: it has no queue and no ladder.
+    /// The requested queue or ladder is not configured for this ruleset.
     NoQueue,
     /// The client's `Hello` named another game wire than the ruleset's game
     /// servers speak.

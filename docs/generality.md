@@ -52,6 +52,11 @@ line lengths, operation count and runtime, and never prints credentials in repor
 ## Service bounds and shared networks
 
 Unlimited per account removes only the account cap. `queue_capacity` (default 256) bounds queue entries;
+the hard ceiling is 65,536. Ranked and explicitly paired unrated queues use mutual widening
+rating windows; an unrated result never changes the referenced rated ladder. Pairing shares
+a 65,536-candidate work budget per second and resumes deferred work on ticks, rotating queues.
+Each selected group rebuilds its index under that same budget; at the hard queue ceiling
+this allows one full-queue selection per second. See [protocol 16](protocol_16.md).
 `game_capacity` (8) bounds running servers, and pairing pauses when pending proposals and queued matches reach
 that capacity. `custom_match_capacity` (256) independently bounds all lobby countdowns plus starting, waiting
 and running lobby/solo matches across all sources, before a launch slot is available. A finished or stopped

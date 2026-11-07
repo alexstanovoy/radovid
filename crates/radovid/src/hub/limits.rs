@@ -92,7 +92,7 @@ impl Hub {
         session: SessionId,
         ruleset: &RulesetConfig,
     ) -> Result<(), Error> {
-        if !ruleset.rated {
+        if !ruleset.has_queue() {
             return Err(Error::NoQueue);
         }
         let id = self

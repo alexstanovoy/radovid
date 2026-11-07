@@ -163,10 +163,46 @@ impl PerKindOrBoth {
     }
 }
 
+pub const DEFAULT_RANKED_WINDOW: RatingWindow = RatingWindow { initial: 100, widen_per_minute: 100, maximum: 1000 };
+pub const DEFAULT_UNRANKED_WINDOW: RatingWindow = RatingWindow { initial: 600, widen_per_minute: 300, maximum: 3000 };
+pub const MAX_RATING_WINDOW: u32 = 10_000;
+pub const MAX_QUEUE_CAPACITY: u32 = 65_536;
+
+/// Partial overrides inherit the appropriate ranked/unranked policy, not the other mode's defaults.
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RatingWindowConfig {
+    pub initial: Option<u32>,
+    pub widen_per_minute: Option<u32>,
+    pub maximum: Option<u32>,
+}
+
+impl RatingWindowConfig {
+    fn resolve(self, base: RatingWindow) -> RatingWindow {
+        RatingWindow {
+            initial: self.initial.unwrap_or(base.initial),
+            widen_per_minute: self.widen_per_minute.unwrap_or(base.widen_per_minute),
+            maximum: self.maximum.unwrap_or(base.maximum),
+        }
+    }
+}
+
+impl LimitsConfig {
+    pub fn ranked_window(&self) -> RatingWindow {
+        self.ranked_window.resolve(DEFAULT_RANKED_WINDOW)
+    }
+
+    pub fn unranked_window(&self) -> RatingWindow {
+        self.unranked_window.resolve(DEFAULT_UNRANKED_WINDOW)
+    }
+}
+
 /// How much play the service takes on, and what an account may hold.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct LimitsConfig {
+    pub ranked_window: RatingWindowConfig,
+    pub unranked_window: RatingWindowConfig,
     /// Games in flight per account: queue entries, lobbies and unfinished
     /// matches. Zero means no per-account limit; source and service limits still apply.
     pub games_per_account: PerKind,
@@ -200,6 +236,8 @@ pub struct LimitsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         LimitsConfig {
+            ranked_window: RatingWindowConfig::default(),
+            unranked_window: RatingWindowConfig::default(),
             games_per_account: PerKind { human: 0, bot: 0 },
             games_per_source: 8,
             games_per_ipv6_48: 64,
@@ -230,8 +268,12 @@ pub struct RulesetConfig {
     pub game_fingerprint: u64,
     /// Team sizes; slots are numbered team by team.
     pub teams: Vec<u8>,
-    /// Has a queue and a ladder; its queued matches are rated.
+    /// Owns a ladder; its queued matches are rated.
     pub rated: bool,
+    /// An explicit unrated counterpart shares this rated ruleset's matchmaking rating.
+    pub rating_ruleset: Option<String>,
+    #[serde(default)]
+    pub rating_window: RatingWindowConfig,
     /// Hex bytes shown to clients as `RulesetInfo.info`.
     #[serde(default, deserialize_with = "hex_bytes")]
     pub info: Vec<u8>,
@@ -459,6 +501,18 @@ impl RulesetConfig {
         RulesetId(self.id.clone())
     }
 
+    pub fn has_queue(&self) -> bool {
+        self.rated || self.rating_ruleset.is_some()
+    }
+
+    pub fn rating_ruleset_id(&self) -> RulesetId {
+        self.rating_ruleset.as_ref().map_or_else(|| self.ruleset_id(), |id| RulesetId(id.clone()))
+    }
+
+    pub fn matchmaking_window(&self, limits: &LimitsConfig) -> Option<RatingWindow> {
+        self.has_queue().then(|| self.rating_window.resolve(if self.rated { limits.ranked_window() } else { limits.unranked_window() }))
+    }
+
     /// The most bytes one artifact of this ruleset may have.
     pub fn artifact_max_bytes(&self, limits: &LimitsConfig) -> u64 {
         u64::from(self.artifact_max_mib.unwrap_or(limits.artifact_max_mib)) << 20
@@ -505,6 +559,8 @@ impl RulesetConfig {
             audience: self.audience.into(),
             lobby_min_players: self.lobby_min_players(),
             lobby_default,
+            rating_ruleset: self.rating_ruleset.as_ref().map(|id| RulesetId(id.clone())),
+            rating_window: self.matchmaking_window(limits),
         }
     }
 
@@ -577,6 +633,39 @@ impl Config {
                     ruleset.id
                 ));
             }
+        }
+        self.validate_matchmaking()?;
+        Ok(())
+    }
+
+    fn validate_matchmaking(&self) -> Result<(), String> {
+        validate_rating_window("limits.ranked_window", self.limits.ranked_window())?;
+        validate_rating_window("limits.unranked_window", self.limits.unranked_window())?;
+        validate_looser_window("limits.unranked_window", self.limits.ranked_window(), self.limits.unranked_window())?;
+        let mut paired = std::collections::HashSet::new();
+        for ruleset in &self.rulesets {
+            let name = format!("ruleset {}.rating_window", ruleset.id);
+            if let Some(window) = ruleset.matchmaking_window(&self.limits) {
+                validate_rating_window(&name, window)?;
+            } else if ruleset.rating_window != RatingWindowConfig::default() {
+                return Err(format!("{name} requires a matchmaking queue"));
+            }
+            let Some(parent) = &ruleset.rating_ruleset else { continue; };
+            if ruleset.rated {
+                return Err(format!("ruleset {}: a rated ruleset uses its own ladder", ruleset.id));
+            }
+            let ranked = self.rulesets.iter().find(|candidate| candidate.id == *parent)
+                .ok_or_else(|| format!("ruleset {}: rating_ruleset {parent} does not exist", ruleset.id))?;
+            if !ranked.rated {
+                return Err(format!("ruleset {}: rating_ruleset {parent} is not rated", ruleset.id));
+            }
+            if ranked.game != ruleset.game || ranked.game_fingerprint != ruleset.game_fingerprint || ranked.teams != ruleset.teams {
+                return Err(format!("ruleset {}: rating_ruleset must share the game, fingerprint and teams", ruleset.id));
+            }
+            if !paired.insert(parent) {
+                return Err(format!("rating_ruleset {parent} has more than one unranked counterpart"));
+            }
+            validate_looser_window(&name, ranked.matchmaking_window(&self.limits).expect("rated queue"), ruleset.matchmaking_window(&self.limits).expect("explicit unranked queue"))?;
         }
         Ok(())
     }
@@ -746,6 +835,9 @@ impl Config {
         if limits.games_per_source == 0 || limits.queue_capacity == 0 {
             return Err("limits.games_per_source and queue_capacity must be at least 1".to_owned());
         }
+        if limits.queue_capacity > MAX_QUEUE_CAPACITY {
+            return Err("limits.queue_capacity must be 1 to 65536".into());
+        }
         if !(1..=600).contains(&limits.accept_timeout_secs) {
             return Err("limits.accept_timeout_secs must be 1 to 600".to_owned());
         }
@@ -835,6 +927,10 @@ impl Config {
     /// The limits as they apply to an account of `kind`, for `ruleset` if named.
     pub fn limits_for(&self, kind: AccountKind, ruleset: Option<&RulesetConfig>) -> Limits {
         let limits = &self.limits;
+        let ranked = ruleset.and_then(|rule| {
+            if rule.rated { Some(rule) } else { self.ruleset(&rule.rating_ruleset_id()).filter(|r| r.rated) }
+        });
+        let unranked = ranked.and_then(|ranked| self.rulesets.iter().find(|candidate| candidate.rating_ruleset.as_deref() == Some(&ranked.id)));
         Limits {
             retired_games_per_account: 0,
             games_per_account: wire_account_limit(
@@ -850,6 +946,8 @@ impl Config {
             games_per_source: limits.games_per_source,
             custom_match_capacity: limits.custom_match_capacity,
             games_per_ipv6_48: limits.games_per_ipv6_48,
+            ranked_window: ranked.and_then(|r| r.matchmaking_window(limits)).unwrap_or_else(|| limits.ranked_window()),
+            unranked_window: unranked.and_then(|r| r.matchmaking_window(limits)).unwrap_or_else(|| limits.unranked_window()),
         }
     }
 
@@ -1062,9 +1160,116 @@ fn wire_account_limit(value: u8) -> AccountGameLimit {
     }
 }
 
+fn validate_rating_window(name: &str, window: RatingWindow) -> Result<(), String> {
+    for (field, value) in [("initial", window.initial), ("widen_per_minute", window.widen_per_minute), ("maximum", window.maximum)] {
+        if value > MAX_RATING_WINDOW {
+            return Err(format!("{name}.{field} must be 0 to {MAX_RATING_WINDOW}"));
+        }
+    }
+    if window.initial > window.maximum {
+        return Err(format!("{name}.initial must not exceed maximum"));
+    }
+    Ok(())
+}
+
+fn validate_looser_window(name: &str, ranked: RatingWindow, unranked: RatingWindow) -> Result<(), String> {
+    if unranked.initial < ranked.initial || unranked.widen_per_minute < ranked.widen_per_minute || unranked.maximum < ranked.maximum {
+        return Err(format!("{name} must be at least as loose as the ranked window"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn paired_window_text() -> String {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut text = std::fs::read_to_string(root.join("radovid.example.toml")).expect("example");
+        text.push_str(r#"
+[[ruleset]]
+id = "casual"
+name = "Unranked turn fixture"
+game = "ttt"
+game_fingerprint = "7474740000000001"
+teams = [1, 1]
+rated = false
+rating_ruleset = "tic_tac_toe"
+[ruleset.rating_window]
+initial = 600
+widen_per_minute = 300
+maximum = 3000
+[ruleset.launcher]
+kind = "local"
+binary = "python3"
+public_url = "tcp://127.0.0.1:{port}"
+args = ["crates/radovid/tests/fixtures/game_server.py", "--game", "ttt", "--port", "{port}"]
+env = { GAME_SEATS = "{seats}" }
+[limits.ranked_window]
+initial = 100
+widen_per_minute = 100
+maximum = 1000
+[limits.unranked_window]
+initial = 600
+widen_per_minute = 300
+maximum = 3000
+"#);
+        text
+    }
+
+    #[test]
+    fn paired_ranked_and_unranked_rulesets_accept_independent_rating_windows() {
+        let text = paired_window_text();
+        let config: Config = toml::from_str(&text).expect("paired matchmaking configuration");
+        config.validate().expect("valid paired game rulesets");
+        assert_eq!(config.rulesets.len(), 4);
+        assert!(!config.ruleset(&RulesetId("casual".into())).expect("unranked ruleset").rated);
+        let casual = config.ruleset(&RulesetId("casual".into())).expect("unranked ruleset");
+        assert!(casual.has_queue());
+        assert_eq!(casual.rating_ruleset_id(), RulesetId("tic_tac_toe".into()));
+        assert_eq!(casual.info(&config.limits, AccountKind::Human, false).rating_window, Some(DEFAULT_UNRANKED_WINDOW));
+        assert_eq!(config.limits_for(AccountKind::Human, None).ranked_window, DEFAULT_RANKED_WINDOW);
+    }
+
+    #[test]
+    fn invalid_rating_windows_and_rating_pairs_are_rejected_specifically() {
+        for (before, after, expected) in [
+            ("initial = 600", "initial = 3001", "ruleset casual.rating_window.initial must not exceed maximum"),
+            ("widen_per_minute = 300", "widen_per_minute = 10001", "ruleset casual.rating_window.widen_per_minute must be 0 to 10000"),
+            ("rating_ruleset = \"tic_tac_toe\"", "rating_ruleset = \"missing\"", "ruleset casual: rating_ruleset missing does not exist"),
+            ("initial = 600", "initial = 1", "ruleset casual.rating_window must be at least as loose as the ranked window"),
+        ] {
+            let text = paired_window_text().replacen(before, after, 1);
+            let config: Config = toml::from_str(&text).expect("syntactically valid configuration");
+            assert_eq!(config.validate().expect_err("invalid matchmaking policy"), expected);
+        }
+    }
+
+    #[test]
+    fn partial_unranked_policy_overrides_inherit_unranked_defaults() {
+        let limits: LimitsConfig = toml::from_str("[unranked_window]\nmaximum = 5000\n").expect("partial policy");
+        assert_eq!(limits.unranked_window(), RatingWindow { maximum: 5000, ..DEFAULT_UNRANKED_WINDOW });
+        assert_eq!(limits.ranked_window(), DEFAULT_RANKED_WINDOW);
+    }
+
+    #[test]
+    fn a_ruleset_limits_query_serves_both_resolved_mode_policies() {
+        let mut config: Config = toml::from_str(&paired_window_text()).expect("paired config");
+        config.rulesets.iter_mut().find(|r| r.id == "casual").expect("casual").rating_window.maximum = Some(5000);
+        config.rulesets.iter_mut().find(|r| r.id == "tic_tac_toe").expect("ranked").rating_window.initial = Some(200);
+        for id in ["tic_tac_toe", "casual"] {
+            let limits = config.limits_for(AccountKind::Human, config.ruleset(&RulesetId(id.into())));
+            assert_eq!(limits.ranked_window.initial, 200);
+            assert_eq!(limits.unranked_window.maximum, 5000);
+        }
+    }
+
+    #[test]
+    fn queue_capacity_cannot_exceed_one_bounded_matching_pass() {
+        let mut config: Config = toml::from_str(&paired_window_text()).expect("paired config");
+        config.limits.queue_capacity = 65_537;
+        assert_eq!(config.validate().expect_err("bounded matching index"), "limits.queue_capacity must be 1 to 65536");
+    }
 
     #[test]
     fn the_example_configuration_loads() {

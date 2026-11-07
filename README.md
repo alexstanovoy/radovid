@@ -1,6 +1,6 @@
 # radovid
 
-A matchmaking service for any game whose servers start from a command line. Accounts, rated queues, lobbies,
+A matchmaking service for any game whose servers start from a command line. Accounts, ranked and unranked queues, lobbies,
 ratings and a ladder, and one game server launched per match, in a single process with a single SQLite file.
 
 radovid knows nothing about your game. A ruleset says which program to start and how; radovid starts it when a match
@@ -11,7 +11,7 @@ own output. It never carries game traffic, and clients can't report outcomes, so
 
 - **Accounts:** login and password (no e-mail, no recovery), human or bot. Players see each other as `nickname#id`;
   the login stays private.
-- **Rated queues** with two-phase acceptance: a found match must be accepted by everyone within a time limit; a
+- **Ranked and unranked queues** with configurable rating windows that widen with waiting time. A found match must be accepted by everyone within a time limit; a
   decline or silence sends that player to a short cooldown and the others back to their places.
 - **Lobbies:** found in the list of open lobbies or by searching names and owners, and joined at once: an open lobby
   needs nothing, a locked one its password, which the service shows to nobody but the owner who set it. No approval
@@ -32,7 +32,8 @@ Clients speak WebSocket over TLS on one port; `radovid_client` is the Rust clien
 thread, or the browser's WebSocket). It can also serve a web client's static files on the same origin.
 
 Rated queues support two or more sides of any size, up to ten seats, including free-for-all and draws. Each
-account has one rating and ladder position per ruleset, shared across its concurrent matches.
+account has one rating and ladder position per rated ruleset, shared across its concurrent matches.
+An unrated sibling uses that ladder for skill matching with a looser window and leaves it unchanged.
 
 What is missing: password recovery and e-mail, ranked placements or partial scores, a ladder across several hosts (one process, one SQLite file), and rolling protocol compatibility (clients and
 service update together).
@@ -58,6 +59,9 @@ connections, result reporting and ratings:
 ```sh
 cargo test --profile test-release -p radovid --test games
 ```
+
+For a ranked/unranked pair, use [the single-game example](examples/tic_tac_toe.toml): its two
+rulesets share one ladder, and its unrated queue explicitly references the rated sibling.
 
 For your own game, configure its executable or container image, wire fingerprint, arguments and public address
 according to the [launcher contract](DEVELOPMENT.md#launcher-contract). The game owns its rules, network protocol
