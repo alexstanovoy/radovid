@@ -588,7 +588,7 @@ impl Hub {
                 offset,
             } => self.match_artifact_named(id, match_id, name, offset).await,
             ClientMsg::RecentMatches { account, limit } => {
-                self.recent_matches(account, limit).await
+                self.recent_matches(id, account, limit).await
             }
             ClientMsg::Ladder { .. } | ClientMsg::Leaderboard { .. } => Err(Error::Internal),
             ClientMsg::AdminBan {

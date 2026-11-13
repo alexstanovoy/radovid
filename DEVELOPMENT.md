@@ -38,7 +38,8 @@ is no network path to forge one.
 
 Placeholders in `args`, `env` values and `public_url`: `{match_id}`, `{port}` (from `game_ports`), `{seats}`
 (`ticket_hex:team:name:kind` per slot, comma separated; kind `bot` or `human`, chosen at registration and changed only
-by an admin), `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>}`; `{{` and `}}` are braces. Slots are
+by an admin), `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>}`,
+`{accounts}` (comma-separated public account ids in slot order), `{account_<slot>}`; `{{` and `}}` are braces. Slots are
 numbered team by team. Tickets may only go into `env` (arguments show in process listings). A ticket is 32 random
 bytes; the game checks it in constant time and decides what it allows: a seat, a reconnect, watching.
 

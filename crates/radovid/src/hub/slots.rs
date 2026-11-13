@@ -66,6 +66,7 @@ impl Hub {
             .iter()
             .zip(names)
             .map(|(seat, name)| SeatSpec {
+                account: seat.account,
                 ticket: seat.ticket,
                 team: seat.team,
                 name,

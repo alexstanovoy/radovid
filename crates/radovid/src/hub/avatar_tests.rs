@@ -174,3 +174,115 @@ async fn invalid_avatar_batches_are_refused_before_charging_lookup_quota() {
             .expect("invalid batches do not spend quota");
     }
 }
+
+#[tokio::test]
+async fn another_players_recent_matches_share_the_profile_read_quota() {
+    let mut fixture = Fixture::new();
+    let (owner, _) = fixture.account("owner").await;
+    let (_, viewer) = fixture.account("viewer").await;
+    fixture.hub.lookup_clock = Some(std::time::Instant::now());
+    for _ in 0..4 {
+        assert_eq!(
+            fixture
+                .hub
+                .request(
+                    viewer,
+                    ClientMsg::RecentMatches {
+                        account: owner,
+                        limit: 255
+                    }
+                )
+                .await,
+            Ok(Reply::Matches { list: Vec::new() })
+        );
+    }
+    assert_eq!(
+        fixture
+            .hub
+            .request(
+                viewer,
+                ClientMsg::RecentMatches {
+                    account: owner,
+                    limit: 255
+                }
+            )
+            .await,
+        Err(Error::Throttled {
+            retry_after_ms: 250
+        })
+    );
+}
+
+#[tokio::test]
+async fn another_players_public_match_list_omits_the_participants_opaque_report() {
+    let mut fixture = Fixture::new();
+    let (owner, owner_session) = fixture.account("owner").await;
+    let (_, viewer) = fixture.account("viewer").await;
+    let seats = vec![crate::db::NewSeat {
+        account: owner,
+        slot: 0,
+        team: 0,
+    }];
+    let match_id = fixture
+        .hub
+        .db
+        .create_match(RulesetId("casual".into()), false, seats.clone())
+        .await
+        .expect("match");
+    fixture
+        .hub
+        .db
+        .finish_match(crate::db::Finish {
+            match_id,
+            ruleset: RulesetId("casual".into()),
+            rate: false,
+            outcome: Outcome::Winner { team: 0 },
+            reason: EndReason::Decided,
+            duration_ms: 1000,
+            report: vec![7, 8, 9],
+            seats,
+            finished_at: UnixMs(1000),
+        })
+        .await
+        .expect("finish");
+    let Reply::Matches { list } = fixture
+        .hub
+        .request(
+            viewer,
+            ClientMsg::RecentMatches {
+                account: owner,
+                limit: 255,
+            },
+        )
+        .await
+        .expect("public match list")
+    else {
+        panic!("match list");
+    };
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].match_id, match_id);
+    assert_eq!(list[0].seats[0].account, owner);
+    assert!(
+        list[0].game_report.is_empty(),
+        "a public profile exposes the match list, not an opaque participant report"
+    );
+    let Reply::Matches { list } = fixture
+        .hub
+        .request(
+            owner_session,
+            ClientMsg::RecentMatches {
+                account: owner,
+                limit: 50,
+            },
+        )
+        .await
+        .expect("participant history")
+    else {
+        panic!("match list");
+    };
+    assert_eq!(
+        list[0].game_report,
+        vec![7, 8, 9],
+        "the participant keeps their own report"
+    );
+}

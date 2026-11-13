@@ -190,6 +190,7 @@ mod tests {
             port: 1,
             cheats: false,
             seats: vec![SeatSpec {
+                account: radovid_proto::AccountId(42),
                 ticket: Ticket([0; 32]),
                 team: 0,
                 name: "seat".into(),

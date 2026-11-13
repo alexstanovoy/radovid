@@ -26,19 +26,28 @@ impl Hub {
     }
     pub(super) async fn recent_matches(
         &mut self,
+        requester: AccountId,
         account: AccountId,
         limit: u8,
     ) -> Result<Reply, Error> {
+        if requester != account {
+            self.charge_lookup(requester)?;
+        }
         self.db
             .account_by_id(account)
             .await
             .map_err(internal)?
             .ok_or(Error::UnknownAccount)?;
-        let list = self
+        let mut list = self
             .db
             .recent_matches(account, limit.min(MAX_RECENT_MATCHES))
             .await
             .map_err(internal)?;
+        if requester != account {
+            for result in &mut list {
+                result.game_report.clear();
+            }
+        }
         Ok(Reply::Matches { list })
     }
 

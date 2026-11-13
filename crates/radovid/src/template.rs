@@ -3,14 +3,15 @@
 //! `{match_id}`, `{port}`, `{seats}` (`ticket_hex:team:name:kind` per slot in
 //! slot order, comma separated; kind is `bot` or `human`, the account's own),
 //! `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>}`; `{{` and `}}` are literal braces. Nothing else is
-//! interpreted. Tickets may only go into the environment: an argument shows
+//! interpreted. `{accounts}` and `{account_<slot>}` are public account ids in slot order. Tickets may only go into the environment: an argument shows
 //! in every process listing.
 
-use radovid_proto::{AccountKind, MatchId, Ticket};
+use radovid_proto::{AccountId, AccountKind, MatchId, Ticket};
 
 /// One seat as the game is told about it.
 #[derive(Clone, Debug)]
 pub struct SeatSpec {
+    pub account: AccountId,
     pub ticket: Ticket,
     pub team: u8,
     /// `[A-Za-z0-9_]`, unique within the match.
@@ -75,7 +76,7 @@ fn per_seat(name: &str) -> Option<(usize, bool)> {
     let slot = slot.parse().ok()?;
     match kind {
         "ticket" => Some((slot, true)),
-        "team" | "name" | "kind" => Some((slot, false)),
+        "team" | "name" | "kind" | "account" => Some((slot, false)),
         _ => None,
     }
 }
@@ -99,7 +100,7 @@ pub fn check_with(
             continue;
         };
         let secret = match name {
-            "match_id" | "port" => false,
+            "match_id" | "port" | "accounts" => false,
             "artifact" if artifact => false,
             "seats" => true,
             _ => match per_seat(name) {
@@ -131,6 +132,16 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
             Piece::Name("match_id") => out.push_str(&vars.match_id.0.to_string()),
             Piece::Name("port") => out.push_str(&vars.port.to_string()),
             Piece::Name("artifact") => out.push_str(vars.artifact.unwrap_or_default()),
+            Piece::Name("accounts") => {
+                out.push_str(
+                    &vars
+                        .seats
+                        .iter()
+                        .map(|seat| seat.account.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+            }
             Piece::Name("seats") => {
                 let seats: Vec<String> = vars
                     .seats
@@ -152,6 +163,7 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
                     continue;
                 };
                 match name.split('_').next() {
+                    Some("account") => out.push_str(&seat.account.0.to_string()),
                     Some("ticket") => out.push_str(&seat.ticket.to_hex()),
                     Some("team") => out.push_str(&seat.team.to_string()),
                     Some("kind") => out.push_str(seat.kind_word()),
@@ -161,4 +173,44 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+    #[test]
+    fn public_account_placeholders_are_allowed_without_revealing_seat_tickets() {
+        assert!(
+            check("{accounts}/{account_0}", 2, false).is_ok(),
+            "public identifiers belong in public launch context"
+        );
+        let seats = [
+            SeatSpec {
+                account: AccountId(42),
+                ticket: Ticket([7; 32]),
+                team: 0,
+                name: "player".into(),
+                kind: AccountKind::Human,
+            },
+            SeatSpec {
+                account: AccountId(99),
+                ticket: Ticket([8; 32]),
+                team: 1,
+                name: "bot".into(),
+                kind: AccountKind::Bot,
+            },
+        ];
+        let vars = Vars {
+            match_id: MatchId(1),
+            port: 1,
+            seats: &seats,
+            artifact: None,
+        };
+        assert_eq!(expand("{accounts}/{account_1}", &vars), "42,99/99");
+        assert!(check("{account_2}", 2, false).is_err());
+        assert!(
+            check("{seats}", 2, false).is_err(),
+            "existing ticket-bearing format remains secret"
+        );
+    }
 }
