@@ -513,9 +513,16 @@ mod tests {
     #[tokio::test]
     async fn a_shown_deviation_grows_with_idle_time_without_rewriting_the_stored_rating() {
         const DAY_MS: u64 = 86_400_000;
-        let directory = std::env::temp_dir().join(format!("radovid_idle_{}", std::process::id()));
-        std::fs::create_dir(&directory).expect("scratch");
-        let db = Db::open(&directory.join("idle.db")).expect("database");
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory =
+            Scratch(std::env::temp_dir().join(format!("radovid_idle_{}", std::process::id())));
+        std::fs::create_dir(&directory.0).expect("scratch");
+        let db = Db::open(&directory.0.join("idle.db")).expect("database");
         let now = 1_700_000_000_000_u64;
         db.freeze_now(UnixMs(now));
         {
@@ -576,7 +583,6 @@ mod tests {
             })
             .expect("stored");
         assert_eq!(stored, 50.0, "reading never rewrites the stored rating");
-        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

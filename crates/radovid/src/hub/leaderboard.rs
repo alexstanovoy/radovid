@@ -29,7 +29,7 @@ impl Hub {
 
     pub(super) fn charge_lookup(&mut self, id: AccountId) -> Result<(), Error> {
         let now = std::time::Instant::now();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test_support"))]
         let now = self.lookup_clock.unwrap_or(now);
         self.charge_lookup_at(id, now)
     }

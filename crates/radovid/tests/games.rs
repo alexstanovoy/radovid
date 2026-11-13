@@ -192,13 +192,14 @@ fn launch(accounts: &mut [Account], game: &str) -> Vec<Handoff> {
     accounts.iter_mut().map(Account::wait_match_found).collect()
 }
 
-/// The service meters lookups per account in real time; wait out the advertised delay.
-fn ask_lookup(account: &mut Account, message: ClientMsg) -> Reply {
+/// The service meters lookups per account; pass the delay it asks for on its own clock.
+fn ask_lookup(env: &Env, account: &mut Account, message: ClientMsg) -> Reply {
     for _ in 0..8 {
         match account.ask(message.clone()) {
-            Err(Error::Throttled { retry_after_ms }) => {
-                std::thread::sleep(Duration::from_millis(retry_after_ms.into()))
-            }
+            Err(Error::Throttled { retry_after_ms }) => env.block_on(
+                env.service()
+                    .advance_lookup_clock(Duration::from_millis(retry_after_ms.into())),
+            ),
             other => return other.expect("lookup"),
         }
     }
@@ -247,6 +248,7 @@ fn finished(env: &Env, accounts: &mut [Account], expected: Outcome, game: &str) 
             .position(|account| account.me.id == seat.account)
             .expect("participant");
         let Reply::Matches { list } = ask_lookup(
+            env,
             &mut accounts[owner],
             ClientMsg::RecentMatches {
                 account: seat.account,
@@ -263,6 +265,7 @@ fn finished(env: &Env, accounts: &mut [Account], expected: Outcome, game: &str) 
         let viewer = (owner + 1) % accounts.len();
         assert_ne!(accounts[viewer].me.id, seat.account);
         let Reply::Matches { list } = ask_lookup(
+            env,
             &mut accounts[viewer],
             ClientMsg::RecentMatches {
                 account: seat.account,

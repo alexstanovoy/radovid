@@ -45,8 +45,21 @@ impl Service {
         self.db.freeze_now(now);
     }
 
-    #[cfg(test)]
-    pub(crate) async fn freeze_lookup_clock_for_test(&self, now: std::time::Instant) {
+    /// Moves the hub's lookup clock forward without waiting, so a test can pass the delay a
+    /// throttled lookup asks for. The first call freezes the clock at the moment it is made.
+    #[cfg(feature = "test_support")]
+    pub async fn advance_lookup_clock(&self, by: std::time::Duration) {
+        let (done, ready) = tokio::sync::oneshot::channel();
+        self.hub_tx
+            .send(Cmd::AdvanceLookupClock { by, done })
+            .await
+            .expect("hub");
+        ready.await.expect("clock advanced");
+    }
+
+    /// Freezes the hub's lookup clock at `now`.
+    #[cfg(feature = "test_support")]
+    pub async fn freeze_lookup_clock_for_test(&self, now: std::time::Instant) {
         let (done, ready) = tokio::sync::oneshot::channel();
         self.hub_tx
             .send(Cmd::FreezeLookupClock { now, done })

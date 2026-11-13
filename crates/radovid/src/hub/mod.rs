@@ -37,9 +37,14 @@ pub type SessionId = u64;
 
 /// Everything that reaches the hub.
 pub enum Cmd {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test_support"))]
     FreezeLookupClock {
         now: std::time::Instant,
+        done: oneshot::Sender<()>,
+    },
+    #[cfg(any(test, feature = "test_support"))]
+    AdvanceLookupClock {
+        by: std::time::Duration,
         done: oneshot::Sender<()>,
     },
     /// A connection logged in.
@@ -162,7 +167,7 @@ pub struct Hub {
     visibility_sweep_pending: bool,
     pending_finishes: VecDeque<crate::db::Finish>,
     finish_inflight: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test_support"))]
     lookup_clock: Option<std::time::Instant>,
     config: Arc<Config>,
     db: Db,
@@ -261,7 +266,7 @@ impl Hub {
             visibility_sweep_pending: false,
             pending_finishes: VecDeque::new(),
             finish_inflight: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test_support"))]
             lookup_clock: None,
             free_ports: config.game_ports.ports().collect(),
             config,
@@ -290,9 +295,15 @@ impl Hub {
 
     async fn handle(&mut self, cmd: Cmd) {
         match cmd {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test_support"))]
             Cmd::FreezeLookupClock { now, done } => {
                 self.lookup_clock = Some(now);
+                let _ = done.send(());
+            }
+            #[cfg(any(test, feature = "test_support"))]
+            Cmd::AdvanceLookupClock { by, done } => {
+                let now = self.lookup_clock.unwrap_or_else(std::time::Instant::now);
+                self.lookup_clock = Some(now + by);
                 let _ = done.send(());
             }
             Cmd::Attach(attach) => self.attach(*attach),
