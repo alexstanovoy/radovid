@@ -881,7 +881,7 @@ impl Db {
                         })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
-                let rows = rows
+                let mut rows: Vec<LadderRow> = rows
                     .into_iter()
                     .enumerate()
                     .map(|(i, mut row)| {
@@ -889,6 +889,7 @@ impl Db {
                         row
                     })
                     .collect();
+                leaderboard::grow_idle(c, &ruleset, rows.iter_mut())?;
                 Ok((total, rows))
             })
         })

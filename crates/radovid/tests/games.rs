@@ -238,7 +238,15 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
             .iter()
             .find(|r| r.account == seat.account)
             .expect("one position per account");
-        assert_eq!(Some(row.rating), seat.after);
+        let after = seat.after.expect("a rated seat");
+        assert_eq!(row.rating.rating, after.rating);
+        // The ladder shows the deviation grown for the seconds since the game ended.
+        assert!(
+            (row.rating.deviation - after.deviation).abs() < 0.01,
+            "{} against {}",
+            row.rating.deviation,
+            after.deviation
+        );
         let owner = accounts
             .iter()
             .position(|account| account.me.id == seat.account)

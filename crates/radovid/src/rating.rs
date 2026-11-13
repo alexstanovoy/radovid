@@ -1,7 +1,7 @@
 //! Glicko-2 with the standard constants (Glickman, 2013), one rating period
 //! per game, and the growth of the deviation with idle time.
 
-use radovid_proto::Rating;
+use radovid_proto::{Rating, UnixMs};
 
 /// Rating of an account that never played.
 pub const INITIAL_RATING: f64 = 1500.0;
@@ -10,6 +10,7 @@ pub const INITIAL_DEVIATION: f64 = 350.0;
 /// Volatility of an account that never played.
 pub const INITIAL_VOLATILITY: f64 = 0.06;
 /// How strongly the volatility may move.
+const MS_PER_DAY: f64 = 86_400_000.0;
 const TAU: f64 = 0.5;
 /// Glicko-2's internal scale factor.
 const SCALE: f64 = 173.7178;
@@ -50,6 +51,12 @@ impl Glicko {
             deviation: (grown * SCALE).min(INITIAL_DEVIATION),
             ..self
         }
+    }
+
+    /// The standing at `now` for a player who last played at `last_played`: the one place idle growth
+    /// is applied, both before a rated game and when a rating is shown.
+    pub fn idle_since(self, last_played: UnixMs, now: UnixMs) -> Glicko {
+        self.after_idle(now.0.saturating_sub(last_played.0) as f64 / MS_PER_DAY)
     }
 
     /// The standing after one rating period of games against `opponents`, each

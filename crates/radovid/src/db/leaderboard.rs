@@ -120,6 +120,7 @@ impl Db {
                 if !prefix.is_empty() {
                     rank_selected(connection, &ruleset, kind, &mut rows, &mut own, visible)?;
                 }
+                grow_idle(connection, &ruleset, rows.iter_mut().chain(own.as_mut()))?;
                 Ok(LeaderboardPage {
                     ruleset,
                     kind,
@@ -220,7 +221,7 @@ fn profile_rows_capped(
     let mut ratings = Vec::new();
     let mut total_budget = total_budget;
     for ruleset in rulesets {
-        if let Some(row) =
+        if let Some(mut row) =
             bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| {
                 find_own_row(connection, &ruleset, account, visible)
             })?
@@ -233,6 +234,7 @@ fn profile_rows_capped(
                 rank_budget,
                 &mut total_budget,
             )?;
+            grow_idle(connection, &ruleset, std::iter::once(&mut row))?;
             ratings.push((
                 ruleset,
                 RatingSummary {
@@ -442,6 +444,33 @@ fn find_own_row(
     connection.query_row(&format!("SELECT {ROW},0 FROM ratings r CROSS JOIN accounts a ON a.id=r.account WHERE r.ruleset=?1 AND r.account=?2 AND {visible}"),params![ruleset.0,account.0 as i64],ladder_row).optional()
 }
 
+/// Shows each row's deviation as of now: the stored one grown for the time since the player last
+/// played, so an idle player's confidence decays without a stored rewrite. It runs after ranking
+/// because the ladder order, and so every rank, is by the stored deviation.
+pub(super) fn grow_idle<'a>(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    rows: impl Iterator<Item = &'a mut LadderRow>,
+) -> rusqlite::Result<()> {
+    let now = now_ms();
+    for row in rows {
+        let volatility = connection.query_row(
+            "SELECT volatility FROM ratings WHERE account=?1 AND ruleset=?2",
+            params![row.account.0 as i64, ruleset.0],
+            |stored| stored.get(0),
+        )?;
+        let stored = Glicko {
+            rating: row.rating.rating,
+            deviation: row.rating.deviation,
+            volatility,
+        };
+        row.rating = stored
+            .idle_since(row.last_played.unwrap_or(now), now)
+            .public();
+    }
+    Ok(())
+}
+
 fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
     let kind = kind_of(row.get(2)?);
     Ok(LadderRow {
@@ -470,6 +499,74 @@ fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_shown_deviation_grows_with_idle_time_without_rewriting_the_stored_rating() {
+        const DAY_MS: u64 = 86_400_000;
+        let directory = std::env::temp_dir().join(format!("radovid_idle_{}", std::process::id()));
+        std::fs::create_dir(&directory).expect("scratch");
+        let db = Db::open(&directory.join("idle.db")).expect("database");
+        let now = now_ms().0;
+        {
+            let connection = db.conn.lock().expect("connection");
+            connection.execute("INSERT INTO accounts(id,login,nickname,hash,kind,created) VALUES(1,'fresh','Fresh','x',0,0),(2,'idle','Idle','x',0,0)",[]).expect("accounts");
+            for (account, last_played) in [(1, now), (2, now - 60 * DAY_MS)] {
+                connection.execute("INSERT INTO ratings(account,ruleset,rating,deviation,volatility,games,wins,draws,losses,last_played) VALUES(?1,'duel',?2,50,0.06,4,2,0,2,?3)",params![account,1500 - account,last_played as i64]).expect("rating");
+            }
+        }
+        let duel = RulesetId("duel".into());
+        let expected = Glicko {
+            rating: 1498.0,
+            deviation: 50.0,
+            volatility: 0.06,
+        }
+        .after_idle(60.0)
+        .deviation;
+        assert!(expected > 55.0, "the fixture idles long enough to matter");
+        let close = |shown: f64, wanted: f64| (shown - wanted).abs() < 0.01;
+        let board = db
+            .leaderboard(
+                duel.clone(),
+                AccountKind::Human,
+                String::new(),
+                10,
+                AccountId(1),
+            )
+            .await
+            .expect("board");
+        assert!(
+            close(board.rows[0].rating.deviation, 50.0),
+            "just played keeps the stored deviation"
+        );
+        assert!(
+            close(board.rows[1].rating.deviation, expected),
+            "the board shows grown deviation"
+        );
+        let (_, ladder) = db.ladder(duel.clone(), 0, 10).await.expect("ladder");
+        assert!(
+            close(ladder[1].rating.deviation, expected),
+            "the legacy ladder shows grown deviation"
+        );
+        let profile = db
+            .public_profile(AccountId(2), vec![duel.clone()], AccountId(1))
+            .await
+            .expect("profile")
+            .expect("visible");
+        assert!(
+            close(profile.ratings[0].1.rating.deviation, expected),
+            "the profile shows grown deviation"
+        );
+        let stored: f64 = db
+            .conn
+            .lock()
+            .expect("connection")
+            .query_row("SELECT deviation FROM ratings WHERE account=2", [], |row| {
+                row.get(0)
+            })
+            .expect("stored");
+        assert_eq!(stored, 50.0, "reading never rewrites the stored rating");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 
     #[test]
     fn profile_keeps_each_modes_summary_when_its_rank_budget_is_exhausted() {
