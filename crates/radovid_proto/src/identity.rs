@@ -96,18 +96,40 @@ pub fn shareable_matchmaker_identity(value: &str) -> Option<String> {
     public.then_some(identity)
 }
 
-fn public_ipv6(ip:std::net::Ipv6Addr)->bool {
-    if ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local()
-        || ip.is_unicast_link_local() || ip.is_multicast() { return false; }
-    if let Some(ipv4)=ip.to_ipv4() { return public_ipv4(ipv4); }
-    let bytes=ip.octets();
-    let ipv4=|start|std::net::Ipv4Addr::new(bytes[start],bytes[start+1],bytes[start+2],bytes[start+3]);
+fn public_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    if ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || ip.is_multicast()
+    {
+        return false;
+    }
+    if let Some(ipv4) = ip.to_ipv4() {
+        return public_ipv4(ipv4);
+    }
+    let bytes = ip.octets();
+    let ipv4 = |start| {
+        std::net::Ipv4Addr::new(
+            bytes[start],
+            bytes[start + 1],
+            bytes[start + 2],
+            bytes[start + 3],
+        )
+    };
     // RFC 6052 well-known NAT64 prefix and RFC 3056 6to4's embedded site address.
-    if bytes[..12]==[0,0x64,0xff,0x9b,0,0,0,0,0,0,0,0] { return public_ipv4(ipv4(12)); }
-    if bytes[..2]==[0x20,0x02] { return public_ipv4(ipv4(2)); }
+    if bytes[..12] == [0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0] {
+        return public_ipv4(ipv4(12));
+    }
+    if bytes[..2] == [0x20, 0x02] {
+        return public_ipv4(ipv4(2));
+    }
     // RFC 4380 carries the server directly and the client's address complemented.
-    if bytes[..4]==[0x20,0x01,0,0] {
-        return public_ipv4(ipv4(4)) && public_ipv4(std::net::Ipv4Addr::new(!bytes[12],!bytes[13],!bytes[14],!bytes[15]));
+    if bytes[..4] == [0x20, 0x01, 0, 0] {
+        return public_ipv4(ipv4(4))
+            && public_ipv4(std::net::Ipv4Addr::new(
+                !bytes[12], !bytes[13], !bytes[14], !bytes[15],
+            ));
     }
     true
 }
@@ -160,9 +182,13 @@ fn public_ipv4(ip: std::net::Ipv4Addr) -> bool {
 }
 
 /// A syntactically valid control-service address, including local addresses.
-pub fn public_matchmaker(value:&str)->bool { matchmaker_identity(value).is_some() }
+pub fn public_matchmaker(value: &str) -> bool {
+    matchmaker_identity(value).is_some()
+}
 /// A control-service address suitable for publication in a shared file.
-pub fn shareable_matchmaker(value:&str)->bool { shareable_matchmaker_identity(value).is_some() }
+pub fn shareable_matchmaker(value: &str) -> bool {
+    shareable_matchmaker_identity(value).is_some()
+}
 
 #[cfg(test)]
 mod transition_tests {
@@ -170,22 +196,36 @@ mod transition_tests {
     #[test]
     fn embedded_private_ipv4_and_invalid_ports_are_not_shareable() {
         for uri in [
-            "wss://[::7f00:1]", "wss://[::127.0.0.1]", "wss://[::10.0.0.1]",
-            "wss://[::ffff:192.168.1.2]", "wss://[::ffff:169.254.1.2]",
-            "wss://[64:ff9b::7f00:1]", "wss://[64:ff9b::a00:1]",
-            "wss://[64:ff9b::a9fe:102]", "wss://[2002:7f00:1::]",
-            "wss://[2002:c0a8:102::]", "wss://[2002:a9fe:102::]",
+            "wss://[::7f00:1]",
+            "wss://[::127.0.0.1]",
+            "wss://[::10.0.0.1]",
+            "wss://[::ffff:192.168.1.2]",
+            "wss://[::ffff:169.254.1.2]",
+            "wss://[64:ff9b::7f00:1]",
+            "wss://[64:ff9b::a00:1]",
+            "wss://[64:ff9b::a9fe:102]",
+            "wss://[2002:7f00:1::]",
+            "wss://[2002:c0a8:102::]",
+            "wss://[2002:a9fe:102::]",
             "wss://[2001:0:808:808:0:0:80ff:fffe]",
             "wss://[2001:0:7f00:1:0:0:f7f7:f7f7]",
             "wss://[2001:0:808:808:0:0:3f57:fefd]",
-            "wss://[::1]", "wss://[fc00::1]", "wss://[fe80::1]",
-            "wss://example.org:99999", "wss://example.org:0",
+            "wss://[::1]",
+            "wss://[fc00::1]",
+            "wss://[fe80::1]",
+            "wss://example.org:99999",
+            "wss://example.org:0",
         ] {
-            assert_eq!(shareable_matchmaker_identity(uri),None,"{uri}");
+            assert_eq!(shareable_matchmaker_identity(uri), None, "{uri}");
         }
-        assert_eq!(shareable_matchmaker_identity("WSS://EXAMPLE.org:443/"),Some("wss://example.org/control".into()));
+        assert_eq!(
+            shareable_matchmaker_identity("WSS://EXAMPLE.org:443/"),
+            Some("wss://example.org/control".into())
+        );
         assert!(shareable_matchmaker_identity("wss://[2606:4700:4700::1111]:65535").is_some());
-        assert!(shareable_matchmaker_identity("wss://127.0.0.1.nip.io").is_some(),"hostnames are not resolved");
+        assert!(
+            shareable_matchmaker_identity("wss://127.0.0.1.nip.io").is_some(),
+            "hostnames are not resolved"
+        );
     }
 }
-

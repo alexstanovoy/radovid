@@ -22,8 +22,12 @@ pub struct SeatSpec {
 }
 
 impl SeatSpec {
-    fn account_word(&self)->String {
-        if self.account.0==0 { "-".into() } else { self.account.0.to_string() }
+    fn account_word(&self) -> String {
+        if self.account.0 == 0 {
+            "-".into()
+        } else {
+            self.account.0.to_string()
+        }
     }
     fn kind_word(&self) -> &'static str {
         match self.kind {

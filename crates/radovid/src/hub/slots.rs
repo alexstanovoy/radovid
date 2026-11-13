@@ -118,9 +118,9 @@ impl Hub {
             spec,
             hub: self.me.clone(),
         };
-        let database=self.db.clone();
+        let database = self.db.clone();
         tokio::spawn(async move {
-            let mut supervisor=supervisor;
+            let mut supervisor = supervisor;
             supervisor.hide_private_profile_bindings(&database).await;
             supervisor.run(stopped).await;
         });

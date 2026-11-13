@@ -146,7 +146,7 @@ fn can_view(
     requester: AccountId,
     now: UnixMs,
 ) -> rusqlite::Result<bool> {
-    super::public_matches::account_visible(connection,account,requester,now)
+    super::public_matches::account_visible(connection, account, requester, now)
 }
 
 pub(super) fn version(

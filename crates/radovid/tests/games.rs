@@ -226,15 +226,42 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
             .find(|r| r.account == seat.account)
             .expect("one position per account");
         assert_eq!(Some(row.rating), seat.after);
-        let owner=accounts.iter().position(|account|account.me.id==seat.account).expect("participant");
-        let Reply::Matches{list}=accounts[owner].ask(ClientMsg::RecentMatches{account:seat.account,limit:1}).expect("own history") else {panic!("own matches")};
-        assert_eq!(list.as_slice(),std::slice::from_ref(&result),"each participant retains the complete report on their own list");
-        let viewer=(owner+1)%accounts.len();
-        assert_ne!(accounts[viewer].me.id,seat.account);
-        let Reply::Matches{list}=accounts[viewer].ask(ClientMsg::RecentMatches{account:seat.account,limit:1}).expect("public history") else {panic!("public matches")};
-        let mut public=result.clone();
+        let owner = accounts
+            .iter()
+            .position(|account| account.me.id == seat.account)
+            .expect("participant");
+        let Reply::Matches { list } = accounts[owner]
+            .ask(ClientMsg::RecentMatches {
+                account: seat.account,
+                limit: 1,
+            })
+            .expect("own history")
+        else {
+            panic!("own matches")
+        };
+        assert_eq!(
+            list.as_slice(),
+            std::slice::from_ref(&result),
+            "each participant retains the complete report on their own list"
+        );
+        let viewer = (owner + 1) % accounts.len();
+        assert_ne!(accounts[viewer].me.id, seat.account);
+        let Reply::Matches { list } = accounts[viewer]
+            .ask(ClientMsg::RecentMatches {
+                account: seat.account,
+                limit: 1,
+            })
+            .expect("public history")
+        else {
+            panic!("public matches")
+        };
+        let mut public = result.clone();
         public.game_report.clear();
-        assert_eq!(list.as_slice(),std::slice::from_ref(&public),"public history retains all public result facts and omits the private report");
+        assert_eq!(
+            list.as_slice(),
+            std::slice::from_ref(&public),
+            "public history retains all public result facts and omits the private report"
+        );
     }
     let Reply::ArtifactNamed {
         data: bytes, total, ..
