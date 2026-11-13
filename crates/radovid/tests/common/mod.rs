@@ -2,11 +2,14 @@
 //! accounts to talk to it.
 #![allow(dead_code)]
 
+pub mod port_lease;
+
 use rustls::pki_types::pem::PemObject;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+use port_lease::PortLease;
 use radovid::config::{
     Config, LauncherConfig, LauncherKind, LimitsConfig, PerKind, PortRange, RulesetConfig,
 };
@@ -30,6 +33,8 @@ pub struct Env {
     pub tls: TlsConfig,
     pub dir: PathBuf,
     pub cert_pem: String,
+    /// The game ports of the service, leased until it is stopped.
+    _ports: PortLease,
 }
 
 impl Env {
@@ -290,10 +295,7 @@ pub fn try_start(
         database: dir.join("radovid.db"),
         tls_cert: PathBuf::new(),
         tls_key: PathBuf::new(),
-        game_ports: PortRange {
-            first: 40000,
-            last: 40063,
-        },
+        game_ports: PortRange { first: 1, last: 1 },
         max_connections: 1024,
         server_name: "radovid-test".to_owned(),
         password: PasswordCost {
@@ -308,6 +310,12 @@ pub fn try_start(
         rulesets,
     };
     adjust(&mut config);
+    let capacity = u16::try_from(config.limits.game_capacity).expect("a small game capacity");
+    let ports = PortLease::block(capacity);
+    config.game_ports = PortRange {
+        first: ports.first(),
+        last: ports.last(),
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
@@ -327,6 +335,7 @@ pub fn try_start(
         runtime,
         service: Some(service),
         dir,
+        _ports: ports,
     })
 }
 

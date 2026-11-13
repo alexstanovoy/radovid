@@ -3,7 +3,7 @@
 mod common;
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -55,7 +55,6 @@ fn service(rules: RulesetConfig) -> FixtureEnv {
 
 struct FixtureEnv {
     env: Env,
-    _port: PortLease,
 }
 
 impl std::ops::Deref for FixtureEnv {
@@ -65,47 +64,13 @@ impl std::ops::Deref for FixtureEnv {
     }
 }
 
-static PORTS: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
-
-struct PortLease(u16);
-
-impl Drop for PortLease {
-    fn drop(&mut self) {
-        PORTS
-            .lock()
-            .expect("port ownership")
-            .retain(|&port| port != self.0);
-    }
-}
-
-fn reserve_port() -> (TcpListener, PortLease) {
-    for _ in 0..128 {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve port");
-        let port = listener.local_addr().expect("address").port();
-        let mut ports = PORTS.lock().expect("port ownership");
-        if !ports.contains(&port) {
-            ports.push(port);
-            return (listener, PortLease(port));
-        }
-    }
-    panic!("fixture port reservation budget")
-}
-
 fn service_with_lobby(rules: RulesetConfig, teams: Vec<u8>) -> FixtureEnv {
     service_catalog(vec![rules], teams)
 }
 
 fn service_catalog(rules: Vec<RulesetConfig>, teams: Vec<u8>) -> FixtureEnv {
-    // The launcher needs the socket released, but parallel fixtures retain
-    // ownership of their selected port until the service has stopped.
-    let (reservation, lease) = reserve_port();
-    let port = lease.0;
     let env = start_configured(rules, move |config| {
         config.lobby_teams = teams;
-        config.game_ports = radovid::config::PortRange {
-            first: port,
-            last: port,
-        };
         config.limits.game_capacity = 1;
         config.limits.lobby_games_max = 1;
         let path = config
@@ -123,9 +88,8 @@ fn service_catalog(rules: Vec<RulesetConfig>, teams: Vec<u8>) -> FixtureEnv {
             record.path = record.path.replace("record-", &format!("{}-", rules.id));
             rules.artifacts.insert("record".into(), record);
         }
-        drop(reservation);
     });
-    FixtureEnv { env, _port: lease }
+    FixtureEnv { env }
 }
 
 fn account(env: &Env, game: &str, name: &str) -> Account {
