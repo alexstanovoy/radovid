@@ -24,29 +24,6 @@ impl Hub {
             avatar,
         })
     }
-    pub(super) async fn recent_matches(
-        &mut self,
-        requester: AccountId,
-        account: AccountId,
-        limit: u8,
-    ) -> Result<Reply, Error> {
-        if requester != account {
-            eprintln!("ERROR: private match history reached the writer path for another account");
-            return Err(Error::Internal);
-        }
-        self.db
-            .account_by_id(account)
-            .await
-            .map_err(internal)?
-            .ok_or(Error::UnknownAccount)?;
-        let list = self
-            .db
-            .recent_matches(account, limit.min(MAX_RECENT_MATCHES))
-            .await
-            .map_err(internal)?;
-        Ok(Reply::Matches { list })
-    }
-
     /// A piece of the replay a finished match left, for an account that sat in it (or, where the
     /// ruleset says so, any account its audience admits).
     pub(super) async fn match_artifact(

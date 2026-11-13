@@ -301,10 +301,7 @@ impl Hub {
                 msg,
                 reply,
             } => {
-                if leaderboard::is_lookup(
-                    &msg,
-                    self.sessions.get(&session).map(|session| session.account),
-                ) {
+                if leaderboard::is_lookup(&msg) {
                     self.start_lookup(session, &msg, reply);
                 } else {
                     let result = self.request(session, msg).await;
@@ -544,10 +541,7 @@ impl Hub {
     }
 
     async fn request(&mut self, session: SessionId, msg: ClientMsg) -> Result<Reply, Error> {
-        if leaderboard::is_lookup(
-            &msg,
-            self.sessions.get(&session).map(|session| session.account),
-        ) {
+        if leaderboard::is_lookup(&msg) {
             let (account, query) = self.prepare_lookup(session, &msg)?;
             let result = query.run(&self.db).await;
             self.lookup_done(account);
@@ -593,10 +587,9 @@ impl Hub {
                 name,
                 offset,
             } => self.match_artifact_named(id, match_id, name, offset).await,
-            ClientMsg::RecentMatches { account, limit } => {
-                self.recent_matches(id, account, limit).await
-            }
-            ClientMsg::Ladder { .. } | ClientMsg::Leaderboard { .. } => Err(Error::Internal),
+            ClientMsg::Ladder { .. }
+            | ClientMsg::Leaderboard { .. }
+            | ClientMsg::RecentMatches { .. } => Err(Error::Internal),
             ClientMsg::AdminBan {
                 account,
                 reason,

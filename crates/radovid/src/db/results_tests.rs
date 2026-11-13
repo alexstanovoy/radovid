@@ -76,9 +76,15 @@ async fn a_failed_finish_replays_after_database_reopen_before_unfinished_games_a
         .expect("rated");
     assert_eq!(rating.games, 1);
     let results = reopened
-        .recent_matches(seats[0].account, 1)
+        .public_recent_matches(
+            seats[0].account,
+            seats[0].account,
+            1,
+            vec![RulesetId("duel".into())],
+        )
         .await
-        .expect("result");
+        .expect("result")
+        .expect("own history is visible");
     assert_eq!(results[0].outcome, Outcome::Winner { team: 0 });
     assert_eq!(results[0].game_report, [1, 2, 3]);
 }

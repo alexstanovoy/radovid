@@ -458,15 +458,120 @@ async fn public_match_reads_and_profile_avatar_reads_spend_one_mixed_quota() {
 }
 
 #[tokio::test]
-async fn the_writer_history_path_rejects_another_accounts_request() {
+async fn own_match_history_spends_the_same_lookup_quota() {
     let mut fixture = Fixture::new();
-    let (first, _) = fixture.account("first").await;
-    let (second, _) = fixture.account("second").await;
+    let (account, session) = fixture.account("owner").await;
+    fixture.hub.lookup_clock = Some(std::time::Instant::now());
+    for _ in 0..4 {
+        assert_eq!(
+            fixture
+                .hub
+                .request(
+                    session,
+                    ClientMsg::RecentMatches {
+                        account,
+                        limit: 255
+                    }
+                )
+                .await,
+            Ok(Reply::Matches { list: Vec::new() })
+        );
+    }
     assert_eq!(
-        fixture.hub.recent_matches(first, second, 50).await,
-        Err(Error::Internal)
+        fixture
+            .hub
+            .request(
+                session,
+                ClientMsg::RecentMatches {
+                    account,
+                    limit: 255
+                }
+            )
+            .await,
+        Err(Error::Throttled {
+            retry_after_ms: 250
+        })
     );
 }
+
+#[tokio::test]
+async fn own_match_history_masks_a_banned_opponent_but_keeps_own_seat_and_report() {
+    let mut fixture = Fixture::new();
+    let (banned, _) = fixture.account("banned").await;
+    let (me, session) = fixture.account("me").await;
+    let seats = vec![
+        crate::db::NewSeat {
+            account: banned,
+            slot: 0,
+            team: 0,
+        },
+        crate::db::NewSeat {
+            account: me,
+            slot: 1,
+            team: 1,
+        },
+    ];
+    let game = fixture
+        .hub
+        .db
+        .create_match(RulesetId("ranked".into()), true, seats.clone())
+        .await
+        .expect("match");
+    fixture
+        .hub
+        .db
+        .finish_match(crate::db::Finish {
+            match_id: game,
+            ruleset: RulesetId("ranked".into()),
+            rate: true,
+            outcome: Outcome::Winner { team: 1 },
+            reason: EndReason::Decided,
+            duration_ms: 1000,
+            report: vec![7, 8, 9],
+            seats,
+            finished_at: UnixMs(1000),
+        })
+        .await
+        .expect("finish");
+    fixture
+        .hub
+        .db
+        .set_ban(
+            banned,
+            Some(crate::db::Ban {
+                reason: "fixture".into(),
+                until: None,
+            }),
+        )
+        .await
+        .expect("ban");
+    let Reply::Matches { list } = fixture
+        .hub
+        .request(
+            session,
+            ClientMsg::RecentMatches {
+                account: me,
+                limit: 50,
+            },
+        )
+        .await
+        .expect("own history")
+    else {
+        panic!("list")
+    };
+    let [first, second] = &list[0].seats[..] else {
+        panic!("two seats")
+    };
+    assert_eq!(first.account, AccountId(0));
+    assert!(first.nickname.is_empty());
+    assert!(first.before.is_none());
+    assert!(first.after.is_none());
+    assert_eq!(second.account, me);
+    assert!(second.before.is_some());
+    assert!(second.after.is_some());
+    assert_eq!(list[0].game_report, vec![7, 8, 9]);
+}
+
 #[tokio::test]
 async fn public_history_is_capped_at_fifty_matches_for_a_limit_of_255() {
     let mut fixture = Fixture::new();

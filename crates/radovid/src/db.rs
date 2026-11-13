@@ -802,24 +802,6 @@ impl Db {
         .await
     }
 
-    pub async fn recent_matches(
-        &self,
-        account: AccountId,
-        limit: u8,
-    ) -> DbResult<Vec<MatchResult>> {
-        self.inspect(move |c| {
-            let mut ids = c.prepare(
-                "SELECT m.id FROM matches m JOIN match_seats s ON s.match_id = m.id
-                 WHERE s.account = ?1 AND m.finished = 1 ORDER BY m.id DESC LIMIT ?2",
-            )?;
-            let ids: Vec<i64> = ids
-                .query_map(params![account.0 as i64, limit], |row| row.get(0))?
-                .collect::<Result<_, _>>()?;
-            ids.into_iter().map(|id| load_result(c, id)).collect()
-        })
-        .await
-    }
-
     /// The ruleset and the accounts of a finished match.
     pub async fn finished_match_seats(
         &self,

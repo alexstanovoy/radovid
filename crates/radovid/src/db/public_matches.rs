@@ -81,8 +81,12 @@ fn public_matches(
     let mut visibility = BTreeMap::new();
     let mut matches = Vec::with_capacity(ids.len());
     for id in ids {
-        let mut result = load_result_projection(connection, id, false)?;
+        // A participant keeps their own opaque report; everyone else gets the list alone.
+        let mut result = load_result_projection(connection, id, account == requester)?;
         for seat in &mut result.seats {
+            if seat.account == requester {
+                continue;
+            }
             let key = (seat.account.0, result.ruleset.0.clone());
             let (identity_visible, rating_visible) = match visibility.entry(key) {
                 Entry::Occupied(entry) => *entry.get(),

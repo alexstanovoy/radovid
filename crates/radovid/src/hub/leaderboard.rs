@@ -176,13 +176,11 @@ impl Hub {
     }
 }
 
-pub(super) fn is_lookup(message: &ClientMsg, requester: Option<AccountId>) -> bool {
-    if let ClientMsg::RecentMatches { account, .. } = message {
-        return requester != Some(*account);
-    }
+pub(super) fn is_lookup(message: &ClientMsg) -> bool {
     matches!(
         message,
         ClientMsg::Leaderboard { .. }
+            | ClientMsg::RecentMatches { .. }
             | ClientMsg::Account { .. }
             | ClientMsg::Ladder { .. }
             | ClientMsg::GetAvatar { .. }

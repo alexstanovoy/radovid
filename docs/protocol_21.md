@@ -41,3 +41,11 @@ An invalid stored image or hash returns no image and logs WARN. Database I/O
 failures still return the ordinary storage error. Metadata is a cache hint, not a
 promise that an image remains readable. No raw invalid bytes reach a caller.
 Schema 5 and the R4 writer/checkpoint/result durability policies are unchanged.
+
+## Public match history: meaning change, no wire change
+
+Version 21 and every message layout are unchanged by the public-history work; only what some fields mean changed.
+`RecentMatches` is a lookup for every caller, own history included: it spends the account lookup quota and runs on
+the reader pool. In any history, a seat whose account is hidden, banned or deleted (the caller's own seat excepted)
+has `account` 0, an empty `nickname` and no `before`/`after`; account 0 therefore means "unpublished". Only a
+participant reading their own history receives `game_report`; for everyone else it is empty.
