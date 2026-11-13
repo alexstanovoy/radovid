@@ -45,6 +45,9 @@ impl Glicko {
     /// The deviation grown for `idle_days` of not playing, one rating period
     /// per day, at most back to a newcomer's.
     pub fn after_idle(self, idle_days: f64) -> Glicko {
+        if idle_days <= 0.0 {
+            return self;
+        }
         let phi = self.deviation / SCALE;
         let grown = (phi * phi + self.volatility * self.volatility * idle_days.max(0.0)).sqrt();
         Glicko {

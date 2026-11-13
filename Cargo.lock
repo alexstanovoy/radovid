@@ -835,6 +835,7 @@ dependencies = [
  "getrandom 0.4.3",
  "png",
  "postcard",
+ "radovid",
  "radovid_client",
  "radovid_proto",
  "rcgen",

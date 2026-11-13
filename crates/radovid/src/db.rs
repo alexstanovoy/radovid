@@ -255,6 +255,9 @@ pub struct Db {
     writer_turn: Arc<tokio::sync::Semaphore>,
     wal: Option<Arc<wal::Wal>>,
     results: Option<Arc<results::Results>>,
+    /// Unix milliseconds the reads see as now; 0 is the wall clock. Tests freeze it to assert exact
+    /// time-dependent values.
+    frozen_now: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Validates a bounded durable-result record without opening files.
@@ -417,7 +420,24 @@ impl Db {
             writer_turn: Arc::new(tokio::sync::Semaphore::new(1)),
             wal: None,
             results: None,
+            frozen_now: Arc::default(),
         })
+    }
+
+    /// The time reads are served at.
+    pub fn now(&self) -> UnixMs {
+        match self.frozen_now.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => now_ms(),
+            frozen => UnixMs(frozen),
+        }
+    }
+
+    /// Serves every later read as of `now` (nonzero), for tests of time-dependent values.
+    #[cfg(any(test, feature = "test_support"))]
+    pub fn freeze_now(&self, now: UnixMs) {
+        assert_ne!(now.0, 0, "zero means the wall clock");
+        self.frozen_now
+            .store(now.0, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Runs `work` on the blocking pool with the connection.
@@ -835,6 +855,7 @@ impl Db {
         offset: u32,
         limit: u8,
     ) -> DbResult<(u32, Vec<LadderRow>)> {
+        let now = self.now();
         self.read(move |connection| {
             leaderboard::read_lookup(connection, |c| {
                 let visible = leaderboard::VISIBLE;
@@ -889,7 +910,7 @@ impl Db {
                         row
                     })
                     .collect();
-                leaderboard::grow_idle(c, &ruleset, rows.iter_mut())?;
+                leaderboard::grow_idle(c, &ruleset, rows.iter_mut(), now)?;
                 Ok((total, rows))
             })
         })

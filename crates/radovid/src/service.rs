@@ -21,6 +21,8 @@ use crate::tls::{self, Identity};
 pub struct Service {
     #[cfg(feature = "test_support")]
     requests: Arc<crate::test_support::Requests>,
+    #[cfg(feature = "test_support")]
+    db: Db,
     /// Where it listens.
     pub addr: SocketAddr,
     certificates: Certificates,
@@ -35,6 +37,12 @@ impl Service {
     #[must_use]
     pub fn request_count(&self, kind: crate::test_support::Read) -> u64 {
         self.requests.count(kind)
+    }
+
+    /// Serves every later read as of `now`, so a test can assert exact time-dependent values.
+    #[cfg(feature = "test_support")]
+    pub fn freeze_now(&self, now: radovid_proto::UnixMs) {
+        self.db.freeze_now(now);
     }
 
     #[cfg(test)]
@@ -81,6 +89,8 @@ impl Service {
         let passwords = Passwords::new(config.password)?;
         let config = Arc::new(config);
         let (hub, hub_task) = hub::spawn(Arc::clone(&config), db.clone());
+        #[cfg(feature = "test_support")]
+        let frozen_db = db.clone();
         let shared = Arc::new(Shared::new(config, db, hub.clone(), passwords));
         #[cfg(feature = "test_support")]
         let requests = Arc::clone(&shared.requests);
@@ -94,6 +104,8 @@ impl Service {
         Ok(Service {
             #[cfg(feature = "test_support")]
             requests,
+            #[cfg(feature = "test_support")]
+            db: frozen_db,
             addr,
             certificates,
             stop,

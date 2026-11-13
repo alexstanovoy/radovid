@@ -97,6 +97,7 @@ impl Db {
         limit: u16,
         requester: AccountId,
     ) -> DbResult<LeaderboardPage> {
+        let now = self.now();
         if !valid_nickname_prefix(&prefix) {
             return Err(DbError::Sqlite(rusqlite::Error::InvalidParameterName(
                 "invalid nickname prefix".into(),
@@ -120,7 +121,12 @@ impl Db {
                 if !prefix.is_empty() {
                     rank_selected(connection, &ruleset, kind, &mut rows, &mut own, visible)?;
                 }
-                grow_idle(connection, &ruleset, rows.iter_mut().chain(own.as_mut()))?;
+                grow_idle(
+                    connection,
+                    &ruleset,
+                    rows.iter_mut().chain(own.as_mut()),
+                    now,
+                )?;
                 Ok(LeaderboardPage {
                     ruleset,
                     kind,
@@ -141,9 +147,9 @@ impl Db {
         rulesets: Vec<RulesetId>,
         requester: AccountId,
     ) -> DbResult<Option<PublicAccount>> {
+        let now = self.now();
         self.read(move |connection| {
             read_snapshot(connection, |connection| {
-                let now = now_ms();
                 if !bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| {
                     super::public_matches::account_visible(connection, account, requester, now)
                 })? {
@@ -168,6 +174,7 @@ impl Db {
                     rulesets,
                     VISIBLE,
                     PROFILE_RANK_VM_STEPS,
+                    now,
                 )?;
                 Ok(Some(PublicAccount {
                     avatar: bounded_with_limit(
@@ -194,6 +201,7 @@ fn profile_rows(
     rulesets: Vec<RulesetId>,
     visible: &str,
     rank_budget: u32,
+    now: UnixMs,
 ) -> rusqlite::Result<Vec<(RulesetId, RatingSummary)>> {
     profile_rows_capped(
         connection,
@@ -202,6 +210,7 @@ fn profile_rows(
         visible,
         rank_budget,
         PROFILE_TOTAL_RANK_VM_STEPS,
+        now,
     )
 }
 
@@ -212,6 +221,7 @@ fn profile_rows_capped(
     visible: &str,
     rank_budget: u32,
     total_budget: u32,
+    now: UnixMs,
 ) -> rusqlite::Result<Vec<(RulesetId, RatingSummary)>> {
     if rulesets.len() > MAX_RATED_MODES {
         return Err(rusqlite::Error::InvalidParameterName(
@@ -234,7 +244,7 @@ fn profile_rows_capped(
                 rank_budget,
                 &mut total_budget,
             )?;
-            grow_idle(connection, &ruleset, std::iter::once(&mut row))?;
+            grow_idle(connection, &ruleset, std::iter::once(&mut row), now)?;
             ratings.push((
                 ruleset,
                 RatingSummary {
@@ -451,8 +461,8 @@ pub(super) fn grow_idle<'a>(
     connection: &Connection,
     ruleset: &RulesetId,
     rows: impl Iterator<Item = &'a mut LadderRow>,
+    now: UnixMs,
 ) -> rusqlite::Result<()> {
-    let now = now_ms();
     for row in rows {
         let volatility = connection.query_row(
             "SELECT volatility FROM ratings WHERE account=?1 AND ruleset=?2",
@@ -506,7 +516,8 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("radovid_idle_{}", std::process::id()));
         std::fs::create_dir(&directory).expect("scratch");
         let db = Db::open(&directory.join("idle.db")).expect("database");
-        let now = now_ms().0;
+        let now = 1_700_000_000_000_u64;
+        db.freeze_now(UnixMs(now));
         {
             let connection = db.conn.lock().expect("connection");
             connection.execute("INSERT INTO accounts(id,login,nickname,hash,kind,created) VALUES(1,'fresh','Fresh','x',0,0),(2,'idle','Idle','x',0,0)",[]).expect("accounts");
@@ -523,7 +534,7 @@ mod tests {
         .after_idle(60.0)
         .deviation;
         assert!(expected > 55.0, "the fixture idles long enough to matter");
-        let close = |shown: f64, wanted: f64| (shown - wanted).abs() < 0.01;
+        let exactly = |shown: f64, wanted: f64| shown == wanted;
         let board = db
             .leaderboard(
                 duel.clone(),
@@ -535,16 +546,16 @@ mod tests {
             .await
             .expect("board");
         assert!(
-            close(board.rows[0].rating.deviation, 50.0),
+            exactly(board.rows[0].rating.deviation, 50.0),
             "just played keeps the stored deviation"
         );
         assert!(
-            close(board.rows[1].rating.deviation, expected),
+            exactly(board.rows[1].rating.deviation, expected),
             "the board shows grown deviation"
         );
         let (_, ladder) = db.ladder(duel.clone(), 0, 10).await.expect("ladder");
         assert!(
-            close(ladder[1].rating.deviation, expected),
+            exactly(ladder[1].rating.deviation, expected),
             "the legacy ladder shows grown deviation"
         );
         let profile = db
@@ -553,7 +564,7 @@ mod tests {
             .expect("profile")
             .expect("visible");
         assert!(
-            close(profile.ratings[0].1.rating.deviation, expected),
+            exactly(profile.ratings[0].1.rating.deviation, expected),
             "the profile shows grown deviation"
         );
         let stored: f64 = db
@@ -587,7 +598,7 @@ mod tests {
             .map(|name| RulesetId(name.into()))
             .to_vec();
         let ratings = read_snapshot(&mut connection, |snapshot| {
-            profile_rows(snapshot, AccountId(1), modes, VISIBLE, 1000)
+            profile_rows(snapshot, AccountId(1), modes, VISIBLE, 1000, UnixMs(1))
         })
         .expect("profile renders");
         assert_eq!(ratings.len(), 3);
@@ -632,6 +643,7 @@ mod tests {
             VISIBLE,
             100_000,
             used + 1,
+            UnixMs(1),
         )
         .expect("profile survives aggregate exhaustion");
         assert_eq!(rows.len(), 2);

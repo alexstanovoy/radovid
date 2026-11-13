@@ -205,7 +205,7 @@ fn ask_lookup(account: &mut Account, message: ClientMsg) -> Reply {
     panic!("lookup stayed throttled");
 }
 
-fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchResult {
+fn finished(env: &Env, accounts: &mut [Account], expected: Outcome, game: &str) -> MatchResult {
     let result = accounts[0].wait_result();
     assert!(result.rated);
     assert_eq!(result.outcome, expected);
@@ -222,6 +222,9 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
             Outcome::Null => panic!("not a played match"),
         }
     }
+    // The ladder grows a deviation with the time since a player last played; read it at the moment
+    // the game ended so the shown value is the stored one.
+    env.service().freeze_now(result.finished_at);
     let Reply::LadderPage { rows, total } = accounts[0]
         .ask(ClientMsg::Ladder {
             ruleset: RulesetId(game.into()),
@@ -238,15 +241,7 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
             .iter()
             .find(|r| r.account == seat.account)
             .expect("one position per account");
-        let after = seat.after.expect("a rated seat");
-        assert_eq!(row.rating.rating, after.rating);
-        // The ladder shows the deviation grown for the seconds since the game ended.
-        assert!(
-            (row.rating.deviation - after.deviation).abs() < 0.01,
-            "{} against {}",
-            row.rating.deviation,
-            after.deviation
-        );
+        assert_eq!(Some(row.rating), seat.after);
         let owner = accounts
             .iter()
             .position(|account| account.me.id == seat.account)
@@ -333,7 +328,7 @@ fn tic_tac_toe_clients_play_a_rated_draw_and_win() {
         for client in &mut clients {
             assert!(client.line().starts_with("END "));
         }
-        let result = finished(&mut accounts, outcome, "ttt");
+        let result = finished(&env, &mut accounts, outcome, "ttt");
         assert!(
             String::from_utf8_lossy(&result.game_report)
                 .contains(&format!("moves={};", moves.len()))
@@ -363,7 +358,7 @@ fn game_clock_parameters_pass_untouched_and_timeout_is_a_rated_loss() {
         for client in &mut clients {
             assert_eq!(client.line(), "END 1");
         }
-        let result = finished(&mut accounts, Outcome::Winner { team: 1 }, "clock");
+        let result = finished(&env, &mut accounts, Outcome::Winner { team: 1 }, "clock");
         assert!(
             String::from_utf8_lossy(&result.game_report)
                 .contains(&format!("clock_ms={clock_ms};moves=0;"))
@@ -381,7 +376,7 @@ fn fixed_tick_clients_play_rated_teams_and_ffa_and_reconnect() {
             .collect();
         let handoffs = launch(&mut accounts, "grid");
         play_grid(&handoffs, Some(1));
-        let result = finished(&mut accounts, Outcome::Winner { team: 1 }, "grid");
+        let result = finished(&env, &mut accounts, Outcome::Winner { team: 1 }, "grid");
         let report = String::from_utf8_lossy(&result.game_report);
         assert!(report.contains("reconnects=1;"));
         assert!(!report.contains("ticks=0;"));
@@ -454,7 +449,7 @@ fn rated_team_and_ffa_draws_update_each_accounts_single_ladder_position() {
             .collect();
         let handoffs = launch(&mut accounts, "grid");
         play_grid(&handoffs, None);
-        let result = finished(&mut accounts, Outcome::Draw, "grid");
+        let result = finished(&env, &mut accounts, Outcome::Draw, "grid");
         for seat in result.seats {
             assert_eq!(seat.after.expect("rated draw").rating, 1500.0);
         }
@@ -515,7 +510,7 @@ fn unrelated_games_coexist_on_one_service_without_protocol_dependencies() {
                 Outcome::Winner { team: 0 }
             }
         };
-        finished(&mut accounts, outcome, game);
+        finished(&env, &mut accounts, outcome, game);
     }
 }
 

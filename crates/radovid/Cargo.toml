@@ -36,6 +36,8 @@ futures-util = "0.3.34"
 getrandom = "0.4.3"
 
 [dev-dependencies]
+# Integration tests freeze the service's clock, which only the test_support build offers.
+radovid = { path = ".", features = ["test_support"] }
 radovid_client = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 

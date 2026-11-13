@@ -17,6 +17,8 @@ fn an_unranked_game_uses_the_rated_ladder_and_leaves_every_rating_unchanged() {
     let before = alpha.wait_result();
     beta.wait_result();
     assert!(before.rated);
+    // The ladder grows a deviation with idle time: read both boards at one instant.
+    env.service().freeze_now(before.finished_at);
     let board_before = alpha
         .ask(ClientMsg::Ladder {
             ruleset: rated.clone(),
@@ -48,8 +50,7 @@ fn an_unranked_game_uses_the_rated_ladder_and_leaves_every_rating_unchanged() {
         })
         .expect("ladder");
     assert_eq!(
-        without_shown_deviation(board_after),
-        without_shown_deviation(board_before),
+        board_after, board_before,
         "no standing, game count or position changed"
     );
     assert_eq!(
@@ -60,16 +61,4 @@ fn an_unranked_game_uses_the_rated_ladder_and_leaves_every_rating_unchanged() {
         }),
         Err(Error::NoQueue)
     );
-}
-
-/// The ladder shows a deviation that grows with the time since a player last played, so two reads
-/// differ in it by the seconds between them; everything else must be equal.
-fn without_shown_deviation(reply: Reply) -> Reply {
-    let Reply::LadderPage { total, mut rows } = reply else {
-        panic!("a ladder page");
-    };
-    for row in &mut rows {
-        row.rating.deviation = 0.0;
-    }
-    Reply::LadderPage { total, rows }
 }
