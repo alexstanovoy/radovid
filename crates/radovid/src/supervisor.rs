@@ -39,6 +39,22 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
+    pub(crate) async fn hide_private_profile_bindings(&mut self,database:&crate::db::Db) {
+        let accounts=self.spec.seats.iter().map(|seat|seat.account).collect();
+        let result=tokio::time::timeout(Duration::from_secs(5),database.published_accounts(accounts)).await;
+        let bindings=match result {
+            Ok(Ok(bindings))=>bindings,
+            _=>{
+                eprintln!("WARN: public profile visibility unavailable; omitting launch bindings");
+                vec![None;self.spec.seats.len()]
+            }
+        };
+        assert_eq!(bindings.len(),self.spec.seats.len(),"one visibility decision per seat");
+        for (seat,binding) in self.spec.seats.iter_mut().zip(bindings) {
+            seat.account=binding.unwrap_or(radovid_proto::AccountId(0));
+        }
+    }
+
     pub async fn run(self, mut stop: oneshot::Receiver<()>) {
         let match_id = self.match_id;
         match launcher::spawn(&self.ruleset, &self.spec) {

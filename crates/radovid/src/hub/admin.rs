@@ -30,10 +30,10 @@ impl Hub {
         account: AccountId,
         limit: u8,
     ) -> Result<Reply, Error> {
-        debug_assert_eq!(
-            requester, account,
-            "public history uses the bounded lookup path"
-        );
+        if requester != account {
+            eprintln!("ERROR: private match history reached the writer path for another account");
+            return Err(Error::Internal);
+        }
         self.db
             .account_by_id(account)
             .await

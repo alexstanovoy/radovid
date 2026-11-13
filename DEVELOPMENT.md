@@ -40,11 +40,12 @@ Placeholders in `args`, `env` values and `public_url`: `{match_id}`, `{port}` (f
 (`ticket_hex:team:name:kind` per slot, comma separated; kind `bot` or `human`, chosen at registration and changed only
 by an admin), `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>}`,
 `{accounts}` (comma-separated public account ids in slot order), `{account_<slot>}`; `{{` and `}}` are braces. Slots are
-numbered team by team. Tickets may only go into `env` (arguments show in process listings). A ticket is 32 random
+numbered team by team; an unpublished account is `-`, preserving its slot. Profile visibility is snapshotted just before the game starts, outside the hub loop. Tickets may only go into `env` (arguments show in process listings). A ticket is 32 random
 bytes; the game checks it in constant time and decides what it allows: a seat, a reconnect, watching.
 
 The optional top-level `public_identity` is the shareable ws/wss control-service address. It is
-validated without DNS lookup; local/private IP literals, single-label names and credentials are refused.
+validated without DNS lookup; local/private IP literals, including embedded IPv4 forms, single-label names and credentials are refused.
+Hostnames are not resolved, so a public-looking name can still resolve to a private address.
 The launcher passes its canonical identity as `RADOVID_PUBLIC_IDENTITY` to every game process
 (empty when unconfigured). This identifies the service; it grants no authority and carries no credentials.
 A game that records public account provenance may combine it with `{accounts}`. An absent identity

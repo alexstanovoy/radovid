@@ -146,7 +146,7 @@ fn can_view(
     requester: AccountId,
     now: UnixMs,
 ) -> rusqlite::Result<bool> {
-    connection.query_row("SELECT 1 FROM accounts WHERE id=?1 AND deleted=0 AND (?1=?2 OR banned=0 OR ban_until BETWEEN 0 AND ?3)",params![account.0 as i64,requester.0 as i64,now.0 as i64], |_| Ok(true)).optional().map(|found|found.unwrap_or(false))
+    super::public_matches::account_visible(connection,account,requester,now)
 }
 
 pub(super) fn version(

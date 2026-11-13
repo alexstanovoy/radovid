@@ -412,7 +412,9 @@ pub struct Handoff {
 pub struct SeatResult {
     pub slot: u8,
     pub team: u8,
+    /// Zero in a public projection when the profile is not visible.
     pub account: AccountId,
+    /// Empty with an unpublished account in a public projection.
     pub nickname: String,
     pub kind: AccountKind,
     /// Absent when unrated or null.
@@ -429,7 +431,7 @@ pub struct MatchResult {
     pub reason: EndReason,
     /// As the game reported it; 0 without a result.
     pub duration_ms: u32,
-    /// The game's own report, untouched; empty without a result.
+    /// The game's own report for participants; public history omits it.
     pub game_report: Vec<u8>,
     pub seats: Vec<SeatResult>,
     pub finished_at: UnixMs,

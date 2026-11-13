@@ -375,8 +375,8 @@ async fn public_match_history_follows_ban_hidden_and_deleted_profile_visibility(
         panic!("list")
     };
     let seat = &list[0].seats[0];
-    assert_eq!(seat.account, hidden);
-    assert_eq!(seat.nickname, "hidden");
+    assert_eq!(seat.account, AccountId(0));
+    assert!(seat.nickname.is_empty());
     assert!(seat.before.is_none());
     assert!(seat.after.is_none());
     fixture.hub.db.delete_account(hidden).await.expect("delete");
@@ -416,7 +416,8 @@ async fn public_match_history_follows_ban_hidden_and_deleted_profile_visibility(
     else {
         panic!("list")
     };
-    assert_eq!(list[0].seats[0].nickname, DELETED_NICKNAME);
+    assert_eq!(list[0].seats[0].account, AccountId(0));
+    assert!(list[0].seats[0].nickname.is_empty());
     assert!(list[0].seats[0].before.is_none());
     assert!(list[0].seats[0].after.is_none());
 }
@@ -454,4 +455,26 @@ async fn public_match_reads_and_profile_avatar_reads_spend_one_mixed_quota() {
             retry_after_ms: 250
         })
     );
+}
+
+#[tokio::test]
+async fn the_writer_history_path_rejects_another_accounts_request() {
+    let mut fixture=Fixture::new();
+    let (first,_)=fixture.account("first").await;
+    let (second,_)=fixture.account("second").await;
+    assert_eq!(fixture.hub.recent_matches(first,second,50).await,Err(Error::Internal));
+}
+#[tokio::test]
+async fn public_history_is_capped_at_fifty_matches_for_a_limit_of_255() {
+    let mut fixture=Fixture::new();
+    let (first,_)=fixture.account("first").await;
+    let (second,viewer)=fixture.account("viewer").await;
+    for _ in 0..57 {
+        let seats=vec![crate::db::NewSeat{account:first,slot:0,team:0},crate::db::NewSeat{account:second,slot:1,team:1}];
+        let id=fixture.hub.db.create_match(RulesetId("ranked".into()),false,seats.clone()).await.expect("create");
+        fixture.hub.db.finish_match(crate::db::Finish{match_id:id,ruleset:RulesetId("ranked".into()),rate:false,outcome:Outcome::Draw,reason:EndReason::Decided,duration_ms:1000,report:vec![1],seats,finished_at:UnixMs(1000)}).await.expect("finish");
+    }
+    let Reply::Matches{list}=fixture.hub.request(viewer,ClientMsg::RecentMatches{account:first,limit:255}).await.expect("public list") else {panic!("matches")};
+    assert_eq!(list.len(),50);
+    assert!(list.iter().all(|result|result.game_report.is_empty()));
 }

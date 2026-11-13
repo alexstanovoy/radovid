@@ -161,9 +161,6 @@ impl Db {
                 let Some(row) = row else {
                     return Ok(None);
                 };
-                if requester != account && row.active_ban(now).is_some() {
-                    return Ok(None);
-                }
                 let ratings = profile_rows(
                     connection,
                     account,

@@ -11,6 +11,7 @@ use radovid_proto::{AccountId, AccountKind, MatchId, Ticket};
 /// One seat as the game is told about it.
 #[derive(Clone, Debug)]
 pub struct SeatSpec {
+    /// Zero withholds the public profile binding; it does not remove the seat.
     pub account: AccountId,
     pub ticket: Ticket,
     pub team: u8,
@@ -21,6 +22,9 @@ pub struct SeatSpec {
 }
 
 impl SeatSpec {
+    fn account_word(&self)->String {
+        if self.account.0==0 { "-".into() } else { self.account.0.to_string() }
+    }
     fn kind_word(&self) -> &'static str {
         match self.kind {
             AccountKind::Human => "human",
@@ -137,7 +141,7 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
                     &vars
                         .seats
                         .iter()
-                        .map(|seat| seat.account.0.to_string())
+                        .map(SeatSpec::account_word)
                         .collect::<Vec<_>>()
                         .join(","),
                 );
@@ -163,7 +167,7 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
                     continue;
                 };
                 match name.split('_').next() {
-                    Some("account") => out.push_str(&seat.account.0.to_string()),
+                    Some("account") => out.push_str(&seat.account_word()),
                     Some("ticket") => out.push_str(&seat.ticket.to_hex()),
                     Some("team") => out.push_str(&seat.team.to_string()),
                     Some("kind") => out.push_str(seat.kind_word()),

@@ -118,7 +118,12 @@ impl Hub {
             spec,
             hub: self.me.clone(),
         };
-        tokio::spawn(supervisor.run(stopped));
+        let database=self.db.clone();
+        tokio::spawn(async move {
+            let mut supervisor=supervisor;
+            supervisor.hide_private_profile_bindings(&database).await;
+            supervisor.run(stopped).await;
+        });
         if first_word {
             for account in accounts {
                 self.notify(

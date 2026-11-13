@@ -22,6 +22,16 @@ pub(super) fn account_visible(
 }
 
 impl Db {
+    pub(crate) async fn published_accounts(&self,accounts:Vec<AccountId>)->DbResult<Vec<Option<AccountId>>> {
+        if accounts.len()>MAX_SEATS { return Err(DbError::Sqlite(rusqlite::Error::InvalidQuery)); }
+        self.read(move |connection|super::leaderboard::read_lookup(connection,|connection| {
+            let now=now_ms();
+            accounts.into_iter().map(|account|
+                account_visible(connection,account,AccountId(0),now).map(|visible|visible.then_some(account))
+            ).collect()
+        })).await
+    }
+
     pub(crate) async fn public_recent_matches(
         &self,
         account: AccountId,
@@ -62,18 +72,19 @@ fn public_matches(
         let mut result = load_result_projection(connection, id, false)?;
         for seat in &mut result.seats {
             let key = (seat.account.0, result.ruleset.0.clone());
-            let visible = match visibility.entry(key) {
+            let (identity_visible,rating_visible) = match visibility.entry(key) {
                 Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => *entry.insert(visible_rating(
-                    connection,
-                    seat.account,
-                    &result.ruleset,
-                    requester,
-                    now,
-                    modes,
-                )?),
+                Entry::Vacant(entry) => {
+                    let identity=account_visible(connection,seat.account,AccountId(0),now)?;
+                    let rating=identity && visible_rating(connection,seat.account,&result.ruleset,modes)?;
+                    *entry.insert((identity,rating))
+                },
             };
-            if !visible {
+            if !identity_visible {
+                seat.account=AccountId(0);
+                seat.nickname.clear();
+            }
+            if !rating_visible {
                 seat.before = None;
                 seat.after = None;
             }
@@ -87,11 +98,9 @@ fn visible_rating(
     connection: &Connection,
     account: AccountId,
     mode: &RulesetId,
-    requester: AccountId,
-    now: UnixMs,
     modes: &[RulesetId],
 ) -> rusqlite::Result<bool> {
-    if !modes.contains(mode) || !account_visible(connection, account, requester, now)? {
+    if !modes.contains(mode) {
         return Ok(false);
     }
     connection
