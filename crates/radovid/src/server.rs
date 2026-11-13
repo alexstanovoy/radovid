@@ -81,6 +81,8 @@ pub type Certificates = Arc<RwLock<Arc<ServerConfig>>>;
 
 /// What every connection shares.
 pub struct Shared {
+    #[cfg(feature = "test_support")]
+    pub(crate) requests: Arc<crate::test_support::Requests>,
     pub config: Arc<Config>,
     pub db: Db,
     pub hub: HubHandle,
@@ -116,6 +118,8 @@ fn throttled(wait: Duration) -> Error {
 impl Shared {
     pub fn new(config: Arc<Config>, db: Db, hub: HubHandle, passwords: Passwords) -> Shared {
         Shared {
+            #[cfg(feature = "test_support")]
+            requests: Arc::default(),
             db,
             hub,
             passwords,

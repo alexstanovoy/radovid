@@ -155,6 +155,8 @@ impl Conn {
                 .await;
         }
         let ClientFrame { seq, msg } = frame;
+        #[cfg(feature = "test_support")]
+        self.shared.requests.record(&msg);
         if self.hello.is_none() {
             return self.hello(seq, msg).await;
         }

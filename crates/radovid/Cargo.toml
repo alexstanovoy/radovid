@@ -13,6 +13,9 @@ path = "src/lib.rs"
 name = "radovid"
 path = "src/main.rs"
 
+[features]
+test_support = []
+
 [dependencies]
 png.workspace = true
 flate2.workspace = true

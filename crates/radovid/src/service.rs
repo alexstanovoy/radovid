@@ -19,6 +19,8 @@ use crate::tls::{self, Identity};
 
 /// A running service.
 pub struct Service {
+    #[cfg(feature = "test_support")]
+    requests: Arc<crate::test_support::Requests>,
     /// Where it listens.
     pub addr: SocketAddr,
     certificates: Certificates,
@@ -29,6 +31,12 @@ pub struct Service {
 }
 
 impl Service {
+    #[cfg(feature = "test_support")]
+    #[must_use]
+    pub fn request_count(&self, kind: crate::test_support::Read) -> u64 {
+        self.requests.count(kind)
+    }
+
     #[cfg(test)]
     pub(crate) async fn freeze_lookup_clock_for_test(&self, now: std::time::Instant) {
         let (done, ready) = tokio::sync::oneshot::channel();
@@ -74,6 +82,8 @@ impl Service {
         let config = Arc::new(config);
         let (hub, hub_task) = hub::spawn(Arc::clone(&config), db.clone());
         let shared = Arc::new(Shared::new(config, db, hub.clone(), passwords));
+        #[cfg(feature = "test_support")]
+        let requests = Arc::clone(&shared.requests);
         let (stop, stopped) = watch::channel(false);
         let listener_task = tokio::spawn(server::serve(
             listener,
@@ -82,6 +92,8 @@ impl Service {
             stopped,
         ));
         Ok(Service {
+            #[cfg(feature = "test_support")]
+            requests,
             addr,
             certificates,
             stop,
