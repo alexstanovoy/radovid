@@ -2,6 +2,7 @@
 # The game processes live under tests/ and are never built into the service.
 listen = "127.0.0.1:4460"
 database = "dev/radovid.db"
+# public_identity = "wss://match.example/control" # optional shareable service identity
 tls_cert = "dev/cert.pem"
 tls_key = "dev/key.pem"
 game_ports = "20000-20015"

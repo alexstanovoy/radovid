@@ -30,24 +30,20 @@ impl Hub {
         account: AccountId,
         limit: u8,
     ) -> Result<Reply, Error> {
-        if requester != account {
-            self.charge_lookup(requester)?;
-        }
+        debug_assert_eq!(
+            requester, account,
+            "public history uses the bounded lookup path"
+        );
         self.db
             .account_by_id(account)
             .await
             .map_err(internal)?
             .ok_or(Error::UnknownAccount)?;
-        let mut list = self
+        let list = self
             .db
             .recent_matches(account, limit.min(MAX_RECENT_MATCHES))
             .await
             .map_err(internal)?;
-        if requester != account {
-            for result in &mut list {
-                result.game_report.clear();
-            }
-        }
         Ok(Reply::Matches { list })
     }
 

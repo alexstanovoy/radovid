@@ -21,5 +21,6 @@ pub use error::ClientError;
 #[cfg(feature = "native")]
 pub use native::{Background, Client, LoggedIn, TlsConfig};
 pub use radovid_proto as proto;
+pub use radovid_proto::{matchmaker_identity, same_matchmaker, shareable_matchmaker_identity};
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use web::WebClient;

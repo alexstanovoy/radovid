@@ -29,3 +29,8 @@ pub use limits::*;
 pub use message::*;
 pub use model::*;
 pub use validate::*;
+
+mod identity;
+pub use identity::{
+    control_url, matchmaker_identity, same_matchmaker, shareable_matchmaker_identity,
+};

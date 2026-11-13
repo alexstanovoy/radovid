@@ -143,6 +143,11 @@ impl Db {
         self.read(move |connection| {
             read_snapshot(connection, |connection| {
                 let now = now_ms();
+                if !bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| {
+                    super::public_matches::account_visible(connection, account, requester, now)
+                })? {
+                    return Ok(None);
+                }
                 let row =
                     bounded_with_limit(connection, PROFILE_METADATA_VM_STEPS, |connection| {
                         connection
@@ -576,6 +581,40 @@ mod tests {
                 "work limit must not be enlarged to mask a linear join"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_hidden_account_has_no_public_profile_or_match_list() {
+        let db = fixture();
+        db.run(|connection| {
+            connection.execute("UPDATE ratings SET hidden=1 WHERE account=2", [])?;
+            Ok(())
+        })
+        .await
+        .expect("hide");
+        assert!(
+            db.public_profile(AccountId(2), vec![RulesetId("duel".into())], AccountId(1))
+                .await
+                .expect("profile")
+                .is_none()
+        );
+        assert!(
+            db.public_recent_matches(
+                AccountId(2),
+                AccountId(1),
+                50,
+                vec![RulesetId("duel".into())]
+            )
+            .await
+            .expect("matches")
+            .is_none()
+        );
+        assert!(
+            db.public_profile(AccountId(2), vec![RulesetId("duel".into())], AccountId(2))
+                .await
+                .expect("own profile")
+                .is_some()
+        );
     }
 
     #[tokio::test]

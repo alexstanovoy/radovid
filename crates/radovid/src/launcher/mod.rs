@@ -30,6 +30,7 @@ const STDERR_LINE_LEN: usize = 300;
 
 /// Everything one launch is made of.
 pub struct LaunchSpec {
+    pub public_identity: Option<String>,
     pub match_id: MatchId,
     pub port: u16,
     /// The ruleset's `cheats_args` are added: a lobby's match whose owner turned them on.
@@ -186,6 +187,10 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
     }
     // Last, so a ruleset's own variable cannot overrule what this radovid reads.
     env.push((RESULT_VERSION_VAR.to_owned(), RESULT_VERSION.to_string()));
+    env.push((
+        "RADOVID_PUBLIC_IDENTITY".into(),
+        spec.public_identity.clone().unwrap_or_default(),
+    ));
     let (mut command, container) = match launcher.kind {
         LauncherKind::Local => {
             let mut command = Command::new(launcher.binary.as_deref().unwrap_or("".as_ref()));

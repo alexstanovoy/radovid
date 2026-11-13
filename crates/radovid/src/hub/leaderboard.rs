@@ -85,6 +85,18 @@ impl Hub {
                     requester: id,
                 }
             }
+            ClientMsg::RecentMatches { account, limit } => Lookup::PublicMatches {
+                account: *account,
+                requester: id,
+                limit: (*limit).min(MAX_RECENT_MATCHES),
+                modes: self
+                    .config
+                    .rulesets
+                    .iter()
+                    .filter(|rule| rule.rated && rule.admits(self.kind_of(id)))
+                    .map(|rule| rule.ruleset_id())
+                    .collect(),
+            },
             ClientMsg::Account { account } => Lookup::Profile {
                 account: *account,
                 requester: id,
@@ -164,7 +176,10 @@ impl Hub {
     }
 }
 
-pub(super) fn is_lookup(message: &ClientMsg) -> bool {
+pub(super) fn is_lookup(message: &ClientMsg, requester: Option<AccountId>) -> bool {
+    if let ClientMsg::RecentMatches { account, .. } = message {
+        return requester != Some(*account);
+    }
     matches!(
         message,
         ClientMsg::Leaderboard { .. }
@@ -176,6 +191,12 @@ pub(super) fn is_lookup(message: &ClientMsg) -> bool {
 }
 
 pub(super) enum Lookup {
+    PublicMatches {
+        account: AccountId,
+        requester: AccountId,
+        limit: u8,
+        modes: Vec<RulesetId>,
+    },
     Avatars {
         accounts: Vec<AvatarQuery>,
         requester: AccountId,
@@ -207,6 +228,17 @@ pub(super) enum Lookup {
 impl Lookup {
     pub(super) async fn run(self, database: &Db) -> Result<Reply, Error> {
         match self {
+            Self::PublicMatches {
+                account,
+                requester,
+                limit,
+                modes,
+            } => database
+                .public_recent_matches(account, requester, limit, modes)
+                .await
+                .map_err(lookup_error)?
+                .map(|list| Reply::Matches { list })
+                .ok_or(Error::UnknownAccount),
             Self::Avatars {
                 accounts,
                 requester,
@@ -516,5 +548,94 @@ mod tests {
         }
         eprintln!("PROBE victim served {victim_served} of 10");
         assert!(victim_served >= 9, "victim starved");
+    }
+}
+
+#[cfg(test)]
+mod public_history_progress_tests {
+    use super::super::matching_tests::Fixture;
+    use super::*;
+    #[tokio::test]
+    async fn a_blocked_public_match_lookup_does_not_block_the_hub() {
+        let mut fixture = Fixture::new();
+        let (account, _) = fixture.account("alpha").await;
+        let db = fixture.hub.db.clone();
+        let row = db
+            .account_by_id(account)
+            .await
+            .expect("read")
+            .expect("account");
+        let (hub, task) = super::super::spawn(Arc::clone(&fixture.hub.config), db.clone());
+        let (events, _receiver) = event_channel();
+        let (reply, answer) = oneshot::channel();
+        hub.tx
+            .send(Cmd::Attach(Box::new(Attach {
+                account: row,
+                token_hash: [0; 32],
+                game_fingerprint: fixture.hub.config.rulesets[0].game_fingerprint,
+                source: "127.0.0.1".parse().expect("source"),
+                events,
+                reply,
+            })))
+            .await
+            .expect("attach");
+        let session = answer.await.expect("reply").expect("session").0;
+        let (held, ready) = std::sync::mpsc::sync_channel(1);
+        let (release, released) = std::sync::mpsc::sync_channel(1);
+        let locked = db.clone();
+        let holder = std::thread::spawn(move || {
+            let guard = locked
+                .lookup_connection_for_test()
+                .lock()
+                .expect("lookup connection");
+            held.send(()).expect("held");
+            released.recv().expect("release");
+            drop(guard);
+        });
+        ready.recv().expect("lookup connection held");
+        let (reply, mut lookup) = oneshot::channel();
+        hub.tx
+            .send(Cmd::Request {
+                session,
+                msg: ClientMsg::RecentMatches {
+                    account: AccountId(9999),
+                    limit: 255,
+                },
+                reply,
+            })
+            .await
+            .expect("lookup");
+        let (reply, cheap) = oneshot::channel();
+        hub.tx
+            .send(Cmd::Request {
+                session,
+                msg: ClientMsg::Limits { ruleset: None },
+                reply,
+            })
+            .await
+            .expect("cheap request");
+        let progress = tokio::time::timeout(Duration::from_secs(1), cheap).await;
+        let early = lookup.try_recv();
+        let blocked = matches!(early, Err(tokio::sync::oneshot::error::TryRecvError::Empty));
+        release.send(()).expect("release lookup");
+        holder.join().expect("holder");
+        if blocked {
+            assert_eq!(
+                lookup.await.expect("lookup answer"),
+                Err(Error::UnknownAccount)
+            );
+        } else {
+            assert_eq!(early.expect("early response"), Err(Error::UnknownAccount));
+        }
+        hub.tx.send(Cmd::Shutdown).await.expect("shutdown");
+        task.await.expect("hub stops");
+        assert!(
+            blocked,
+            "public history must wait for the reader, not use the writer connection"
+        );
+        assert!(
+            matches!(progress, Ok(Ok(Ok(Reply::Limits { .. })))),
+            "matchmaking hub must progress while a reader waits"
+        );
     }
 }

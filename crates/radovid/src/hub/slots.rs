@@ -82,6 +82,11 @@ impl Hub {
             "match {match_id:?}: cheats in a rated or queued match"
         );
         let spec = LaunchSpec {
+            public_identity: self
+                .config
+                .public_identity
+                .as_deref()
+                .and_then(radovid_proto::shareable_matchmaker_identity),
             match_id,
             port,
             cheats: state.cheats,

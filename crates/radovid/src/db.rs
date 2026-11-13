@@ -2,6 +2,7 @@
 
 mod avatar;
 mod leaderboard;
+mod public_matches;
 mod reader;
 mod results;
 #[cfg(test)]
@@ -409,6 +410,7 @@ impl Db {
                 )));
             }
         }
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS ratings_account_visibility ON ratings(account,games,hidden);")?;
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
             readers: None,
@@ -1125,10 +1127,17 @@ fn write_finish(
 }
 
 fn load_result(c: &Connection, id: i64) -> rusqlite::Result<MatchResult> {
+    load_result_projection(c, id, true)
+}
+fn load_result_projection(
+    c: &Connection,
+    id: i64,
+    include_report: bool,
+) -> rusqlite::Result<MatchResult> {
     let (ruleset, rated, outcome, winner, reason, duration, report, finished_at) = c.query_row(
-        "SELECT ruleset, rated, outcome, winner, reason, duration_ms, report, finished_at
+        "SELECT ruleset, rated, outcome, winner, reason, duration_ms, CASE WHEN ?2 THEN report END, finished_at
          FROM matches WHERE id = ?1",
-        [id],
+        params![id,include_report],
         |row| {
             Ok((
                 row.get::<_, String>(0)?,

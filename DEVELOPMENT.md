@@ -43,6 +43,13 @@ by an admin), `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>
 numbered team by team. Tickets may only go into `env` (arguments show in process listings). A ticket is 32 random
 bytes; the game checks it in constant time and decides what it allows: a seat, a reconnect, watching.
 
+The optional top-level `public_identity` is the shareable ws/wss control-service address. It is
+validated without DNS lookup; local/private IP literals, single-label names and credentials are refused.
+The launcher passes its canonical identity as `RADOVID_PUBLIC_IDENTITY` to every game process
+(empty when unconfigured). This identifies the service; it grants no authority and carries no credentials.
+A game that records public account provenance may combine it with `{accounts}`. An absent identity
+must not prevent a match from running.
+
 A `docker` launcher runs `docker run --rm` attached, one container per match, publishing `<publish_address>:{port}` to
 `container_port`, always `--read-only`, `--cap-drop ALL`, `no-new-privileges`, labelled `radovid.match`, with the
 environment passed by name only. A `local` one runs the binary as a child process (development: bind the game to

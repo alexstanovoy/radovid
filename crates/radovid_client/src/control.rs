@@ -1,5 +1,8 @@
 //! The protocol of `/control` without I/O.
 
+#[cfg(test)]
+use radovid_proto::{same_matchmaker, shareable_matchmaker_identity};
+
 use radovid_proto::*;
 
 use crate::ClientError;
@@ -128,16 +131,7 @@ impl Control {
     }
 }
 
-/// The control URL of a service: `wss://host[:port]` with `/control`
-/// appended unless it is there already.
-pub fn control_url(url: &str) -> String {
-    let url = url.trim_end_matches('/');
-    if url.ends_with("/control") {
-        url.to_owned()
-    } else {
-        format!("{url}/control")
-    }
-}
+pub use radovid_proto::control_url;
 
 #[cfg(test)]
 mod tests {
@@ -183,5 +177,60 @@ mod tests {
         assert!(
             matches!(Control::new().receive(&encoded),Err(ClientError::Protocol(message)) if message=="invalid avatar image envelope")
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    #[test]
+    fn private_and_local_names_have_no_shareable_matchmaker_identity() {
+        for value in [
+            "ws://127.0.0.1:7000",
+            "ws://127.1",
+            "ws://0177.0.0.1",
+            "ws://0x7f.0.0.1",
+            "ws://0x7f.0x0.0x0.0x1",
+            "wss://10.0.0.1",
+            "ws://172.16.1.2",
+            "ws://192.168.1.5",
+            "ws://169.254.1.2",
+            "ws://[::1]",
+            "ws://[fe80::1]",
+            "ws://[fc00::1]",
+            "ws://[::ffff:127.0.0.1]",
+            "ws://localhost",
+            "wss://control",
+            "ws://control.local",
+        ] {
+            assert_eq!(
+                shareable_matchmaker_identity(value),
+                None,
+                "{value} is not a portable identity"
+            );
+        }
+        assert_eq!(
+            shareable_matchmaker_identity("WSS://MATCH.example:443/"),
+            Some("wss://match.example/control".into())
+        );
+        assert!(same_matchmaker(
+            "wss://MATCH.example/",
+            "wss://match.example:443/control"
+        ));
+        assert!(!same_matchmaker(
+            "wss://match.example/a",
+            "wss://match.example/b"
+        ));
+        for value in [
+            "wss://user:secret@match.example",
+            "not a URI",
+            "wss://match.example?token=x",
+            "wss://match.example:bogus",
+        ] {
+            assert!(
+                !same_matchmaker(value, value),
+                "invalid identity never compares equal"
+            );
+        }
     }
 }

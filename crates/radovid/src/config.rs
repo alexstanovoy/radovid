@@ -16,6 +16,9 @@ use crate::template;
 pub struct Config {
     /// Where the one TLS listener binds.
     pub listen: SocketAddr,
+    /// Portable public control-service identity passed to launched games, never a bind address.
+    #[serde(default)]
+    pub public_identity: Option<String>,
     /// The SQLite file.
     pub database: PathBuf,
     /// PEM certificate chain and private key of the listener; reread on SIGHUP.
@@ -609,6 +612,13 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if self.public_identity.as_ref().is_some_and(|identity| {
+            radovid_proto::shareable_matchmaker_identity(identity).is_none()
+        }) {
+            return Err(
+                "public_identity must be a shareable ws/wss control service identity".into(),
+            );
+        }
         if self.rulesets.is_empty() {
             return Err("no ruleset is configured".to_owned());
         }
@@ -1534,5 +1544,27 @@ public_url = "wss://x.example:{port}"
         .expect("a ruleset");
         assert_eq!(ruleset.max_duration_secs, DEFAULT_MAX_DURATION_SECS);
         assert!(ruleset.max_duration_secs >= 2 * 60 * 60);
+    }
+}
+
+#[cfg(test)]
+mod public_identity_tests {
+    use super::*;
+    #[test]
+    fn configured_public_identity_cannot_disclose_a_local_or_credential_bearing_address() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../radovid.example.toml");
+        let mut config = Config::load(&path).expect("config");
+        for value in [
+            "ws://localhost:7000",
+            "ws://127.0.0.1",
+            "ws://192.168.1.5",
+            "wss://user:secret@match.example",
+            "wss://match.example?token=x",
+        ] {
+            config.public_identity = Some(value.into());
+            assert!(config.validate().is_err());
+        }
+        config.public_identity = Some("WSS://MATCH.example:443/".into());
+        assert!(config.validate().is_ok());
     }
 }

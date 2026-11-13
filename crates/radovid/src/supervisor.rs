@@ -186,6 +186,7 @@ mod tests {
         )
         .expect("rules");
         let spec = LaunchSpec {
+            public_identity: None,
             match_id: MatchId(1),
             port: 1,
             cheats: false,

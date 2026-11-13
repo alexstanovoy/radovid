@@ -286,3 +286,172 @@ async fn another_players_public_match_list_omits_the_participants_opaque_report(
         "the participant keeps their own report"
     );
 }
+
+#[tokio::test]
+async fn public_match_history_follows_ban_hidden_and_deleted_profile_visibility() {
+    let mut fixture = Fixture::new();
+    let (hidden, _) = fixture.account("hidden").await;
+    let (other, _) = fixture.account("other").await;
+    let (_, viewer) = fixture.account("viewer").await;
+    let seats = vec![
+        crate::db::NewSeat {
+            account: hidden,
+            slot: 0,
+            team: 0,
+        },
+        crate::db::NewSeat {
+            account: other,
+            slot: 1,
+            team: 1,
+        },
+    ];
+    let game = fixture
+        .hub
+        .db
+        .create_match(RulesetId("ranked".into()), true, seats.clone())
+        .await
+        .expect("match");
+    fixture
+        .hub
+        .db
+        .finish_match(crate::db::Finish {
+            match_id: game,
+            ruleset: RulesetId("ranked".into()),
+            rate: true,
+            outcome: Outcome::Winner { team: 0 },
+            reason: EndReason::Decided,
+            duration_ms: 1000,
+            report: vec![7, 8, 9],
+            seats,
+            finished_at: UnixMs(1000),
+        })
+        .await
+        .expect("finish");
+    fixture
+        .hub
+        .db
+        .set_ban(
+            hidden,
+            Some(crate::db::Ban {
+                reason: "fixture".into(),
+                until: None,
+            }),
+        )
+        .await
+        .expect("ban");
+    assert_eq!(
+        fixture
+            .hub
+            .request(viewer, ClientMsg::Account { account: hidden })
+            .await,
+        Err(Error::UnknownAccount)
+    );
+    assert_eq!(
+        fixture
+            .hub
+            .request(
+                viewer,
+                ClientMsg::RecentMatches {
+                    account: hidden,
+                    limit: 50
+                }
+            )
+            .await,
+        Err(Error::UnknownAccount),
+        "a banned profile must not be discoverable through another endpoint"
+    );
+    let Reply::Matches { list } = fixture
+        .hub
+        .request(
+            viewer,
+            ClientMsg::RecentMatches {
+                account: other,
+                limit: 50,
+            },
+        )
+        .await
+        .expect("other public history")
+    else {
+        panic!("list")
+    };
+    let seat = &list[0].seats[0];
+    assert_eq!(seat.account, hidden);
+    assert_eq!(seat.nickname, "hidden");
+    assert!(seat.before.is_none());
+    assert!(seat.after.is_none());
+    fixture.hub.db.delete_account(hidden).await.expect("delete");
+    // A different requester keeps the visibility checks independent of quota exhaustion.
+    let (_, fresh) = fixture.account("fresh").await;
+    assert_eq!(
+        fixture
+            .hub
+            .request(fresh, ClientMsg::Account { account: hidden })
+            .await,
+        Err(Error::UnknownAccount)
+    );
+    assert_eq!(
+        fixture
+            .hub
+            .request(
+                fresh,
+                ClientMsg::RecentMatches {
+                    account: hidden,
+                    limit: 50
+                }
+            )
+            .await,
+        Err(Error::UnknownAccount)
+    );
+    let Reply::Matches { list } = fixture
+        .hub
+        .request(
+            fresh,
+            ClientMsg::RecentMatches {
+                account: other,
+                limit: 50,
+            },
+        )
+        .await
+        .expect("retained match")
+    else {
+        panic!("list")
+    };
+    assert_eq!(list[0].seats[0].nickname, DELETED_NICKNAME);
+    assert!(list[0].seats[0].before.is_none());
+    assert!(list[0].seats[0].after.is_none());
+}
+
+#[tokio::test]
+async fn public_match_reads_and_profile_avatar_reads_spend_one_mixed_quota() {
+    let mut fixture = Fixture::new();
+    let (target, _) = fixture.account("target").await;
+    let (_, viewer) = fixture.account("viewer").await;
+    fixture.hub.lookup_clock = Some(std::time::Instant::now());
+    for message in [
+        ClientMsg::Account { account: target },
+        ClientMsg::RecentMatches {
+            account: target,
+            limit: 255,
+        },
+        ClientMsg::GetAvatar { account: target },
+        ClientMsg::RecentMatches {
+            account: target,
+            limit: 1,
+        },
+    ] {
+        fixture
+            .hub
+            .request(viewer, message)
+            .await
+            .expect("four mixed reads");
+    }
+    assert_eq!(
+        fixture
+            .hub
+            .request(viewer, ClientMsg::Account { account: target })
+            .await,
+        Err(Error::Throttled {
+            retry_after_ms: 250
+        })
+    );
+}

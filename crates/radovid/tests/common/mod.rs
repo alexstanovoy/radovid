@@ -284,6 +284,7 @@ pub fn try_start(
     let dir = test_dir();
     let identity = self_signed();
     let mut config = Config {
+        public_identity: None,
         web: None,
         listen: "127.0.0.1:0".parse().expect("address"),
         database: dir.join("radovid.db"),
