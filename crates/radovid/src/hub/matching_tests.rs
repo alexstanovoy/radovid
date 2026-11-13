@@ -676,3 +676,257 @@ async fn pairing_waits_for_pending_results_so_cached_queue_ratings_cannot_be_sta
         "do not pair from cached ratings while a completed result is uncommitted"
     );
 }
+
+async fn ready_custom_lobby() -> (Fixture, SessionId, SessionId, LobbyId) {
+    let mut fixture = Fixture::new();
+    Arc::make_mut(&mut fixture.hub.config).lobby_teams = vec![1, 1];
+    let (_, owner) = fixture.account("host").await;
+    let (_, guest) = fixture.account("guest").await;
+    let Reply::Lobby { state } = fixture
+        .hub
+        .request(
+            owner,
+            ClientMsg::LobbyCreate {
+                ruleset: RulesetId("casual".into()),
+                name: "Weekend game".into(),
+                audience: Audience::Everyone,
+                password: None,
+            },
+        )
+        .await
+        .expect("create")
+    else {
+        panic!("lobby reply");
+    };
+    let lobby = state.id;
+    fixture
+        .hub
+        .request(
+            guest,
+            ClientMsg::LobbyJoin {
+                lobby,
+                password: None,
+            },
+        )
+        .await
+        .expect("join");
+    fixture
+        .hub
+        .request(guest, ClientMsg::LobbyReady { lobby, ready: true })
+        .await
+        .expect("guest ready");
+    (fixture, owner, guest, lobby)
+}
+
+#[tokio::test]
+async fn the_host_cancels_a_start_and_the_expired_callback_keeps_the_room_open() {
+    let (mut fixture, host, guest, lobby) = ready_custom_lobby().await;
+    tokio::time::pause();
+    fixture
+        .hub
+        .request(host, ClientMsg::LobbyReady { lobby, ready: true })
+        .await
+        .expect("start");
+    tokio::task::yield_now().await;
+    assert_eq!(
+        fixture
+            .hub
+            .request(
+                guest,
+                ClientMsg::LobbyReady {
+                    lobby,
+                    ready: false
+                }
+            )
+            .await,
+        Err(Error::Starting),
+        "only the host can stop the start"
+    );
+    assert_eq!(
+        fixture
+            .hub
+            .request(
+                host,
+                ClientMsg::LobbyReady {
+                    lobby,
+                    ready: false
+                }
+            )
+            .await,
+        Ok(Reply::Done),
+        "the host can stop the start with the existing ready operation"
+    );
+    let state = fixture.hub.lobbies.get(&lobby).expect("room remains");
+    assert!(state.starting.is_none());
+    assert!(
+        state
+            .members
+            .iter()
+            .filter(|member| member.account != state.owner)
+            .all(|member| member.ready)
+    );
+    assert!(
+        state
+            .members
+            .iter()
+            .filter(|member| member.account == state.owner)
+            .all(|member| !member.ready)
+    );
+    let mut latest = None;
+    for _ in 0..64 {
+        let Ok(event) = fixture.events[1].try_recv() else {
+            break;
+        };
+        if let ServerMsg::Event(Event::LobbyState { state }) = event {
+            latest = Some(state);
+        }
+    }
+    assert!(
+        latest
+            .expect("the guest receives the cancellation")
+            .starting_in_ms
+            .is_none()
+    );
+    tokio::time::advance(Duration::from_millis(u64::from(LOBBY_COUNTDOWN_MS))).await;
+    fixture.hub.countdown_done(lobby).await;
+    assert!(
+        fixture.hub.lobbies.contains_key(&lobby),
+        "an already queued cancelled callback cannot close the room"
+    );
+    assert!(
+        fixture.hub.matches.is_empty(),
+        "the cancelled timer cannot form a match"
+    );
+}
+
+#[tokio::test]
+async fn restarting_a_cancelled_lobby_ignores_the_old_timer_until_the_new_deadline() {
+    let (mut fixture, host, _, lobby) = ready_custom_lobby().await;
+    tokio::time::pause();
+    fixture
+        .hub
+        .request(host, ClientMsg::LobbyReady { lobby, ready: true })
+        .await
+        .expect("first start");
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(2)).await;
+    fixture
+        .hub
+        .request(
+            host,
+            ClientMsg::LobbyReady {
+                lobby,
+                ready: false,
+            },
+        )
+        .await
+        .expect("cancel");
+    fixture
+        .hub
+        .request(host, ClientMsg::LobbyReady { lobby, ready: true })
+        .await
+        .expect("restart");
+    tokio::task::yield_now().await;
+    let deadline = fixture
+        .hub
+        .lobbies
+        .get(&lobby)
+        .expect("restarted room")
+        .starting
+        .expect("deadline");
+    tokio::time::advance(Duration::from_secs(3)).await;
+    fixture.hub.countdown_done(lobby).await;
+    assert!(
+        fixture.hub.lobbies.contains_key(&lobby),
+        "the old timer cannot launch the restarted match early"
+    );
+    assert!(fixture.hub.matches.is_empty());
+    // Deliver queued callbacks at exact instants, independently of timer-wheel rounding.
+    let before = deadline - Duration::from_millis(1);
+    tokio::time::advance(before - tokio::time::Instant::now()).await;
+    assert_eq!(tokio::time::Instant::now(), before);
+    fixture.hub.countdown_done(lobby).await;
+    assert!(
+        fixture.hub.lobbies.contains_key(&lobby),
+        "one tick before the deadline the room stays open"
+    );
+    assert!(fixture.hub.matches.is_empty());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert_eq!(tokio::time::Instant::now(), deadline);
+    fixture.hub.countdown_done(lobby).await;
+    assert!(!fixture.hub.lobbies.contains_key(&lobby));
+    assert_eq!(
+        fixture.hub.matches.len(),
+        1,
+        "the current deadline forms exactly one match"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_and_restarting_a_lobby_keeps_exactly_one_pending_timer() {
+    let (mut fixture, host, _, lobby) = ready_custom_lobby().await;
+    tokio::time::pause();
+    let runtime = tokio::runtime::Handle::current();
+    let baseline = runtime.metrics().num_alive_tasks();
+    for _ in 0..4 {
+        fixture
+            .hub
+            .request(host, ClientMsg::LobbyReady { lobby, ready: true })
+            .await
+            .expect("start");
+        tokio::task::yield_now().await;
+        assert_eq!(
+            runtime.metrics().num_alive_tasks(),
+            baseline + 1,
+            "one current countdown task"
+        );
+        fixture
+            .hub
+            .request(
+                host,
+                ClientMsg::LobbyReady {
+                    lobby,
+                    ready: false,
+                },
+            )
+            .await
+            .expect("cancel");
+        tokio::task::yield_now().await;
+        assert_eq!(
+            runtime.metrics().num_alive_tasks(),
+            baseline,
+            "cancellation leaves no sleeping task"
+        );
+    }
+    fixture
+        .hub
+        .request(host, ClientMsg::LobbyReady { lobby, ready: true })
+        .await
+        .expect("restart");
+    tokio::task::yield_now().await;
+    assert_eq!(
+        runtime.metrics().num_alive_tasks(),
+        baseline + 1,
+        "restart leaves exactly one pending timer"
+    );
+    tokio::time::advance(Duration::from_millis(u64::from(LOBBY_COUNTDOWN_MS) + 1)).await;
+    let command = tokio::time::timeout(Duration::from_secs(1), fixture._commands.recv())
+        .await
+        .expect("current countdown callback")
+        .expect("hub command");
+    let Cmd::CountdownDone { lobby: fired } = command else {
+        panic!("countdown command");
+    };
+    assert_eq!(fired, lobby);
+    assert!(
+        fixture._commands.try_recv().is_err(),
+        "cancelled sleeps produce no extra callback"
+    );
+    fixture.hub.countdown_done(fired).await;
+    assert!(!fixture.hub.lobbies.contains_key(&lobby));
+    assert_eq!(
+        fixture.hub.matches.len(),
+        1,
+        "the current timer still launches the game"
+    );
+}

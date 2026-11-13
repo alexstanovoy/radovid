@@ -1,5 +1,5 @@
 //! Lobbies: custom unrated games with an owner, a unique name, an optional
-//! password, readiness and a countdown nobody can cancel. Whoever may sit in a
+//! password, readiness and a countdown the host can cancel. Whoever may sit in a
 //! lobby (it is open, or the password is right) is in at once. An account may
 //! sit in several.
 
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use radovid_proto::*;
-use tokio::time::Instant;
+use tokio::{task::JoinHandle, time::Instant};
 
 use super::matches::Origin;
 use super::{Cmd, Hub, SessionId, internal, millis_until};
@@ -20,6 +20,14 @@ pub(super) struct Member {
     pub ready: bool,
     pub rating: Option<Rating>,
     pub source: IpAddr,
+}
+
+// Timer ownership follows the room, including cancellation and removal.
+struct CountdownTask(JoinHandle<()>);
+impl Drop for CountdownTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 pub(super) struct Lobby {
@@ -36,6 +44,7 @@ pub(super) struct Lobby {
     /// The owner turned the game's cheats on; they hold while the ruleset has them.
     pub cheats: bool,
     pub starting: Option<Instant>,
+    countdown_task: Option<CountdownTask>,
 }
 
 impl Lobby {
@@ -280,6 +289,7 @@ impl Hub {
                 source,
             }],
             starting: None,
+            countdown_task: None,
             cheats: false,
         };
         let state = self.lobby_state(&lobby);
@@ -552,6 +562,16 @@ impl Hub {
 
     fn lobby_ready(&mut self, id: AccountId, lobby: LobbyId, ready: bool) -> Result<Reply, Error> {
         self.member_of(id, lobby)?;
+        let room = self.lobbies.get_mut(&lobby).ok_or(Error::UnknownLobby)?;
+        if room.starting.is_some() && room.owner == id && !ready {
+            room.starting = None;
+            drop(room.countdown_task.take());
+            if let Some(host) = room.members.iter_mut().find(|member| member.account == id) {
+                host.ready = false;
+            }
+            self.broadcast_lobby(lobby, None);
+            return Ok(Reply::Done);
+        }
         self.not_starting(lobby)?;
         let rules = self
             .lobbies
@@ -598,7 +618,13 @@ impl Hub {
         let Some(l) = self.lobbies.get_mut(&lobby) else {
             return;
         };
-        l.starting = Some(Instant::now() + countdown);
+        let deadline = Instant::now() + countdown;
+        l.starting = Some(deadline);
+        let me = self.me.clone();
+        l.countdown_task = Some(CountdownTask(tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            let _ = me.send(Cmd::CountdownDone { lobby }).await;
+        })));
         let members: Vec<AccountId> = l.members.iter().map(|m| m.account).collect();
         for member in members {
             self.notify(
@@ -610,14 +636,18 @@ impl Hub {
             );
         }
         self.broadcast_lobby(lobby, None);
-        let me = self.me.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(countdown).await;
-            let _ = me.send(Cmd::CountdownDone { lobby }).await;
-        });
     }
 
     pub(super) async fn countdown_done(&mut self, lobby: LobbyId) {
+        // A cancelled clock may still deliver its callback after another start.
+        let due = self
+            .lobbies
+            .get(&lobby)
+            .and_then(|room| room.starting)
+            .is_some_and(|deadline| deadline <= Instant::now());
+        if !due {
+            return;
+        }
         let Some(l) = self.lobbies.remove(&lobby) else {
             return;
         };

@@ -1,5 +1,5 @@
 //! Custom games: names, search and passwords, joining at once, kicks,
-//! readiness, the countdown nobody can cancel, the lobby closing with its
+//! readiness, the host-controlled countdown, the lobby closing with its
 //! owner, and several lobbies per account.
 
 mod common;
@@ -149,7 +149,7 @@ fn a_lobby_fills_kicks_counts_down_and_starts_an_unrated_match() {
     });
     assert_eq!(in_ms, LOBBY_COUNTDOWN_MS);
 
-    // Nobody can cancel it.
+    // Guests cannot cancel it, and leaving is blocked until the start ends.
     assert_eq!(
         guest.ask(ClientMsg::LobbyLeave { lobby }),
         Err(Error::Starting)
