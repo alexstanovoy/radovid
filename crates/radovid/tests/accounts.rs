@@ -473,7 +473,8 @@ fn a_deleted_account_is_gone_but_its_matches_stay_anonymous() {
         panic!("matches");
     };
     assert_eq!(list[0].match_id, handoff.match_id);
-    assert_eq!(list[0].seats[0].nickname, "deleted");
+    assert_eq!(list[0].seats[0].account, AccountId(0));
+    assert_eq!(list[0].seats[0].nickname, "");
     let Ok(Reply::LadderPage { total, rows }) = fred.ask(ClientMsg::Ladder {
         ruleset: solo(),
         offset: 0,

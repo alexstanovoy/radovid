@@ -192,6 +192,19 @@ fn launch(accounts: &mut [Account], game: &str) -> Vec<Handoff> {
     accounts.iter_mut().map(Account::wait_match_found).collect()
 }
 
+/// The service meters lookups per account in real time; wait out the advertised delay.
+fn ask_lookup(account: &mut Account, message: ClientMsg) -> Reply {
+    for _ in 0..8 {
+        match account.ask(message.clone()) {
+            Err(Error::Throttled { retry_after_ms }) => {
+                std::thread::sleep(Duration::from_millis(retry_after_ms.into()))
+            }
+            other => return other.expect("lookup"),
+        }
+    }
+    panic!("lookup stayed throttled");
+}
+
 fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchResult {
     let result = accounts[0].wait_result();
     assert!(result.rated);
@@ -230,13 +243,13 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
             .iter()
             .position(|account| account.me.id == seat.account)
             .expect("participant");
-        let Reply::Matches { list } = accounts[owner]
-            .ask(ClientMsg::RecentMatches {
+        let Reply::Matches { list } = ask_lookup(
+            &mut accounts[owner],
+            ClientMsg::RecentMatches {
                 account: seat.account,
                 limit: 1,
-            })
-            .expect("own history")
-        else {
+            },
+        ) else {
             panic!("own matches")
         };
         assert_eq!(
@@ -246,13 +259,13 @@ fn finished(accounts: &mut [Account], expected: Outcome, game: &str) -> MatchRes
         );
         let viewer = (owner + 1) % accounts.len();
         assert_ne!(accounts[viewer].me.id, seat.account);
-        let Reply::Matches { list } = accounts[viewer]
-            .ask(ClientMsg::RecentMatches {
+        let Reply::Matches { list } = ask_lookup(
+            &mut accounts[viewer],
+            ClientMsg::RecentMatches {
                 account: seat.account,
                 limit: 1,
-            })
-            .expect("public history")
-        else {
+            },
+        ) else {
             panic!("public matches")
         };
         let mut public = result.clone();
