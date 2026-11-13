@@ -112,6 +112,7 @@ impl Hub {
         state.told_ahead = Some(0);
         let accounts: Vec<AccountId> = state.seats.iter().map(|s| s.account).collect();
         let supervisor = Supervisor {
+            patience: self.config.patience,
             match_id,
             ruleset: ruleset.clone(),
             rated: state.rated,

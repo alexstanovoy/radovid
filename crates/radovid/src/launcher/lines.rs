@@ -3,7 +3,8 @@
 //! is ignored; a line longer than any `RESULT` can be is skipped whole.
 //!
 //! The first three fields are fixed and in this order. The rest are `key=value` fields in any
-//! order, each key once: `left=<slot>`, `replay=truncated` (version 2), `v=<n>`. A key radovid does not know
+//! order, each key once: `left=<slot>`, `replay=truncated` (version 2), `aborted=<why>` (version 3),
+//! `v=<n>`. A key radovid does not know
 //! is skipped, so a game may add facts without breaking the radovid that reads it; a game that
 //! changes what a field means says so with `v=<n>` (absent: 1), and a radovid that knows only
 //! older versions refuses the line (DEVELOPMENT.md "Launcher contract").
@@ -14,16 +15,44 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use crate::config::decode_hex;
 
 /// The newest `RESULT` version this radovid reads: 1 is the line of the first games, 2 adds
-/// `replay=truncated`. Every game is told it (`RADOVID_RESULT_VERSION`), and prints the fields
+/// `replay=truncated`, 3 adds `aborted=<why>`. Every game is told it (`RADOVID_RESULT_VERSION`), and prints the fields
 /// of newer versions only when it is.
-pub const RESULT_VERSION: u16 = 2;
+pub const RESULT_VERSION: u16 = 3;
+/// The version that has `aborted=<why>`.
+const ABORTED_VERSION: u16 = 3;
 /// The variable that tells a game [`RESULT_VERSION`].
 pub const RESULT_VERSION_VAR: &str = "RADOVID_RESULT_VERSION";
+/// The variable that tells a game how many seconds a match of its ruleset may last
+/// (`max_duration_secs`), counted from the game's own start: a game that wants to warn its players
+/// and end the match itself, rather than be stopped, uses it.
+pub const MAX_DURATION_VAR: &str = "RADOVID_MAX_DURATION_SECS";
 /// The most fields after the report: a line cannot make the parser do unbounded work.
 const MAX_EXTRA_FIELDS: usize = 16;
 
 /// The longest line read: a `RESULT` with the largest report.
 const MAX_LINE: usize = 2 * MAX_GAME_REPORT_LEN + 128;
+
+/// Why a game ended a match it did not play to its end (`aborted=<why>`, version 3). The match
+/// counts for nothing, as one the service stopped does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Aborted {
+    /// `time_limit`: the game ended the match at the time limit it was told
+    /// ([`MAX_DURATION_VAR`]).
+    TimeLimit,
+    /// `stopped`: the service asked the game to finish.
+    Stopped,
+}
+
+impl Aborted {
+    /// A reason this radovid knows; any other makes the line malformed, as a damaged field does.
+    fn of(why: &str) -> Option<Self> {
+        match why {
+            "time_limit" => Some(Self::TimeLimit),
+            "stopped" => Some(Self::Stopped),
+            _ => None,
+        }
+    }
+}
 
 /// A line of the contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +74,9 @@ pub struct GameResult {
     pub left: Option<u8>,
     /// The game says its artifact was closed short of the match's end (a size limit).
     pub artifact_truncated: bool,
+    /// The game ended the match without playing it out: it counts for nothing, whoever `winner`
+    /// names.
+    pub aborted: Option<Aborted>,
 }
 
 /// Reads lines of bounded length.
@@ -131,8 +163,10 @@ fn parse_result(rest: &str) -> Option<GameResult> {
         report,
         left: None,
         artifact_truncated: false,
+        aborted: None,
     };
     let mut seen = Vec::new();
+    let mut version = 1;
     for (count, field) in fields.enumerate() {
         let (key, value) = field.split_once('=').filter(|(key, _)| !key.is_empty())?;
         if count >= MAX_EXTRA_FIELDS || seen.contains(&key) {
@@ -142,9 +176,19 @@ fn parse_result(rest: &str) -> Option<GameResult> {
         match key {
             "left" => result.left = Some(value.parse().ok()?),
             "replay" => result.artifact_truncated = value == "truncated",
-            "v" if value.parse::<u16>().ok()? > RESULT_VERSION => return None,
+            "aborted" => result.aborted = Some(Aborted::of(value)?),
+            "v" => {
+                version = value.parse::<u16>().ok()?;
+                if version > RESULT_VERSION {
+                    return None;
+                }
+            }
             _ => {}
         }
+    }
+    // A field is read only on a line that says it is of the version that has it.
+    if result.aborted.is_some() && version < ABORTED_VERSION {
+        return None;
     }
     Some(result)
 }
@@ -170,7 +214,7 @@ mod tests {
         let newer = parsed(" replay=truncated future=whatever left=0 v=2").expect("skipped");
         assert!(newer.artifact_truncated && newer.left == Some(0));
         for bad in [
-            " v=3",
+            " v=4",
             " left",
             " =x",
             " left=0 left=1",
@@ -182,5 +226,31 @@ mod tests {
         }
         let many = (0..=MAX_EXTRA_FIELDS).fold(String::new(), |s, i| format!("{s} k{i}=1"));
         assert!(parsed(&many).is_none(), "an endless tail is refused");
+    }
+
+    /// Version 3: a game says it ended the match without playing it out, and why. A reason this
+    /// radovid does not know, or the field on a line of an older version, is a malformed line.
+    #[test]
+    fn an_aborted_result_names_its_reason_and_an_unknown_one_or_an_unversioned_one_is_refused() {
+        assert_eq!(parsed("").expect("plain").aborted, None);
+        for (field, expected) in [
+            (" aborted=time_limit v=3", Aborted::TimeLimit),
+            (" aborted=stopped v=3", Aborted::Stopped),
+        ] {
+            assert_eq!(
+                parsed(field).expect(field).aborted,
+                Some(expected),
+                "{field}"
+            );
+        }
+        for bad in [
+            " aborted=something_later v=3",
+            " aborted=stopped",
+            " aborted=stopped v=2",
+            " aborted= v=3",
+            " aborted=stopped aborted=stopped v=3",
+        ] {
+            assert!(parsed(bad).is_none(), "{bad:?} is refused");
+        }
     }
 }

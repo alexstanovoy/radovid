@@ -1,6 +1,7 @@
 //! The service's configuration file. Everything radovid knows about a game is
 //! here: its rulesets, and how to launch one game server per match.
 
+use crate::supervisor::Patience;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -50,6 +51,10 @@ pub struct Config {
     pub web: Option<WebConfig>,
     #[serde(rename = "ruleset")]
     pub rulesets: Vec<RulesetConfig>,
+    /// How long a supervisor waits on a game server at each step: never in a file, a test sets
+    /// it to wait no limit out ([`Patience`]).
+    #[serde(skip)]
+    pub patience: Patience,
 }
 
 /// What the service keeps of the matches it hosts besides their results.
@@ -290,8 +295,12 @@ pub struct RulesetConfig {
     /// Hex bytes shown to clients as `RulesetInfo.info`.
     #[serde(default, deserialize_with = "hex_bytes")]
     pub info: Vec<u8>,
-    /// A match still running after this long is stopped (a null). Absent: [`DEFAULT_MAX_DURATION_SECS`],
-    /// room for a long match of any game; a ruleset of short matches sets its own.
+    /// A match still running after this long is asked to finish and, failing that, killed (a null,
+    /// never rated); the game is told this limit (`RADOVID_MAX_DURATION_SECS`) so that it can warn
+    /// its players and end the match itself. It is a backstop against stuck and endless games,
+    /// not a rule of the game, so keep it above the longest legitimate match. Absent:
+    /// [`DEFAULT_MAX_DURATION_SECS`], room for a long match of any game; a ruleset of short
+    /// matches sets its own.
     #[serde(default = "default_max_duration")]
     pub max_duration_secs: u64,
     /// The most MiB one artifact of this ruleset may have; absent: `limits.artifact_max_mib`.

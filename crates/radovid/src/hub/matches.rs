@@ -12,7 +12,7 @@ use tokio::sync::oneshot;
 use super::{Hub, SessionId, internal};
 use crate::config::RulesetConfig;
 use crate::db::{Finish, NewSeat, now_ms};
-use crate::supervisor::End;
+use crate::supervisor::{End, Ending};
 
 pub(super) struct SeatState {
     pub account: AccountId,
@@ -302,6 +302,18 @@ impl Hub {
                 (Outcome::Null, EndReason::Crashed, 0, Vec::new())
             }
             End::Stopped => (Outcome::Null, EndReason::Stopped, 0, Vec::new()),
+            End::TimedOut => (Outcome::Null, EndReason::TimeLimit, 0, Vec::new()),
+            // The game's own account of a match it ended unplayed: kept for the seats, rated for
+            // no one, and ended for the reason the service had.
+            End::Aborted(result, ending) => (
+                Outcome::Null,
+                match ending {
+                    Ending::TimeLimit => EndReason::TimeLimit,
+                    Ending::Stopped => EndReason::Stopped,
+                },
+                result.duration_ms,
+                result.report,
+            ),
         };
         let (outcome, reason) = if state.rated
             && matches!(outcome,Outcome::Winner{team} if !state.seats.iter().any(|seat|seat.team==team))

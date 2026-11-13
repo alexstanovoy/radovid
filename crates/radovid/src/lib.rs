@@ -17,7 +17,7 @@ pub mod private;
 pub mod rating;
 mod server;
 pub mod service;
-mod supervisor;
+pub mod supervisor;
 pub mod template;
 pub mod throttle;
 pub mod tls;

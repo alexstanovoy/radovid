@@ -465,7 +465,7 @@ fn a_game_whose_stderr_is_no_text_still_reports_its_result() {
 }
 
 #[test]
-fn a_game_that_never_gets_ready_or_runs_too_long_is_stopped() {
+fn a_game_that_never_gets_ready_or_runs_too_long_is_ended() {
     let mut never = ruleset("solo", true, "noready", "0");
     never.launcher.start_timeout_secs = 1;
     let env = start(vec![never]);
@@ -483,7 +483,146 @@ fn a_game_that_never_gets_ready_or_runs_too_long_is_stopped() {
     let env = start(vec![long]);
     let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
     pair_up(&mut a, &mut b, &solo());
-    assert_eq!(a.wait_result().reason, EndReason::Stopped);
+    assert_eq!(
+        a.wait_result().reason,
+        EndReason::TimeLimit,
+        "the limit, which the service enforced, is the reason it records"
+    );
+}
+
+/// The limit is told to the game (the environment): a game that says `time_limit` at it (here when
+/// the service asks, which is at its limit and tens of milliseconds, the test service's second
+/// being a tenth of one) has the match recorded as the time limit's, with its account.
+#[test]
+fn a_game_that_ends_its_match_at_the_limit_it_was_told_is_recorded_as_a_time_limit() {
+    let mut limited = ruleset("solo", true, "limited", "0");
+    limited.max_duration_secs = 2;
+    let env = start(vec![limited]);
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = a.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason, result.duration_ms),
+        (Outcome::Null, EndReason::TimeLimit, 888)
+    );
+    assert!(!result.game_report.is_empty(), "the game's account is kept");
+    assert!(
+        result.seats.iter().all(|seat| seat.after.is_none()),
+        "an aborted match rates nobody"
+    );
+    let Ok(Reply::LadderPage { total, .. }) = b.ask(ClientMsg::Ladder {
+        ruleset: solo(),
+        offset: 0,
+        limit: 10,
+    }) else {
+        panic!("ladder");
+    };
+    assert_eq!(total, 0, "and enters no ladder");
+}
+
+/// The service that has to end a match asks the game to finish it before it kills it: the
+/// limit as well as an admin. The reason is the service's own: the game's answer to a request is
+/// `stopped`, and the match ends as the limit's.
+#[test]
+fn a_game_asked_to_finish_at_the_limit_answers_and_the_match_ends_as_the_limit_unrated() {
+    let mut long = ruleset("solo", true, "obedient", "0");
+    long.max_duration_secs = 1;
+    let env = start(vec![long]);
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = a.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason, result.duration_ms),
+        (Outcome::Null, EndReason::TimeLimit, 777),
+        "the game's own account of the end, the service's reason for it"
+    );
+    assert!(!result.game_report.is_empty());
+    assert!(result.seats.iter().all(|seat| seat.after.is_none()));
+}
+
+#[test]
+fn a_game_an_admin_asks_to_finish_answers_and_the_match_is_stopped_unrated() {
+    let env = start(rules("obedient"));
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    let (handoff, _) = pair_up(&mut a, &mut b, &solo());
+    env.account("root_user", AccountKind::Human);
+    env.grant_admin("root_user");
+    let mut root = env.login("root_user");
+    root.expect_done(ClientMsg::AdminStopMatch {
+        match_id: handoff.match_id,
+    });
+    let result = a.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason, result.duration_ms),
+        (Outcome::Null, EndReason::Stopped, 777)
+    );
+    assert!(!result.game_report.is_empty());
+}
+
+/// An end by the limit or a stop is never rated: a game that answers the request to finish with
+/// a winner has its account kept, and the match ends null as the service's reason says.
+#[test]
+fn a_winner_told_after_the_service_asked_the_game_to_finish_is_not_rated() {
+    let mut limited = ruleset("solo", true, "winner_on_term", "0");
+    limited.max_duration_secs = 1;
+    let env = start(vec![limited]);
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    pair_up(&mut a, &mut b, &solo());
+    let result = a.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason, result.duration_ms),
+        (Outcome::Null, EndReason::TimeLimit, 555),
+        "the limit's end, the game's account"
+    );
+    assert!(!result.game_report.is_empty());
+    assert!(
+        result.seats.iter().all(|seat| seat.after.is_none()),
+        "nobody is rated"
+    );
+    let Ok(Reply::LadderPage { total, .. }) = b.ask(ClientMsg::Ladder {
+        ruleset: solo(),
+        offset: 0,
+        limit: 10,
+    }) else {
+        panic!("ladder");
+    };
+    assert_eq!(total, 0, "and enters no ladder");
+    env.stop();
+
+    let env = start(rules("winner_on_term"));
+    let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+    let (handoff, _) = pair_up(&mut a, &mut b, &solo());
+    env.account("root_user", AccountKind::Human);
+    env.grant_admin("root_user");
+    let mut root = env.login("root_user");
+    root.expect_done(ClientMsg::AdminStopMatch {
+        match_id: handoff.match_id,
+    });
+    let result = a.wait_result();
+    assert_eq!(
+        (result.outcome, result.reason),
+        (Outcome::Null, EndReason::Stopped),
+        "an admin's stop likewise"
+    );
+}
+
+/// An `aborted=` the service has no reason to expect is a bad result: a game cannot end a
+/// match with a word nothing called for, before its limit or without being asked.
+#[test]
+fn an_aborted_result_nothing_called_for_is_a_crash_not_an_end_of_its_own_kind() {
+    for behaviour in ["rogue_stop", "rogue_limit"] {
+        let env = start(rules(behaviour));
+        let (mut a, mut b) = (env.bot("alpha"), env.bot("beta"));
+        pair_up(&mut a, &mut b, &solo());
+        let result = a.wait_result();
+        assert_eq!(
+            (result.outcome, result.reason),
+            (Outcome::Null, EndReason::Crashed),
+            "{behaviour}"
+        );
+        assert!(result.game_report.is_empty(), "{behaviour}: nothing kept");
+        env.stop();
+    }
 }
 
 #[test]

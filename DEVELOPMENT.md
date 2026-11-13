@@ -24,14 +24,39 @@ Any game can be launched that honours this, a shell script included:
    - `left=<slot>`: a player left for good (the game's own rule). `winner` must be another team; the match is rated,
      ends as `Left`, and nothing else is held against the leaver.
    - `replay=truncated` (version 2): the game closed its artifact before the match's end; radovid logs it.
+   - `aborted=<why>` (version 3, and only on a line that says `v=3`): the game ended the match without playing it
+     out: `time_limit` (it ended it at the limit it was told, below) or `stopped` (it was asked to finish); any
+     other word makes the line malformed. `winner` is then `draw` by convention and `report` is the game's account
+     up to that point. The match is null (nothing is rated, whoever `winner` names), keeps the report and the game's
+     `duration_ms`, and ends for the service's own reason (below). The word is believed only when something called
+     for it: `stopped` after radovid asked the game to finish, `time_limit` once the limit has run out. Any other
+     `aborted=` is a bad result and the match is crashed. (A game controls its own stdout, so its winner and exit
+     code too; this keeps a game from ending matches with a word nothing called for, not from lying.)
    - `v=<n>`: the line's version, absent for 1. A game that only adds fields leaves it alone (radovid skips unknown
      keys); one that changes a field's meaning raises it, and an older radovid treats the line as malformed.
-   radovid sets `RADOVID_RESULT_VERSION` (now 2), the newest version it reads; a game prints a version's fields only
+   radovid sets `RADOVID_RESULT_VERSION` (now 3), the newest version it reads; a game prints a version's fields only
    when the variable allows (absent: 1), so either side can be updated first. radovid reports the result and serves
    the match's artifact only after the game process has exited, so a game may finish writing after `RESULT`.
 4. Exit code 3 without `RESULT` means abandoned (nobody came, everybody left, or a seat left for good during the picks, which cancels the match); any other exit without `RESULT`, or a
-   malformed line, means crashed. Both are null: nothing is rated. A match running past `max_duration_secs`, or stopped
-   by an admin or the shutdown, is killed and null.
+   malformed line, means crashed. Both are null: nothing is rated.
+5. A match is ended from outside by `max_duration_secs` (counted from `READY`), an admin or the service's shutdown.
+   radovid then first asks the game to finish: SIGTERM to the process (`docker kill --signal TERM` for a container).
+   A game that honours it announces the end to its players, closes its artifacts and prints a `RESULT` with
+   `aborted=stopped`, then exits, the whole within 10 seconds of the request; the match is null and ends as the
+   service's reason says (`Stopped` for an admin or the shutdown, `TimeLimit` for the limit), with the game's report.
+   A `RESULT` that names a winner, told after the request, is not rated either: an end by the limit or a stop never
+   is (a game that had just finished is a rare race, accepted). One that prints nothing in time is killed (the kill
+   and the wait for the process to be gone take until 2 seconds after that deadline, after which radovid lets go of
+   the match whatever the process does), the match null with no report. So from a request to the end of the match,
+   to its port and its seats being free, exactly at most 12 seconds pass (10 for the answer and the exit, 2 for the
+   kill), and the service's shutdown waits 3 more for the reports. A game that exits 3 without a result after the request (a match that never began) ends as asked.
+   The limit is a backstop against a stuck or endless game, not a rule of the game: radovid tells every game its
+   limit in `RADOVID_MAX_DURATION_SECS` (seconds of wall-clock time from the game's own start, which is before it
+   says `READY`; not game time, which stops with a stuck game, and the same in lockstep and realtime), so that
+   a game can warn its players beforehand and end the match itself with `aborted=time_limit`, which ends as
+   `TimeLimit`. radovid asks only a little after the limit (a twentieth of it, between half a second and five), so
+   the game's own end comes first and the players are told it was the limit. A game that ends nothing is asked, and
+   the match ends as `TimeLimit` all the same.
 
 The result reaches radovid only on the game server's own stdout, which only that process (and root) can write: there
 is no network path to forge one.
@@ -102,7 +127,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `ruleset.rating_ruleset` | none | an unrated queue's rated sibling; same game, fingerprint and teams, at most one unrated sibling per ladder |
 | `ruleset.rating_window` | mode's policy from `limits` | partial overrides of `initial`, `widen_per_minute`, `maximum`; maximum 1 to 10000, other values 0 to 10000, initial ≤ maximum; zero widening requires initial = maximum |
 | `ruleset.info` | `""` | hex bytes shown to clients, the game's own meaning |
-| `ruleset.max_duration_secs` | `7200` | a longer match is killed (a null) |
+| `ruleset.max_duration_secs` | `7200` | a backstop, not a rule of the game: a match running longer is asked to finish and, failing that, killed (a null, never rated); the game is told it in `RADOVID_MAX_DURATION_SECS`. Set it above the longest match the game can legitimately have |
 | `ruleset.games_per_account` | the `[limits]` value | this ruleset's own per-account limit |
 | `ruleset.lobby_min_players` | `1` | players a lobby needs before its host may start it |
 | `ruleset.instant_solo` | `false` | one account may start an unrated match alone at once (`StartSolo`) |

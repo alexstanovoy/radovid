@@ -13,13 +13,16 @@ use tokio::process::{Child, ChildStdout, Command};
 use crate::config::{Artifact, LauncherConfig, LauncherKind, RulesetConfig, parse_fingerprint};
 use crate::template::{self, SeatSpec, Vars};
 
-pub use lines::{GameResult, Line, LineReader};
-use lines::{RESULT_VERSION, RESULT_VERSION_VAR};
+pub use lines::{Aborted, GameResult, Line, LineReader};
+use lines::{MAX_DURATION_VAR, RESULT_VERSION, RESULT_VERSION_VAR};
 
 /// The label every container carries, for cleaning up after a crashed service.
 const LABEL: &str = "radovid.match";
 /// How long a version probe may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a command that controls a running game (`docker kill`, `kill`) may take: a docker
+/// client that hangs must not hold up the end of a match. The command is killed with it.
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
 /// Where a docker game sees the artifact called `replay`; the others are under
 /// [`ARTIFACTS_IN_CONTAINER`] by name.
 const REPLAY_IN_CONTAINER: &str = "/artifact";
@@ -58,18 +61,24 @@ pub struct GameProcess {
 }
 
 impl GameProcess {
-    /// Kills the game server; idempotent.
+    /// Kills the game server; idempotent. Bounded by [`CONTROL_TIMEOUT`].
     pub async fn kill(&mut self) {
         if let Some((docker, name)) = &self.container {
-            let _ = Command::new(docker)
-                .args(["kill", name])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .await;
+            control(Command::new(docker).args(["kill", name])).await;
         }
         let _ = self.child.start_kill();
+    }
+
+    /// Asks the game server to finish the match now (SIGTERM, to the container for a docker
+    /// game): it tells its players, closes its artifacts, prints a `RESULT` with `aborted=...`
+    /// and exits. A game that does nothing of the kind is killed by whoever asked, after a grace.
+    /// Bounded by [`CONTROL_TIMEOUT`].
+    pub async fn request_stop(&mut self) {
+        if let Some((docker, name)) = &self.container {
+            control(Command::new(docker).args(["kill", "--signal", "TERM", name])).await;
+        } else if let Some(pid) = self.child.id() {
+            control(Command::new("kill").args(["-TERM", &pid.to_string()])).await;
+        }
     }
 
     /// Waits for the exit; its code, if it exited by itself.
@@ -80,6 +89,18 @@ impl GameProcess {
             .ok()
             .and_then(|status| status.code())
     }
+}
+
+/// Runs a command that controls a game, silently and for [`CONTROL_TIMEOUT`] at the most; the
+/// command is killed when it is late.
+async fn control(command: &mut Command) {
+    let run = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .status();
+    let _ = tokio::time::timeout(CONTROL_TIMEOUT, run).await;
 }
 
 /// A match without cheats whose arguments or environment, as its placeholders expanded them,
@@ -185,11 +206,15 @@ pub fn spawn(ruleset: &RulesetConfig, spec: &LaunchSpec) -> std::io::Result<Game
     if !spec.cheats {
         refuse_cheats(ruleset, &args, &env)?;
     }
-    // Last, so a ruleset's own variable cannot overrule what this radovid reads.
+    // Last, so a ruleset's own variables cannot overrule what this radovid reads and says.
     env.push((RESULT_VERSION_VAR.to_owned(), RESULT_VERSION.to_string()));
     env.push((
         "RADOVID_PUBLIC_IDENTITY".into(),
         spec.public_identity.clone().unwrap_or_default(),
+    ));
+    env.push((
+        MAX_DURATION_VAR.to_owned(),
+        ruleset.max_duration_secs.to_string(),
     ));
     let (mut command, container) = match launcher.kind {
         LauncherKind::Local => {

@@ -221,12 +221,23 @@ pub fn ruleset(id: &str, rated: bool, behaviour: &str, seconds: &str) -> Ruleset
                 .map(str::to_owned)
                 .to_vec(),
             env: [("GAME_SEATS".to_owned(), "{seats}".to_owned())].into(),
-            start_timeout_secs: 30,
+            // In the tests' tenths of a second ([`quick_patience`]): a minute, which a game takes no time to start in.
+            start_timeout_secs: 600,
             artifact: None,
             artifact_args: Vec::new(),
             artifact_env: Default::default(),
             cheats_args: Vec::new(),
         },
+    }
+}
+
+/// How the tests' service waits on its games: as it does, except that a ruleset's second of limit
+/// is a tenth of one, so that a test of a limit waits for none. (A game that goes on writing
+/// after its `RESULT` has the production grace to finish: a shorter one would cut it off.)
+pub fn quick_patience() -> radovid::supervisor::Patience {
+    radovid::supervisor::Patience {
+        second: Duration::from_millis(100),
+        ..radovid::supervisor::Patience::DEFAULT
     }
 }
 
@@ -308,6 +319,7 @@ pub fn try_start(
         lobby_teams: vec![5, 5],
         lobby_ruleset: None,
         rulesets,
+        patience: quick_patience(),
     };
     adjust(&mut config);
     let capacity = u16::try_from(config.limits.game_capacity).expect("a small game capacity");

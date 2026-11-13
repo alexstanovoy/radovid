@@ -20,6 +20,39 @@ case $behaviour in
 esac
 echo "an ignored line"
 echo READY
+case $behaviour in
+    # Ends the match itself when told to stop: the service's request to finish.
+    obedient)
+        trap 'echo "RESULT winner=draw duration_ms=777 report=$report aborted=stopped v=3"; exit 0' TERM
+        sleep 3600 &
+        wait $!
+        ;;
+    # Answers the request to finish with a winner, as a game that had just finished does.
+    winner_on_term)
+        trap 'echo "RESULT winner=0 duration_ms=555 report=$report"; exit 0' TERM
+        sleep 3600 &
+        wait $!
+        ;;
+    # Claims a stop nobody asked for, or a limit that is not due.
+    rogue_stop)
+        echo "RESULT winner=draw duration_ms=1 report=$report aborted=stopped v=3"
+        exit 0
+        ;;
+    rogue_limit)
+        echo "RESULT winner=draw duration_ms=1 report=$report aborted=time_limit v=3"
+        exit 0
+        ;;
+    # A game that was told its limit and ends the match itself with it: at the limit, or, if the
+    # service asks before the game's own end (the tests' limits are tens of milliseconds, the game
+    # waits the limit in seconds), as soon as it is asked. Either way the word is `time_limit`.
+    limited)
+        trap 'echo "RESULT winner=draw duration_ms=888 report=$report aborted=time_limit v=3"; exit 0' TERM
+        sleep "${RADOVID_MAX_DURATION_SECS:?}" &
+        wait $!
+        echo "RESULT winner=draw duration_ms=888 report=$report aborted=time_limit v=3"
+        exit 0
+        ;;
+esac
 sleep "$delay"
 # A game told where to leave its replay does.
 if [ "$behaviour" = slowfile ]; then
@@ -45,7 +78,7 @@ case $behaviour in
     badleave) echo "RESULT winner=0 duration_ms=1234 report=$report left=0" ;;
     draw) echo "RESULT winner=draw duration_ms=1234 report=$report" ;;
     future) echo "RESULT winner=1 duration_ms=1234 report=$report replay=truncated later=a_field_of_a_newer_game" ;;
-    futureversion) echo "RESULT winner=1 duration_ms=1234 report=$report v=3" ;;
+    futureversion) echo "RESULT winner=1 duration_ms=1234 report=$report v=4" ;;
     # A game prints the fields of a newer line only when told that radovid reads them.
     versioned) [ "${RADOVID_RESULT_VERSION:-1}" -ge 2 ] && echo "RESULT winner=0 duration_ms=1234 report=$report replay=truncated" || echo "RESULT winner=1 duration_ms=1234 report=$report" ;;
     badteam) echo "RESULT winner=5 duration_ms=1234 report=$report" ;;

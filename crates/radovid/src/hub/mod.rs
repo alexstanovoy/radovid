@@ -27,6 +27,9 @@ use crate::config::Config;
 use crate::db::{AccountRow, DELETED_NICKNAME, Db};
 use crate::supervisor::End;
 
+/// What the hub's shutdown waits beyond a supervisor's own bound for the supervisors' reports.
+const SHUTDOWN_SLACK: Duration = Duration::from_secs(3);
+
 /// Capacity of a session's event queue; a session that falls this far behind is
 /// dropped.
 const EVENT_QUEUE: usize = 256;
@@ -244,13 +247,23 @@ pub fn spawn(config: Arc<Config>, db: Db) -> (HubHandle, tokio::task::JoinHandle
         while let Some(cmd) = rx.recv().await {
             if matches!(cmd, Cmd::Shutdown) {
                 hub.shutdown().await;
-                // The matches report their ends; serve until they have.
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                // The matches report their ends; serve until they have. A supervisor lets go of
+                // its match within STOP_TOTAL of the request whatever its game does, so the
+                // wait is that and the time to hear of it; a match still there past it is a bug.
+                let deadline =
+                    tokio::time::Instant::now() + crate::supervisor::STOP_TOTAL + SHUTDOWN_SLACK;
                 while !hub.matches.is_empty() {
                     match tokio::time::timeout_at(deadline, rx.recv()).await {
                         Ok(Some(cmd)) => hub.handle(cmd).await,
                         _ => break,
                     }
+                }
+                if !hub.matches.is_empty() {
+                    eprintln!(
+                        "radovid: ERROR: {} matches had not ended when the service stopped: {:?}",
+                        hub.matches.len(),
+                        hub.matches.keys().map(|id| id.0).collect::<Vec<_>>()
+                    );
                 }
                 return;
             }

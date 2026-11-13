@@ -55,11 +55,14 @@ pub enum EndReason {
     Abandoned,
     /// With `Outcome::Null`: the game server failed, or ended without a result.
     Crashed,
-    /// With `Outcome::Null`: an admin, the time limit or the service's shutdown stopped it.
+    /// With `Outcome::Null`: an admin or the service's shutdown stopped it.
     Stopped,
     /// A team won because a player on the other left the match for good (the game's `RESULT`
     /// names the leaver's seat): a rated loss for the leaver.
     Left,
+    /// With `Outcome::Null`: the ruleset's `max_duration_secs` ran out and the game ended the
+    /// match (or was stopped, which `Stopped` says).
+    TimeLimit,
 }
 
 /// Glicko-2 rating and deviation on the 1500 scale; the volatility stays on

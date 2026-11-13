@@ -1237,6 +1237,7 @@ fn reason_code(reason: EndReason) -> i64 {
         EndReason::Crashed => 3,
         EndReason::Stopped => 4,
         EndReason::Left => 5,
+        EndReason::TimeLimit => 6,
     }
 }
 
@@ -1247,6 +1248,7 @@ fn reason_of(code: i64) -> EndReason {
         2 => EndReason::Abandoned,
         3 => EndReason::Crashed,
         5 => EndReason::Left,
+        6 => EndReason::TimeLimit,
         _ => EndReason::Stopped,
     }
 }
