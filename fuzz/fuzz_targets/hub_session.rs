@@ -111,6 +111,7 @@ fn ruleset(id: &str, rated: bool, teams: Vec<u8>, behaviour: &str, max_secs: u64
 
 fn config(dir: &std::path::Path) -> Config {
     Config {
+        public_identity: None,
         listen: "127.0.0.1:0".parse().expect("address"),
         database: dir.join("radovid.db"),
         tls_cert: PathBuf::new(),
@@ -282,7 +283,7 @@ impl Harness {
             let info = ClientInfo {
                 bot_version: (self.actors[at].kind == AccountKind::Bot).then(|| "fuzz".to_owned()),
             };
-            match client.resume(self.actors[at].token.clone(), info) {
+            match client.resume(self.actors[at].token, info) {
                 Ok(_) => return Some(client),
                 Err(ClientError::Refused(Error::BadSession)) => self.renew(at),
                 Err(ClientError::Refused(Error::TooManySessions | Error::Banned { .. })) => {
@@ -345,7 +346,7 @@ fn send(client: &mut Client, raw: bool, body: &[u8]) -> bool {
         if client.send_raw(body.to_vec()).is_err() {
             return false;
         }
-        return !matches!(client.read_raw(RAW_WAIT), Err(_));
+        return client.read_raw(RAW_WAIT).is_ok();
     }
     let Ok(msg) = decode_payload::<ClientMsg>(body) else {
         return true;
