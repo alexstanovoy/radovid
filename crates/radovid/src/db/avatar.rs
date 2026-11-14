@@ -195,7 +195,7 @@ mod tests {
         }
     }
     async fn account(db: &Db, name: &str) -> AccountId {
-        db.create_account(name.into(), "hash".into(), AccountKind::Human, None)
+        db.create_account(name.into(), "hash".into(), AccountKind::Human)
             .await
             .expect("account")
     }

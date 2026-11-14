@@ -162,15 +162,22 @@ impl Hub {
         rating: Option<Rating>,
         team: u8,
     ) -> LobbyMember {
-        let (nickname, kind, bot_version) = self.accounts.get(&account).map_or_else(
+        let (nickname, kind, version) = self.accounts.get(&account).map_or_else(
             || (String::new(), AccountKind::Human, None),
-            |a| (a.info.nickname.clone(), a.info.kind, a.bot_version.clone()),
+            |a| {
+                (
+                    a.info.nickname.clone(),
+                    a.info.kind,
+                    a.identity.version().map(str::to_owned),
+                )
+            },
         );
         LobbyMember {
+            retired_bot_version: None,
             account,
             nickname,
             kind,
-            bot_version: (kind == AccountKind::Bot).then_some(bot_version).flatten(),
+            version: (kind == AccountKind::Bot).then_some(version).flatten(),
             rating,
             slot,
             team,
@@ -328,6 +335,10 @@ impl Hub {
                 let found = fold_case(&l.name).contains(&query)
                     || fold_case(owner_nickname).contains(&query);
                 found.then(|| LobbySummary {
+                    version: self
+                        .accounts
+                        .get(&l.owner)
+                        .and_then(|account| account.identity.version().map(str::to_owned)),
                     id: l.id,
                     name: l.name.clone(),
                     ruleset: l.ruleset.clone(),

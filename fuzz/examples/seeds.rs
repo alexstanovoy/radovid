@@ -205,6 +205,16 @@ fn main() {
                 (2, ClientMsg::Logout),
             ],
         ),
+        (
+            "admin-becomes-a-bot",
+            vec![(
+                0,
+                ClientMsg::AdminSetKind {
+                    account: AccountId(1),
+                    kind: AccountKind::Bot,
+                },
+            )],
+        ),
     ];
     for (name, script) in &scripts {
         let input: Vec<u8> = script
@@ -229,7 +239,8 @@ fn main() {
         password: Secret::new("long enough"),
         kind: AccountKind::Bot,
         client: ClientInfo {
-            bot_version: Some("v1".to_owned()),
+            retired_bot_version: None,
+            version: Some("v1".to_owned()),
         },
     };
     write("proto_decode", "register", &payload(&hello));

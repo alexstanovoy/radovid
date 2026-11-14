@@ -563,3 +563,31 @@ field ClientMsg::GetAvatars 0 accounts: Vec<AvatarQuery>
 variant Reply 18 Avatars {}
 field Reply::Avatars 0 changes: Vec<AvatarChange>
 variant Error 60 BadAvatarBatch
+
+# Named bot identities, protocol22; earlier metadata positions are reserved.
+retired field ClientInfo 0 bot_version: Option<String>
+field ClientInfo 0 retired_bot_version: Option<String>
+retired variant Error 14 BadBotVersion
+variant Error 14 RetiredBadBotVersion
+retired field LadderRow 4 bot_version: Option<String>
+field LadderRow 4 retired_bot_version: Option<String>
+retired field LobbyMember 3 bot_version: Option<String>
+field LobbyMember 3 retired_bot_version: Option<String>
+retired field PublicAccount 4 bot_version: Option<String>
+field PublicAccount 4 retired_bot_version: Option<String>
+retired field SeatInfo 5 bot_version: Option<String>
+field SeatInfo 5 retired_bot_version: Option<String>
+field ClientInfo 1 version: Option<String>
+field AccountInfo 5 version: Option<String>
+field AccountInfo 6 main_account: Option<AccountId>
+field PublicAccount 7 version: Option<String>
+field PublicAccount 8 main_account: Option<AccountId>
+field SeatInfo 7 version: Option<String>
+field SeatResult 7 version: Option<String>
+field LobbyMember 8 version: Option<String>
+field LadderRow 12 version: Option<String>
+field LobbySummary 9 version: Option<String>
+variant Error 61 VersionRequired
+variant Error 62 VersionNotAllowed
+variant Error 63 BadVersion
+variant Error 64 VersionLimit

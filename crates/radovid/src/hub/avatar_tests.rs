@@ -69,12 +69,7 @@ async fn avatar_page(database: &crate::db::Db) -> Vec<AvatarQuery> {
     let mut queries = Vec::new();
     for index in 0..100 {
         let account = database
-            .create_account(
-                format!("row{index}"),
-                "hash".into(),
-                AccountKind::Human,
-                None,
-            )
+            .create_account(format!("row{index}"), "hash".into(), AccountKind::Human)
             .await
             .expect("account");
         database

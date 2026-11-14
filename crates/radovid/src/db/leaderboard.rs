@@ -85,7 +85,7 @@ fn read_snapshot<T>(
     Ok(result)
 }
 
-const ROW: &str = "r.account,a.nickname,r.kind,a.bot_version,r.rating,r.deviation,r.games,r.wins,r.draws,r.losses,r.last_played,(SELECT version FROM avatars WHERE account=a.id)";
+const ROW: &str = "r.account,a.nickname,r.kind,a.version,r.rating,r.deviation,r.games,r.wins,r.draws,r.losses,r.last_played,(SELECT version FROM avatars WHERE account=a.id)";
 pub(super) const VISIBLE: &str = "r.games>0 AND r.hidden=0";
 
 impl Db {
@@ -177,16 +177,18 @@ impl Db {
                     now,
                 )?;
                 Ok(Some(PublicAccount {
+                    retired_bot_version: None,
                     avatar: bounded_with_limit(
                         connection,
                         PROFILE_METADATA_VM_STEPS,
                         |connection| super::avatar::version(connection, account),
                     )?,
+                    main_account: row.main_account,
                     id: account,
                     nickname: row.nickname,
                     kind: row.kind,
                     online: false,
-                    bot_version: row.bot_version.filter(|_| row.kind == AccountKind::Bot),
+                    version: row.version.filter(|_| row.kind == AccountKind::Bot),
                     ratings,
                 }))
             })
@@ -484,11 +486,12 @@ pub(super) fn grow_idle<'a>(
 fn ladder_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<LadderRow> {
     let kind = kind_of(row.get(2)?);
     Ok(LadderRow {
+        retired_bot_version: None,
         avatar: row.get::<_, Option<[u8; 32]>>(11)?.map(AvatarVersion),
         account: AccountId(row.get::<_, i64>(0)? as u64),
         nickname: row.get(1)?,
         kind,
-        bot_version: if kind == AccountKind::Bot {
+        version: if kind == AccountKind::Bot {
             row.get(3)?
         } else {
             None
@@ -1256,12 +1259,12 @@ mod scale_tests {
 
     /// Red: a human row must not carry a bot version (profile already filters it).
     #[tokio::test]
-    async fn probe_reclassified_human_row_has_no_bot_version() {
+    async fn probe_reclassified_human_row_has_no_version() {
         let db = Db::init(Connection::open_in_memory().expect("db")).expect("schema");
         populate(&db, &["duel"], 2);
         db.run(|c| {
             c.execute(
-                "UPDATE accounts SET bot_version='secret-build-7' WHERE id=2",
+                "UPDATE accounts SET version='secret-build-7' WHERE id=2",
                 [],
             )
             .map(|_| ())
@@ -1279,8 +1282,8 @@ mod scale_tests {
             .await
             .expect("board");
         assert!(
-            page.rows.iter().all(|row| row.bot_version.is_none()),
-            "human row leaks bot_version"
+            page.rows.iter().all(|row| row.version.is_none()),
+            "human row leaks version"
         );
         let (_, rows) = db
             .ladder(RulesetId("duel".into()), 0, 100)
@@ -1289,8 +1292,8 @@ mod scale_tests {
         assert!(
             rows.iter()
                 .filter(|row| row.kind == AccountKind::Human)
-                .all(|row| row.bot_version.is_none()),
-            "legacy human row leaks bot_version"
+                .all(|row| row.version.is_none()),
+            "legacy human row leaks version"
         );
     }
 }

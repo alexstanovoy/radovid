@@ -58,9 +58,13 @@ pub fn valid_artifact_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
-/// A bot version label: 1 to 32 bytes without control characters.
-pub fn valid_bot_version(version: &str) -> bool {
-    (1..=MAX_BOT_VERSION_LEN).contains(&version.len()) && !version.chars().any(char::is_control)
+/// An opaque version name: 1 to 32 printable ASCII bytes, with no edge whitespace.
+pub fn valid_version(version: &str) -> bool {
+    (1..=MAX_VERSION_LEN).contains(&version.len())
+        && version == version.trim()
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
 }
 
 /// A client label: at most 64 bytes without control characters.
@@ -71,4 +75,26 @@ pub fn valid_client_label(label: &str) -> bool {
 /// A ban reason: at most 200 bytes.
 pub fn valid_ban_reason(reason: &str) -> bool {
     reason.len() <= MAX_BAN_REASON_LEN
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    #[test]
+    fn version_names_keep_the_exact_printable_string_and_reject_every_control_byte() {
+        assert!(valid_version("v1.0.0 (buster)"));
+        assert!(valid_version(&"x".repeat(MAX_VERSION_LEN)));
+        assert!(!valid_version(&"x".repeat(MAX_VERSION_LEN + 1)));
+        for byte in 0..=u8::MAX {
+            let candidate = format!("a{}b", char::from(byte));
+            assert_eq!(
+                valid_version(&candidate),
+                (32..=126).contains(&byte),
+                "byte {byte}"
+            );
+        }
+        for text in ["", " ", " version", "version ", "\u{200b}version", "версия"] {
+            assert!(!valid_version(text), "{text:?}");
+        }
+    }
 }

@@ -117,13 +117,15 @@ impl Hub {
         }
     }
 
-    async fn require_account(&self, id: AccountId) -> Result<(), Error> {
-        self.db
-            .account_by_id(id)
+    /// The main account an admin's target belongs to: bans and unbans act on it for every version.
+    async fn main_of(&self, target: AccountId) -> Result<AccountId, Error> {
+        let row = self
+            .db
+            .account_by_id(target)
             .await
             .map_err(internal)?
-            .map(|_| ())
-            .ok_or(Error::UnknownAccount)
+            .ok_or(Error::UnknownAccount)?;
+        Ok(row.main_account.unwrap_or(target))
     }
 
     pub(super) async fn admin_ban(
@@ -137,7 +139,7 @@ impl Hub {
         if !valid_ban_reason(&reason) {
             return Err(Error::Malformed);
         }
-        self.require_account(target).await?;
+        let target = self.main_of(target).await?;
         let ban = Ban {
             reason: reason.clone(),
             until,
@@ -157,7 +159,7 @@ impl Hub {
         target: AccountId,
     ) -> Result<Reply, Error> {
         self.require_admin(admin)?;
-        self.require_account(target).await?;
+        let target = self.main_of(target).await?;
         self.db.set_ban(target, None).await.map_err(internal)?;
         Ok(Reply::Done)
     }
@@ -169,8 +171,30 @@ impl Hub {
         kind: AccountKind,
     ) -> Result<Reply, Error> {
         self.require_admin(admin)?;
-        self.require_account(target).await?;
-        self.db.set_kind(target, kind).await.map_err(internal)?;
+        let current = self
+            .db
+            .account_by_id(target)
+            .await
+            .map_err(internal)?
+            .ok_or(Error::UnknownAccount)?;
+        if current.kind == kind {
+            return Ok(Reply::Done);
+        }
+        // Keep the identity and result category fixed until the match's rating is committed.
+        if self
+            .matches
+            .values()
+            .any(|game| game.seats.iter().any(|seat| seat.account == target))
+        {
+            return Err(Error::Forbidden);
+        }
+        self.db
+            .set_kind(target, kind)
+            .await
+            .map_err(|error| match error {
+                crate::db::DbError::VersionKind => Error::Forbidden,
+                other => internal(other),
+            })?;
         let changed = if let Some(account) = self.accounts.get_mut(&target) {
             let changed = account.info.kind != kind;
             account.info.kind = kind;
@@ -179,7 +203,10 @@ impl Hub {
             false
         };
         if changed {
+            // The searches end without a decline's cooldown before the sessions do: ending the
+            // last session would count an open proposal as declined by the user.
             self.drop_entries(target, false);
+            self.bye(target, Error::BadSession);
         }
         Ok(Reply::Done)
     }

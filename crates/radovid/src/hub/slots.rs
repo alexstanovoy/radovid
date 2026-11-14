@@ -55,9 +55,10 @@ impl Hub {
                 .seats
                 .iter()
                 .map(|s| {
-                    self.accounts
-                        .get(&s.account)
-                        .map_or_else(String::new, |a| a.info.nickname.clone())
+                    self.accounts.get(&s.account).map_or_else(
+                        || (String::new(), s.account),
+                        |a| (a.info.nickname.clone(), a.identity.owner(s.account)),
+                    )
                 })
                 .collect::<Vec<_>>(),
         );
@@ -67,6 +68,10 @@ impl Hub {
             .zip(names)
             .map(|(seat, name)| SeatSpec {
                 account: seat.account,
+                version: self
+                    .accounts
+                    .get(&seat.account)
+                    .and_then(|account| account.identity.version().map(str::to_owned)),
                 ticket: seat.ticket,
                 team: seat.team,
                 name,
@@ -172,22 +177,62 @@ impl Hub {
     }
 }
 
-/// Names for the game: the nicknames, an account id's worth of suffix where
-/// two coincide (`_<slot>`), never empty.
-fn seat_names(nicknames: &[String]) -> Vec<String> {
-    nicknames
+/// Names for the game: the nicknames cleaned to `[A-Za-z0-9_]`, with the slot as a suffix where
+/// two different owners share one (nicknames are not unique) and for empty ones. Versions of one
+/// bot share its nickname and owner: the version tells them apart, so they keep the plain name.
+fn seat_names(seats: &[(String, AccountId)]) -> Vec<String> {
+    seats
         .iter()
         .enumerate()
-        .map(|(slot, nickname)| {
+        .map(|(slot, (nickname, owner))| {
             let clean: String = nickname
                 .chars()
                 .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
                 .collect();
-            if clean.is_empty() || nicknames.iter().filter(|n| *n == nickname).count() > 1 {
+            let shared_with_another_owner = seats
+                .iter()
+                .any(|(other, other_owner)| other == nickname && other_owner != owner);
+            if clean.is_empty() || shared_with_another_owner {
                 format!("{clean}_{slot}")
             } else {
                 clean
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(seats: &[(&str, u64)]) -> Vec<String> {
+        let seats: Vec<(String, AccountId)> = seats
+            .iter()
+            .map(|(nickname, owner)| ((*nickname).to_owned(), AccountId(*owner)))
+            .collect();
+        seat_names(&seats)
+    }
+
+    #[test]
+    fn two_humans_of_one_nickname_get_distinct_game_names() {
+        assert_eq!(names(&[("Ann", 1), ("Ann", 2)]), ["Ann_0", "Ann_1"]);
+    }
+
+    #[test]
+    fn versions_of_one_bot_keep_the_bot_name_because_the_version_tells_them_apart() {
+        assert_eq!(names(&[("Bot", 7), ("Bot", 7)]), ["Bot", "Bot"]);
+    }
+
+    #[test]
+    fn a_human_named_like_a_bot_is_told_apart_from_its_versions() {
+        assert_eq!(
+            names(&[("Bot", 7), ("Bot", 7), ("Bot", 2)]),
+            ["Bot_0", "Bot_1", "Bot_2"]
+        );
+    }
+
+    #[test]
+    fn unique_and_empty_nicknames_are_cleaned_and_never_empty() {
+        assert_eq!(names(&[("a b", 1), ("", 2)]), ["a_b", "_1"]);
+    }
 }

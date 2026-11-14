@@ -44,11 +44,12 @@ fn accounts_register_log_in_resume_and_change_their_data() {
         Error::WeakPassword
     );
     let bot_label = ClientInfo {
-        bot_version: Some("v1".to_owned()),
+        retired_bot_version: None,
+        version: Some("v1".to_owned()),
     };
     assert_eq!(
         refused(other.register("bob", PASSWORD, AccountKind::Human, bot_label)),
-        Error::BadBotVersion
+        Error::VersionNotAllowed
     );
     // The catalog and the limits are public; everything else needs a login.
     let Ok(Reply::Rulesets { list }) = other.request(ClientMsg::Rulesets) else {
@@ -596,12 +597,7 @@ fn an_account_keeps_only_its_newest_stored_sessions() {
     runtime.block_on(async {
         let db = Db::open(&dir.join("radovid.db")).expect("database");
         let account = db
-            .create_account(
-                "hoarder".to_owned(),
-                "hash".to_owned(),
-                AccountKind::Human,
-                None,
-            )
+            .create_account("hoarder".to_owned(), "hash".to_owned(), AccountKind::Human)
             .await
             .expect("account");
         let token = |n: usize| {

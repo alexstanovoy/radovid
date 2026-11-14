@@ -105,6 +105,15 @@ impl Hub {
         members: Vec<(AccountId, IpAddr)>,
         teams: Option<Vec<u8>>,
     ) -> Result<MatchId, Error> {
+        if origin == Origin::Queue {
+            let owners: std::collections::HashSet<_> = members
+                .iter()
+                .map(|(id, _)| self.main_account(*id))
+                .collect();
+            if owners.len() != members.len() {
+                return Err(Error::Forbidden);
+            }
+        }
         // The seats are numbered in order; a lobby's members sit on the sides they chose.
         let seats: Vec<NewSeat> = members
             .iter()
@@ -225,13 +234,14 @@ impl Hub {
         let account = self.accounts.get(&seat.account);
         let kind = account.map_or(AccountKind::Human, |a| a.info.kind);
         SeatInfo {
+            retired_bot_version: None,
             slot: seat.slot,
             team: seat.team,
             account: seat.account,
             nickname: account.map(|a| a.info.nickname.clone()).unwrap_or_default(),
             kind,
-            bot_version: account
-                .and_then(|a| a.bot_version.clone())
+            version: account
+                .and_then(|a| a.identity.version().map(str::to_owned))
                 .filter(|_| kind == AccountKind::Bot),
             rating: state.ratings.get(&seat.account).copied(),
         }
@@ -438,6 +448,7 @@ impl Hub {
                     let info = self.seat_info(state, seat);
                     let change = changes.iter().find(|change| change.account == seat.account);
                     SeatResult {
+                        version: info.version,
                         slot: info.slot,
                         team: info.team,
                         account: info.account,

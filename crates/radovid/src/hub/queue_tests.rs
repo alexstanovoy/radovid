@@ -97,7 +97,7 @@ impl Fixture {
     async fn account(&mut self, login: &str, kind: AccountKind) -> (AccountRow, u64) {
         let id = self
             .db
-            .create_account(login.into(), "authenticated fixture".into(), kind, None)
+            .create_account(login.into(), "authenticated fixture".into(), kind)
             .await
             .expect("account");
         let account = self
@@ -106,6 +106,16 @@ impl Fixture {
             .await
             .expect("read")
             .expect("exists");
+        // A bot only plays as one of its versions.
+        let account = match kind {
+            AccountKind::Bot => self
+                .db
+                .select_version(account.id, "fixture-1".into())
+                .await
+                .expect("database")
+                .expect("version"),
+            AccountKind::Human => account,
+        };
         let (session, _) = self.attach(account.clone()).await;
         (account, session)
     }
@@ -418,16 +428,24 @@ async fn leaving_the_reserved_sibling_cancels_the_proposed_search() {
 async fn changing_a_queued_human_to_a_bot_cancels_its_humans_proposal() {
     let mut fixture = Fixture::new(16);
     let (mut admin, _) = fixture.account("admin", AccountKind::Human).await;
+    fixture
+        .db
+        .grant_admin("admin".into())
+        .await
+        .expect("grant admin");
     admin.admin = true;
     let admin_session = fixture.attach(admin).await.0;
     let (human, session) = fixture.account("human", AccountKind::Human).await;
-    let (_, peer) = fixture.account("peer", AccountKind::Human).await;
+    let (peer_account, peer) = fixture.account("peer", AccountKind::Human).await;
     joined(
         fixture
             .ask(session, join(&[Audience::HumansOnly, Audience::Everyone]))
             .await,
     );
     joined(fixture.ask(peer, join(&[Audience::HumansOnly])).await);
+    let before = fixture.attach(human.clone()).await.1;
+    assert!(before.matches.is_empty(), "this account is queued only");
+    assert!(!before.queued.is_empty());
     assert_eq!(
         fixture
             .ask(
@@ -442,10 +460,10 @@ async fn changing_a_queued_human_to_a_bot_cancels_its_humans_proposal() {
     );
     let updated = fixture
         .db
-        .account_by_id(human.id)
+        .select_version(human.id, "v1".into())
         .await
         .expect("read")
-        .expect("account");
+        .expect("newly classified bot selects a version");
     let snapshot = fixture.attach(updated).await.1;
     assert!(
         snapshot.queued.is_empty(),
@@ -454,6 +472,57 @@ async fn changing_a_queued_human_to_a_bot_cancels_its_humans_proposal() {
     assert!(
         snapshot.proposals.is_empty(),
         "a human-only proposal cannot survive that kind change"
+    );
+    let peer_snapshot = fixture.attach(peer_account).await.1;
+    assert!(
+        peer_snapshot.proposals.is_empty(),
+        "the old human proposal was cancelled for its peer too"
+    );
+    assert_eq!(peer_snapshot.queued.len(), 1);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn an_admin_changing_the_kind_of_an_account_with_an_open_proposal_costs_it_no_cooldown() {
+    let mut fixture = Fixture::new(16);
+    let (mut admin, _) = fixture.account("admin", AccountKind::Human).await;
+    fixture
+        .db
+        .grant_admin("admin".into())
+        .await
+        .expect("grant admin");
+    admin.admin = true;
+    let admin_session = fixture.attach(admin).await.0;
+    let (human, session) = fixture.account("human", AccountKind::Human).await;
+    let (_, peer) = fixture.account("peer", AccountKind::Human).await;
+    joined(fixture.ask(session, join(&[Audience::HumansOnly])).await);
+    joined(fixture.ask(peer, join(&[Audience::HumansOnly])).await);
+    assert!(
+        !fixture.attach(human.clone()).await.1.proposals.is_empty(),
+        "the two humans have an open proposal"
+    );
+    assert_eq!(
+        fixture
+            .ask(
+                admin_session,
+                ClientMsg::AdminSetKind {
+                    account: human.id,
+                    kind: AccountKind::Bot
+                }
+            )
+            .await,
+        Ok(Reply::Done)
+    );
+    let version = fixture
+        .db
+        .select_version(human.id, "v1".into())
+        .await
+        .expect("read")
+        .expect("the newly classified bot selects a version");
+    assert_eq!(
+        fixture.attach(version).await.1.cooldown_ms,
+        0,
+        "an admin's action is no decline: the account owes no cooldown"
     );
     fixture.finish().await;
 }

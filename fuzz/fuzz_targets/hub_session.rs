@@ -226,7 +226,7 @@ impl Harness {
             .expect("hash");
         let id = self
             .runtime
-            .block_on(self.db.create_account(login, hash, kind, None))
+            .block_on(self.db.create_account(login, hash, kind))
             .expect("account");
         let mut actor = Actor {
             kind,
@@ -271,9 +271,13 @@ impl Harness {
     /// anew when a request of an earlier input deleted or revoked them.
     fn connect(&mut self, at: usize) -> Option<Client> {
         for _ in 0..PROBE_TRIES {
+            // An input may have had an admin reclassify the actor: a bot states its version, a
+            // human none, and the service holds the account's kind.
+            self.sync_kind(at);
             let mut client = Client::connect(&self.url, &self.tls, FINGERPRINT).ok()?;
             let info = ClientInfo {
-                bot_version: (self.actors[at].kind == AccountKind::Bot).then(|| "fuzz".to_owned()),
+                retired_bot_version: None,
+                version: (self.actors[at].kind == AccountKind::Bot).then(|| "fuzz".to_owned()),
             };
             match client.resume(self.actors[at].token, info) {
                 Ok(_) => return Some(client),
@@ -288,6 +292,16 @@ impl Harness {
             }
         }
         None
+    }
+
+    /// The actor's kind as the shared database has it now.
+    fn sync_kind(&mut self, at: usize) {
+        let row = self
+            .runtime
+            .block_on(self.db.account_by_id(self.actors[at].id));
+        if let Ok(Some(row)) = row {
+            self.actors[at].kind = row.kind;
+        }
     }
 
     fn banned(&self, at: usize) -> bool {

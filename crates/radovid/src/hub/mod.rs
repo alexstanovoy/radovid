@@ -126,12 +126,80 @@ pub fn event_channel() -> (mpsc::Sender<ServerMsg>, mpsc::Receiver<ServerMsg>) {
     mpsc::channel(EVENT_QUEUE)
 }
 
-/// An account with sessions, games in flight, or lookup debt still being refilled.
-struct Account {
+#[derive(Clone)]
+enum PlayingIdentity {
+    Human,
+    BotVersion {
+        main_account: AccountId,
+        name: String,
+    },
+}
+
+impl PlayingIdentity {
+    fn from_account(account: &AccountRow) -> Result<Self, Error> {
+        match (
+            account.kind,
+            account.main_account,
+            account.version.as_deref(),
+        ) {
+            (AccountKind::Human, None, None) => Ok(Self::Human),
+            (AccountKind::Bot, Some(main_account), Some(name)) if valid_version(name) => {
+                Ok(Self::BotVersion {
+                    main_account,
+                    name: name.to_owned(),
+                })
+            }
+            (AccountKind::Human, _, _) => Err(Error::VersionNotAllowed),
+            _ => Err(Error::VersionRequired),
+        }
+    }
+    /// The account that owns the identity: a version's main account, otherwise `own`.
+    pub(super) fn owner(&self, own: AccountId) -> AccountId {
+        match self {
+            Self::Human => own,
+            Self::BotVersion { main_account, .. } => *main_account,
+        }
+    }
+    fn version(&self) -> Option<&str> {
+        match self {
+            Self::Human => None,
+            Self::BotVersion { name, .. } => Some(name),
+        }
+    }
+}
+
+/// What the versions of one main account (a human is its own main account) share: the lookup
+/// quota, and the index of its online identities, so that per-account rules never scan everyone.
+struct Owner {
     lookup_budget: crate::throttle::TokenBucket,
     lookup_pending: bool,
+    /// The online `Account`s of this owner: itself or its versions, at most 128 of them.
+    identities: Vec<AccountId>,
+}
+
+impl Owner {
+    fn new() -> Self {
+        Self {
+            lookup_budget: crate::throttle::TokenBucket::new(4, 4, std::time::Instant::now()),
+            lookup_pending: false,
+            identities: Vec::new(),
+        }
+    }
+
+    /// Nothing online and no lookup debt still being refilled.
+    fn is_idle_at(&self, now: std::time::Instant) -> bool {
+        self.identities.is_empty() && self.lookup_settled_at(now)
+    }
+
+    fn lookup_settled_at(&self, now: std::time::Instant) -> bool {
+        !self.lookup_pending && self.lookup_budget.is_full(now)
+    }
+}
+
+/// An identity with sessions or games in flight.
+struct Account {
     info: AccountInfo,
-    bot_version: Option<String>,
+    identity: PlayingIdentity,
     sessions: Vec<SessionId>,
     entries: Vec<QueueEntryId>,
     searches: HashSet<QueueEntryId>,
@@ -146,15 +214,8 @@ impl Account {
         self.searches.len() + self.lobbies.len() + self.matches.len()
     }
 
-    fn is_idle(&self) -> bool {
-        self.is_idle_at(std::time::Instant::now())
-    }
-
-    fn is_idle_at(&self, now: std::time::Instant) -> bool {
-        self.sessions.is_empty()
-            && self.in_flight() == 0
-            && !self.lookup_pending
-            && self.lookup_budget.is_full(now)
+    fn has_no_activity(&self) -> bool {
+        self.sessions.is_empty() && self.in_flight() == 0
     }
 }
 
@@ -176,6 +237,8 @@ pub struct Hub {
     db: Db,
     me: mpsc::Sender<Cmd>,
     accounts: HashMap<AccountId, Account>,
+    /// Per main account, see `Owner`.
+    owners: HashMap<AccountId, Owner>,
     sessions: HashMap<SessionId, Session>,
     next_session: SessionId,
     entries: HashMap<QueueEntryId, queue::Entry>,
@@ -286,6 +349,7 @@ impl Hub {
             db,
             me,
             accounts: HashMap::new(),
+            owners: HashMap::new(),
             sessions: HashMap::new(),
             next_session: 1,
             entries: HashMap::new(),
@@ -319,7 +383,7 @@ impl Hub {
                 self.lookup_clock = Some(now + by);
                 let _ = done.send(());
             }
-            Cmd::Attach(attach) => self.attach(*attach),
+            Cmd::Attach(attach) => self.attach_authenticated(*attach).await,
             Cmd::Request {
                 session,
                 msg,
@@ -354,6 +418,34 @@ impl Hub {
         }
     }
 
+    /// Authentication can overlap a ban or deletion; the hub serializes this last check
+    /// with its admin commands before admitting any version's session.
+    async fn attach_authenticated(&mut self, mut attach: Attach) {
+        let owner = attach.account.main_account.unwrap_or(attach.account.id);
+        let main = match self.db.account_by_id(owner).await {
+            Ok(Some(main)) if !main.hash.is_empty() && main.kind == attach.account.kind => main,
+            Ok(_) => {
+                let _ = attach.reply.send(Err(Error::BadSession));
+                return;
+            }
+            Err(error) => {
+                let _ = attach.reply.send(Err(internal(error)));
+                return;
+            }
+        };
+        if let Some(ban) = main.active_ban(crate::db::now_ms()) {
+            let _ = attach.reply.send(Err(Error::Banned {
+                reason: ban.reason.clone(),
+                until: ban.until,
+            }));
+            return;
+        }
+        attach.account.nickname = main.nickname;
+        attach.account.login = main.login;
+        attach.account.admin = main.admin;
+        self.attach(attach);
+    }
+
     fn attach(&mut self, attach: Attach) {
         let Attach {
             account,
@@ -364,11 +456,23 @@ impl Hub {
             reply,
         } = attach;
         let id = account.id;
+        let identity = match PlayingIdentity::from_account(&account) {
+            Ok(identity) => identity,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let main = account.main_account.unwrap_or(id);
         if let Err(error) = self.admit_session_lobbies(id, game_fingerprint) {
             let _ = reply.send(Err(error));
             return;
         }
-        let existing = self.accounts.get(&id).map_or(0, |a| a.sessions.len());
+        let existing: usize = self
+            .identities_of(main)
+            .filter_map(|identity| self.accounts.get(&identity))
+            .map(|a| a.sessions.len())
+            .sum();
         if existing >= MAX_SESSIONS_PER_ACCOUNT {
             let _ = reply.send(Err(Error::TooManySessions));
             return;
@@ -385,11 +489,13 @@ impl Hub {
                 source,
             },
         );
+        let owner = self.owners.entry(main).or_insert_with(Owner::new);
+        if !owner.identities.contains(&id) {
+            owner.identities.push(id);
+        }
         let entry = self.accounts.entry(id).or_insert_with(|| Account {
-            lookup_budget: crate::throttle::TokenBucket::new(4, 4, std::time::Instant::now()),
-            lookup_pending: false,
             info: account.info(),
-            bot_version: None,
+            identity: identity.clone(),
             sessions: Vec::new(),
             entries: Vec::new(),
             searches: HashSet::new(),
@@ -397,7 +503,7 @@ impl Hub {
             matches: Vec::new(),
         });
         entry.info = account.info();
-        entry.bot_version = account.bot_version.clone();
+        entry.identity = identity;
         entry.sessions.push(session);
         let activities = self.activities(id);
         let _ = reply.send(Ok((session, activities)));
@@ -495,18 +601,41 @@ impl Hub {
     }
 
     fn account_deleted(&mut self, id: AccountId) {
-        self.drop_entries(id, false);
-        self.drop_lobbies(id);
-        if let Some(account) = self.accounts.get_mut(&id) {
-            account.info.nickname = DELETED_NICKNAME.to_owned();
-            account.bot_version = None;
+        let identities: Vec<_> = self.identities_of(id).collect();
+        for identity in identities {
+            self.drop_entries(identity, false);
+            self.drop_lobbies(identity);
+            if let Some(account) = self.accounts.get_mut(&identity) {
+                account.info.nickname = DELETED_NICKNAME.to_owned();
+                if let PlayingIdentity::BotVersion { name, .. } = &mut account.identity {
+                    *name = DELETED_NICKNAME.to_owned();
+                    account.info.version = Some(name.clone());
+                }
+            }
         }
         self.bye(id, Error::BadSession);
     }
 
     fn forget_if_idle(&mut self, id: AccountId) {
-        if self.accounts.get(&id).is_some_and(Account::is_idle) {
-            self.accounts.remove(&id);
+        self.forget_if_idle_at(id, std::time::Instant::now());
+    }
+
+    /// Forgets an identity with nothing to do, and its owner once nothing is left to remember.
+    fn forget_if_idle_at(&mut self, id: AccountId, now: std::time::Instant) {
+        let main = self.main_account(id);
+        let settled = self
+            .owners
+            .get(&main)
+            .is_none_or(|owner| owner.lookup_settled_at(now));
+        if !settled || !self.accounts.get(&id).is_some_and(Account::has_no_activity) {
+            return;
+        }
+        self.accounts.remove(&id);
+        if let Some(owner) = self.owners.get_mut(&main) {
+            owner.identities.retain(|identity| *identity != id);
+            if owner.is_idle_at(now) {
+                self.owners.remove(&main);
+            }
         }
     }
 
@@ -532,10 +661,10 @@ impl Hub {
     /// Closes every session of an account after telling it why.
     fn bye(&mut self, id: AccountId, error: Error) {
         let sessions = self
-            .accounts
-            .get(&id)
-            .map(|a| a.sessions.clone())
-            .unwrap_or_default();
+            .identities_of(id)
+            .filter_map(|identity| self.accounts.get(&identity))
+            .flat_map(|a| a.sessions.iter().copied())
+            .collect();
         self.bye_sessions(sessions, error);
     }
 
@@ -543,13 +672,16 @@ impl Hub {
     /// whoever logged in with the old password is out, not only unable to
     /// resume.
     fn end_other_sessions(&mut self, id: AccountId, keep: [u8; 32]) {
-        let others = self.accounts.get(&id).map_or_else(Vec::new, |a| {
-            a.sessions
-                .iter()
-                .copied()
-                .filter(|s| self.sessions.get(s).is_some_and(|s| s.token_hash != keep))
-                .collect()
-        });
+        let others = self
+            .identities_of(id)
+            .filter_map(|identity| self.accounts.get(&identity))
+            .flat_map(|a| a.sessions.iter().copied())
+            .filter(|session| {
+                self.sessions
+                    .get(session)
+                    .is_some_and(|s| s.token_hash != keep)
+            })
+            .collect();
         self.bye_sessions(others, Error::BadSession);
     }
 
@@ -588,7 +720,10 @@ impl Hub {
             ClientMsg::GetAvatar { .. } | ClientMsg::GetAvatars { .. } => Err(Error::Internal),
             ClientMsg::SetAvatar { png } => self.change_avatar(id, Some(png)).await,
             ClientMsg::RemoveAvatar => self.change_avatar(id, None).await,
-            ClientMsg::ChangeNickname { nickname } => self.change_nickname(id, nickname).await,
+            ClientMsg::ChangeNickname { nickname } => {
+                let main = self.main_account(id);
+                self.change_nickname(main, nickname).await
+            }
             ClientMsg::Account { .. } => Err(Error::Internal),
             ClientMsg::Rulesets => Ok(Reply::Rulesets {
                 list: self.config.ruleset_infos(self.kind_of(id)),
@@ -643,6 +778,21 @@ impl Hub {
         }
     }
 
+    /// The online identities of a main account, without scanning the other accounts.
+    fn identities_of(&self, main: AccountId) -> impl Iterator<Item = AccountId> + '_ {
+        self.owners
+            .get(&main)
+            .into_iter()
+            .flat_map(|owner| owner.identities.iter().copied())
+    }
+
+    fn main_account(&self, id: AccountId) -> AccountId {
+        match self.accounts.get(&id).map(|account| &account.identity) {
+            Some(PlayingIdentity::BotVersion { main_account, .. }) => *main_account,
+            _ => id,
+        }
+    }
+
     fn kind_of(&self, id: AccountId) -> AccountKind {
         self.accounts
             .get(&id)
@@ -667,8 +817,11 @@ impl Hub {
             .set_nickname(id, nickname.clone())
             .await
             .map_err(internal)?;
-        if let Some(account) = self.accounts.get_mut(&id) {
-            account.info.nickname = nickname;
+        let identities: Vec<_> = self.identities_of(id).collect();
+        for identity in identities {
+            if let Some(account) = self.accounts.get_mut(&identity) {
+                account.info.nickname = nickname.clone();
+            }
         }
         Ok(Reply::Done)
     }
@@ -694,9 +847,10 @@ impl Hub {
                 let _ = stop.send(());
             }
         }
-        let ids: Vec<AccountId> = self.accounts.keys().copied().collect();
-        for id in ids {
-            self.bye(id, Error::ServerStopping);
+        // `bye` takes a main account: a bot's online identities are its versions, not keys here.
+        let mains: Vec<AccountId> = self.owners.keys().copied().collect();
+        for main in mains {
+            self.bye(main, Error::ServerStopping);
         }
     }
 }

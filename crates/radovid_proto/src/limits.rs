@@ -1,12 +1,10 @@
 //! Limits both sides hold.
 
 /// The version of every wire type here. Bumped on every change of any of them.
-pub const PROTO_VERSION: u16 = 21;
+pub const PROTO_VERSION: u16 = 22;
 
-/// The oldest version a server still serves: a client of it keeps working while the changes since
-/// are only appended fields and variants (postcard leaves trailing bytes of a message unread).
-/// Raised only with a change an older client cannot read.
-pub const MIN_PROTO_VERSION: u16 = 20;
+/// Service and clients are rebuilt together; earlier protocol versions are refused.
+pub const MIN_PROTO_VERSION: u16 = 22;
 
 pub const MAX_AVATAR_BYTES: usize = 512;
 pub const AVATAR_SIDE: u32 = 32;
@@ -77,7 +75,7 @@ pub const MIN_NICKNAME_LEN: usize = 3;
 pub const MAX_NICKNAME_LEN: usize = 20;
 pub const MIN_PASSWORD_LEN: usize = 8;
 pub const MAX_PASSWORD_LEN: usize = 128;
-pub const MAX_BOT_VERSION_LEN: usize = 32;
+pub const MAX_VERSION_LEN: usize = 32;
 pub const MAX_LOBBY_NAME_LEN: usize = 32;
 pub const MAX_LOBBY_PASSWORD_LEN: usize = 32;
 pub const MAX_CLIENT_LABEL_LEN: usize = 64;
@@ -95,3 +93,6 @@ pub const LOBBY_NO_SLOT: u8 = 255;
 
 /// Milliseconds between two `QueueStatus` events of one queue entry at least.
 pub const QUEUE_STATUS_INTERVAL_MS: u32 = 5000;
+
+/// Named identities one bot account can create. Existing versions do not consume a new slot.
+pub const MAX_VERSIONS_PER_ACCOUNT: usize = 128;

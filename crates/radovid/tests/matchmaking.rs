@@ -97,11 +97,7 @@ fn two_bots_accept_are_launched_play_and_are_rated() {
     );
     let seat = &for_alpha.seats[1];
     assert_eq!(
-        (
-            seat.nickname.as_str(),
-            seat.kind,
-            seat.bot_version.as_deref()
-        ),
+        (seat.nickname.as_str(), seat.kind, seat.version.as_deref()),
         ("beta", AccountKind::Bot, Some("test-1"))
     );
     let Ok(Reply::Handoffs { list }) = alpha.ask(ClientMsg::MyMatches) else {
@@ -259,9 +255,7 @@ fn a_decline_returns_the_accepter_to_its_place_and_cools_the_decliner_down() {
         matches!(event, Event::ProposalFailed { .. }).then_some(())
     });
     let mut fresh = env.connect();
-    let back = fresh
-        .login("early", PASSWORD, ClientInfo::default())
-        .expect("login");
+    let back = fresh.login("early", PASSWORD, bot_info()).expect("login");
     assert_eq!(back.activities.queued.len(), 1);
     assert_eq!(
         (
@@ -270,9 +264,7 @@ fn a_decline_returns_the_accepter_to_its_place_and_cools_the_decliner_down() {
         ),
         (entry, 1)
     );
-    let cooled = env
-        .connect()
-        .login("later", PASSWORD, ClientInfo::default());
+    let cooled = env.connect().login("later", PASSWORD, bot_info());
     assert!(cooled.expect("login").activities.cooldown_ms > 100_000);
 }
 
@@ -632,9 +624,7 @@ fn a_second_session_finds_the_running_match_and_an_admin_stops_it() {
     let (handoff, _) = pair_up(&mut a, &mut b, &solo());
 
     let mut second = env.connect();
-    let logged = second
-        .login("alpha", PASSWORD, ClientInfo::default())
-        .expect("login");
+    let logged = second.login("alpha", PASSWORD, bot_info()).expect("login");
     assert_eq!(logged.activities.matches, vec![handoff.match_id]);
     let reply = second
         .request(ClientMsg::MatchHandoff {
@@ -708,7 +698,7 @@ fn bans_remove_the_banned_from_the_queue_and_keep_them_out_until_lifted() {
         }
     );
     let mut again = env.connect();
-    match again.login("troll", PASSWORD, ClientInfo::default()) {
+    match again.login("troll", PASSWORD, bot_info()) {
         Err(radovid_client::ClientError::Refused(Error::Banned {
             reason,
             until: None,
@@ -727,18 +717,22 @@ fn bans_remove_the_banned_from_the_queue_and_keep_them_out_until_lifted() {
         account: troll.me.id,
     });
     again
-        .login("troll", PASSWORD, ClientInfo::default())
+        .login("troll", PASSWORD, bot_info())
         .expect("welcome back");
-    root.expect_done(ClientMsg::AdminSetKind {
-        account: troll.me.id,
-        kind: AccountKind::Human,
-    });
+    // A bot account with versions keeps its kind (the contract of bot versions).
+    assert_eq!(
+        root.ask(ClientMsg::AdminSetKind {
+            account: troll.me.id,
+            kind: AccountKind::Human,
+        }),
+        Err(Error::Forbidden)
+    );
     let Ok(Reply::Account { account }) = honest.ask(ClientMsg::Account {
         account: troll.me.id,
     }) else {
         panic!("account");
     };
-    assert_eq!(account.kind, AccountKind::Human);
+    assert_eq!(account.kind, AccountKind::Bot);
 }
 
 #[test]
@@ -1220,9 +1214,7 @@ fn a_client_of_the_oldest_protocol_fetches_the_replay_and_the_replay_is_the_arti
     let (a, _b, match_id, _) = finished_match(&env, &dir, |env, name| env.bot(name));
     let mut old =
         Client::connect_as(&env.url, &env.tls, MIN_PROTO_VERSION, FINGERPRINT).expect("served");
-    let logged = old
-        .login("alpha", PASSWORD, ClientInfo::default())
-        .expect("login");
+    let logged = old.login("alpha", PASSWORD, bot_info()).expect("login");
     let mut old = Account {
         client: old,
         me: logged.me,

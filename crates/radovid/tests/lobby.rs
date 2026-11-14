@@ -95,7 +95,7 @@ fn a_lobby_fills_kicks_counts_down_and_starts_an_unrated_match() {
         (
             joined.members[1].nickname.as_str(),
             joined.members[1].team,
-            joined.members[1].bot_version.as_deref()
+            joined.members[1].version.as_deref()
         ),
         ("gus", 1, Some("test-1"))
     );

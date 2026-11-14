@@ -9,6 +9,7 @@ mod results;
 mod results_tests;
 #[cfg(test)]
 mod schema_tests;
+mod versions;
 mod visibility;
 mod wal;
 #[cfg(test)]
@@ -23,7 +24,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::rating::Glicko;
 
 /// Schema 2 gains the denormalised category and indexes in one transaction.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const AVATAR_SCHEMA: &str = "
 CREATE TABLE avatars(
@@ -122,6 +123,7 @@ const SESSION_TTL_MS: u64 = 30 * 24 * 3600 * 1000;
 pub enum DbError {
     /// The login is taken.
     Taken,
+    VersionKind,
     Sqlite(rusqlite::Error),
     Join,
     ReadBusy,
@@ -139,6 +141,7 @@ impl std::fmt::Display for DbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DbError::Taken => write!(f, "the login is taken"),
+            DbError::VersionKind => write!(f, "an account with versions cannot be reclassified"),
             DbError::Sqlite(error) => write!(f, "database: {error}"),
             DbError::Join => write!(f, "database task failed"),
             DbError::ReadBusy => write!(f, "database read queue is full"),
@@ -169,7 +172,8 @@ pub struct AccountRow {
     pub kind: AccountKind,
     pub admin: bool,
     pub ban: Option<Ban>,
-    pub bot_version: Option<String>,
+    pub version: Option<String>,
+    pub main_account: Option<AccountId>,
 }
 
 impl AccountRow {
@@ -180,6 +184,8 @@ impl AccountRow {
             nickname: self.nickname.clone(),
             kind: self.kind,
             admin: self.admin,
+            version: self.version.clone(),
+            main_account: self.main_account,
         }
     }
 
@@ -378,7 +384,7 @@ impl Db {
                 transaction.execute_batch(RANKING_SCHEMA)?;
                 transaction.execute_batch(visibility::SCHEMA)?;
                 transaction.execute_batch(AVATAR_SCHEMA)?;
-                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                transaction.pragma_update(None, "user_version", 5)?;
                 transaction.commit()?;
             }
             2 => {
@@ -390,23 +396,23 @@ impl Db {
                 transaction.execute_batch(RANKING_SCHEMA)?;
                 transaction.execute_batch(visibility::SCHEMA)?;
                 transaction.execute_batch(AVATAR_SCHEMA)?;
-                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                transaction.pragma_update(None, "user_version", 5)?;
                 transaction.commit()?;
             }
             3 => {
                 let transaction = conn.transaction()?;
                 transaction.execute_batch(visibility::SCHEMA)?;
                 transaction.execute_batch(AVATAR_SCHEMA)?;
-                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                transaction.pragma_update(None, "user_version", 5)?;
                 transaction.commit()?;
             }
             4 => {
                 let transaction = conn.transaction()?;
                 transaction.execute_batch(AVATAR_SCHEMA)?;
-                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                transaction.pragma_update(None, "user_version", 5)?;
                 transaction.commit()?;
             }
-            SCHEMA_VERSION => {}
+            5 | SCHEMA_VERSION => {}
             other => {
                 return Err(DbError::Sqlite(rusqlite::Error::InvalidParameterName(
                     format!("database schema version {other}, this build writes {SCHEMA_VERSION}"),
@@ -414,6 +420,17 @@ impl Db {
             }
         }
         conn.execute_batch("CREATE INDEX IF NOT EXISTS ratings_account_visibility ON ratings(account,games,hidden);")?;
+        if version < 6 {
+            let transaction = conn.transaction()?;
+            let removed = versions::migrate(&transaction)?;
+            if version != 0 {
+                eprintln!(
+                    "radovid: INFO: schema {version} -> {SCHEMA_VERSION}: removed {removed} bot rating rows; versions start from zero"
+                );
+            }
+            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            transaction.commit()?;
+        }
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),
             readers: None,
@@ -531,15 +548,14 @@ impl Db {
         login: String,
         hash: String,
         kind: AccountKind,
-        bot_version: Option<String>,
     ) -> DbResult<AccountId> {
         let created = now_ms().0 as i64;
         let result = self
             .run(move |c| {
                 c.execute(
-                    "INSERT INTO accounts(login, nickname, hash, kind, bot_version, created)
-                     VALUES(?1, ?1, ?2, ?3, ?4, ?5)",
-                    params![login, hash, kind_code(kind), bot_version, created],
+                    "INSERT INTO accounts(login, nickname, hash, kind, created)
+                     VALUES(?1, ?1, ?2, ?3, ?4)",
+                    params![login, hash, kind_code(kind), created],
                 )?;
                 Ok(AccountId(c.last_insert_rowid() as u64))
             })
@@ -570,18 +586,19 @@ impl Db {
     }
 
     pub async fn set_kind(&self, id: AccountId, kind: AccountKind) -> DbResult<()> {
-        self.exec("UPDATE accounts SET kind = ?2 WHERE id = ?1", move |s| {
-            s.execute(params![id.0 as i64, kind_code(kind)])
-        })
-        .await
-    }
-
-    pub async fn set_bot_version(&self, id: AccountId, version: Option<String>) -> DbResult<()> {
-        self.exec(
-            "UPDATE accounts SET bot_version = ?2 WHERE id = ?1",
-            move |s| s.execute(params![id.0 as i64, version]),
-        )
-        .await
+        self.run(move |connection| {
+            let transaction = connection.transaction()?;
+            let current: i64 = transaction.query_row("SELECT kind FROM accounts WHERE id=?1", [id.0 as i64], |row| row.get(0))?;
+            if current == kind_code(kind) { return Ok(Ok(())); }
+            let has_versions: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM accounts WHERE main_account=?1 OR (id=?1 AND main_account IS NOT NULL))", [id.0 as i64], |row| row.get(0))?;
+            if has_versions { return Ok(Err(Error::Forbidden)); }
+            if kind == AccountKind::Bot {
+                transaction.execute("DELETE FROM ratings WHERE account=?1", [id.0 as i64])?;
+            }
+            transaction.execute("UPDATE accounts SET kind=?2 WHERE id=?1", params![id.0 as i64,kind_code(kind)])?;
+            transaction.commit()?;
+            Ok(Ok(()))
+        }).await?.map_err(|_: Error| DbError::VersionKind)
     }
 
     pub async fn set_ban(&self, id: AccountId, ban: Option<Ban>) -> DbResult<()> {
@@ -795,12 +812,12 @@ impl Db {
         self.run(move |c| {
             let tx = c.transaction()?;
             let id = id.0 as i64;
-            tx.execute("DELETE FROM sessions WHERE account = ?1", [id])?;
-            tx.execute("DELETE FROM ratings WHERE account = ?1", [id])?;
-            tx.execute("DELETE FROM avatars WHERE account = ?1", [id])?;
+            tx.execute("DELETE FROM sessions WHERE account IN (SELECT id FROM accounts WHERE id=?1 OR main_account=?1)", [id])?;
+            tx.execute("DELETE FROM ratings WHERE account IN (SELECT id FROM accounts WHERE id=?1 OR main_account=?1)", [id])?;
+            tx.execute("DELETE FROM avatars WHERE account IN (SELECT id FROM accounts WHERE id=?1 OR main_account=?1)", [id])?;
             tx.execute(
                 "UPDATE accounts SET login = 'deleted#' || id, nickname = ?2, hash = '',
-                 bot_version = NULL, admin = 0, deleted = 1 WHERE id = ?1",
+                 retired_version = NULL, admin = 0, version = NULL, deleted = 1 WHERE id = ?1 OR main_account = ?1",
                 params![id, DELETED_NICKNAME],
             )?;
             tx.commit()
@@ -869,7 +886,7 @@ impl Db {
                         SELECT account FROM ratings r INDEXED BY ratings_global_ladder
                         WHERE r.ruleset=?1 AND {visible}
                         ORDER BY r.rating DESC,r.deviation,r.account LIMIT ?2 OFFSET ?3)
-                    SELECT a.id,a.nickname,a.kind,a.bot_version,r.rating,r.deviation,
+                    SELECT a.id,a.nickname,a.kind,a.version,r.rating,r.deviation,
                         r.games,r.wins,r.draws,r.losses,r.last_played,
                         (SELECT version FROM avatars WHERE account=a.id)
                     FROM picked p CROSS JOIN ratings r ON r.account=p.account AND r.ruleset=?1
@@ -880,12 +897,13 @@ impl Db {
                     .query_map(params![ruleset.0, limit, offset], |row| {
                         let kind = kind_of(row.get(2)?);
                         Ok(LadderRow {
+                            retired_bot_version: None,
                             avatar: row.get::<_, Option<[u8; 32]>>(11)?.map(AvatarVersion),
                             rank: 0,
                             account: AccountId(row.get::<_, i64>(0)? as u64),
                             nickname: row.get(1)?,
                             kind,
-                            bot_version: if kind == AccountKind::Bot {
+                            version: if kind == AccountKind::Bot {
                                 row.get(3)?
                             } else {
                                 None
@@ -919,7 +937,7 @@ impl Db {
 }
 
 const ACCOUNT_SELECT: &str = "SELECT id, login, nickname, hash, kind, admin, banned, ban_reason,
-    ban_until, bot_version FROM accounts";
+    ban_until, version, main_account FROM accounts";
 
 fn account_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
     let ban = if row.get::<_, bool>(6)? {
@@ -938,7 +956,10 @@ fn account_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AccountRow> {
         kind: kind_of(row.get(4)?),
         admin: row.get(5)?,
         ban,
-        bot_version: row.get(9)?,
+        version: row.get(9)?,
+        main_account: row
+            .get::<_, Option<i64>>(10)?
+            .map(|id| AccountId(id as u64)),
     })
 }
 
@@ -1157,7 +1178,7 @@ fn load_result_projection(
     )?;
     let mut statement = c.prepare(
         "SELECT s.slot, s.team, s.account, a.nickname, a.kind,
-                s.before_rating, s.before_deviation, s.after_rating, s.after_deviation
+                s.before_rating, s.before_deviation, s.after_rating, s.after_deviation, a.version
          FROM match_seats s JOIN accounts a ON a.id = s.account WHERE s.match_id = ?1 ORDER BY s.slot",
     )?;
     let seats = statement
@@ -1170,6 +1191,7 @@ fn load_result_projection(
                     .map(|(rating, deviation)| Rating { rating, deviation }))
             };
             Ok(SeatResult {
+                version: row.get(9)?,
                 slot: row.get(0)?,
                 team: row.get(1)?,
                 account: AccountId(row.get::<_, i64>(2)? as u64),

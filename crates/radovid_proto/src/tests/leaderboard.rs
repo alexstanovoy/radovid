@@ -14,12 +14,14 @@ fn a_profile_cannot_make_a_client_cache_more_than_64_mode_ratings() {
         rank: Some(1),
     };
     let account = PublicAccount {
+        main_account: None,
+        retired_bot_version: None,
         avatar: None,
         id: AccountId(1),
         nickname: "alpha".into(),
         kind: AccountKind::Human,
         online: false,
-        bot_version: None,
+        version: None,
         ratings: (0..=MAX_RATED_MODES)
             .map(|index| (RulesetId(format!("mode_{index}")), rating))
             .collect(),
@@ -41,12 +43,13 @@ fn a_profile_cannot_make_a_client_cache_more_than_64_mode_ratings() {
 #[test]
 fn a_leaderboard_reply_is_bounded_before_a_client_can_cache_it() {
     let row = LadderRow {
+        retired_bot_version: None,
         avatar: None,
         rank: 1,
         account: AccountId(1),
         nickname: "alpha".into(),
         kind: AccountKind::Human,
-        bot_version: None,
+        version: None,
         rating: Rating {
             rating: 1500.0,
             deviation: 350.0,

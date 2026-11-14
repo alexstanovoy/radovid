@@ -72,7 +72,6 @@ async fn ipv6_site_cap_combines_distinct_subnets_and_releases_cancelled_entries(
             "player".into(),
             "unused-auth-boundary".into(),
             AccountKind::Human,
-            None,
         )
         .await
         .expect("account");

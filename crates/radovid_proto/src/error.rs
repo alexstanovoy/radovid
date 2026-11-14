@@ -35,7 +35,8 @@ pub enum Error {
     LoginTaken,
     BadNickname,
     WeakPassword,
-    BadBotVersion,
+    #[doc(hidden)]
+    RetiredBadBotVersion,
     BadLobbyName,
     Forbidden,
     UnknownAccount,
@@ -131,11 +132,29 @@ pub enum Error {
     BadAvatar,
     /// Batch must contain one to 100 distinct valid account IDs.
     BadAvatarBatch,
+    VersionRequired,
+    VersionNotAllowed,
+    BadVersion,
+    VersionLimit,
 }
 
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::VersionRequired => f.write_str("a bot account must select a version"),
+            Self::VersionNotAllowed => f.write_str("human accounts cannot select a version"),
+            Self::BadVersion => write!(
+                f,
+                "a version name must be 1 to {} printable ASCII bytes without edge whitespace",
+                crate::MAX_VERSION_LEN
+            ),
+            Self::VersionLimit => write!(
+                f,
+                "a bot account can have at most {} versions",
+                crate::MAX_VERSIONS_PER_ACCOUNT
+            ),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
 

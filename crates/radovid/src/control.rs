@@ -26,7 +26,8 @@ const BREACH_WINDOW: Duration = Duration::from_secs(60);
 
 struct Live {
     id: SessionId,
-    account: AccountInfo,
+    account: AccountId,
+    login: String,
     token_hash: [u8; 32],
     events: mpsc::Receiver<ServerMsg>,
 }
@@ -320,13 +321,13 @@ impl Conn {
         if !valid_password(&password) {
             return Err(Error::WeakPassword);
         }
-        let bot_version = check_bot_version(kind, client)?;
+        check_version(kind, &client)?;
         self.shared.register_allowed(self.ip)?;
         let hash = self.shared.passwords.hash(self.ip, password).await?;
         let id = match self
             .shared
             .db
-            .create_account(login.clone(), hash, kind, bot_version)
+            .create_account(login.clone(), hash, kind)
             .await
         {
             Ok(id) => id,
@@ -340,6 +341,7 @@ impl Conn {
             .await
             .map_err(crate::hub::internal)?
             .ok_or(Error::Internal)?;
+        let row = self.admit(row, client).await?;
         self.finish_login(row, None, guard).await
     }
 
@@ -418,18 +420,15 @@ impl Conn {
                 until: ban.until,
             });
         }
-        let bot_version = check_bot_version(row.kind, client)?;
-        if bot_version.is_some() && bot_version != row.bot_version {
-            self.shared
+        match check_version(row.kind, &client)? {
+            Some(name) => self
+                .shared
                 .db
-                .set_bot_version(row.id, bot_version.clone())
+                .select_version(row.id, name.to_owned())
                 .await
-                .map_err(crate::hub::internal)?;
+                .map_err(crate::hub::internal)?,
+            None => Ok(row),
         }
-        Ok(AccountRow {
-            bot_version: bot_version.or(row.bot_version.clone()),
-            ..row
-        })
     }
 
     /// Opens the session at the hub and answers the login.
@@ -449,7 +448,8 @@ impl Conn {
                 (SessionToken(bytes), true)
             }
         };
-        let account = row.id;
+        let account = row.main_account.unwrap_or(row.id);
+        let login = row.login.clone();
         let (events_tx, events) = event_channel();
         let (reply, answer) = oneshot::channel();
         let me = row.info();
@@ -480,7 +480,8 @@ impl Conn {
         guard.release();
         self.live = Some(Live {
             id,
-            account: me.clone(),
+            account,
+            login,
             token_hash: token_hash(&token),
             events,
         });
@@ -494,7 +495,7 @@ impl Conn {
     /// Checks the account's own password again, under the login delay.
     async fn reverify(&self, password: String) -> Result<(AccountId, [u8; 32]), Error> {
         let (id, login, keep) = match &self.live {
-            Some(live) => (live.account.id, live.account.login.clone(), live.token_hash),
+            Some(live) => (live.account, live.login.clone(), live.token_hash),
             None => return Err(Error::NotLoggedIn),
         };
         if let Some(error) = self.throttled(&login) {
@@ -567,13 +568,13 @@ impl Conn {
     }
 }
 
-fn check_bot_version(kind: AccountKind, client: ClientInfo) -> Result<Option<String>, Error> {
-    match (kind, client.bot_version) {
+fn check_version(kind: AccountKind, client: &ClientInfo) -> Result<Option<&str>, Error> {
+    match (kind, client.version.as_deref()) {
+        (AccountKind::Human, Some(_)) => Err(Error::VersionNotAllowed),
         (AccountKind::Human, None) => Ok(None),
-        (AccountKind::Human, Some(_)) => Err(Error::BadBotVersion),
-        (AccountKind::Bot, None) => Ok(None),
-        (AccountKind::Bot, Some(version)) if valid_bot_version(&version) => Ok(Some(version)),
-        (AccountKind::Bot, Some(_)) => Err(Error::BadBotVersion),
+        (AccountKind::Bot, None) => Err(Error::VersionRequired),
+        (AccountKind::Bot, Some(name)) if valid_version(name) => Ok(Some(name)),
+        (AccountKind::Bot, Some(_)) => Err(Error::BadVersion),
     }
 }
 

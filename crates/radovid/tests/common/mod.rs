@@ -19,6 +19,14 @@ use radovid_client::proto::*;
 use radovid_client::{Client, ClientError, Incoming, TlsConfig};
 
 pub const PASSWORD: &str = "correct horse battery";
+
+/// What a bot client states at login: the version it plays as.
+pub fn bot_info() -> ClientInfo {
+    ClientInfo {
+        retired_bot_version: None,
+        version: Some("test-1".to_owned()),
+    }
+}
 /// The game wire the test rulesets and clients name.
 pub const FINGERPRINT: u64 = 0x1e88_417a_0b3c_5d6f;
 
@@ -34,9 +42,24 @@ pub struct Env {
     pub cert_pem: String,
     /// The game ports of the service, leased until it is stopped.
     _ports: PortLease,
+    config: Config,
 }
 
 impl Env {
+    pub fn restart(&mut self) {
+        if let Some(service) = self.service.take() {
+            self.runtime.block_on(service.shutdown());
+        }
+        let identity = self_signed();
+        let service = self
+            .runtime
+            .block_on(Service::start(self.config.clone(), &identity))
+            .expect("restart service");
+        self.url = format!("wss://127.0.0.1:{}", service.addr.port());
+        self.tls = TlsConfig::trust_pem(&identity.cert_pem).expect("trust restarted service");
+        self.cert_pem = identity.cert_pem;
+        self.service = Some(service);
+    }
     pub fn service(&self) -> &Service {
         self.service.as_ref().expect("service")
     }
@@ -111,7 +134,8 @@ impl Env {
     pub fn account(&self, login: &str, kind: AccountKind) -> Account {
         let mut client = self.connect();
         let info = ClientInfo {
-            bot_version: (kind == AccountKind::Bot).then(|| "test-1".to_owned()),
+            retired_bot_version: None,
+            version: (kind == AccountKind::Bot).then(|| "test-1".to_owned()),
         };
         let logged = client
             .register(login, PASSWORD, kind, info)
@@ -136,6 +160,17 @@ impl Env {
         let mut client = self.connect();
         let logged = client
             .login(login, PASSWORD, ClientInfo::default())
+            .or_else(|error| match error {
+                ClientError::Refused(Error::VersionRequired) => client.login(
+                    login,
+                    PASSWORD,
+                    ClientInfo {
+                        retired_bot_version: None,
+                        version: Some("test-1".into()),
+                    },
+                ),
+                other => Err(other),
+            })
             .expect("login");
         Account {
             client,
@@ -313,7 +348,7 @@ pub fn try_start(
         .enable_all()
         .build()
         .expect("runtime");
-    let service = match runtime.block_on(Service::start(config, &identity)) {
+    let service = match runtime.block_on(Service::start(config.clone(), &identity)) {
         Ok(service) => service,
         Err(error) => {
             let _ = std::fs::remove_dir_all(&dir);
@@ -324,6 +359,7 @@ pub fn try_start(
         url: format!("wss://127.0.0.1:{}", service.addr.port()),
         tls: TlsConfig::trust_pem(&identity.cert_pem).expect("trust"),
         cert_pem: identity.cert_pem.clone(),
+        config,
         runtime,
         service: Some(service),
         dir,

@@ -435,6 +435,7 @@ mod tests {
             cheats: false,
             seats: vec![SeatSpec {
                 account: radovid_proto::AccountId(42),
+                version: None,
                 ticket: Ticket([0; 32]),
                 team: 0,
                 name: "seat".into(),

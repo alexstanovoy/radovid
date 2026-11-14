@@ -1,4 +1,4 @@
-//! Frozen frames of version 12: the bytes a client of 12 reads for a lobby's state, in a reply
+//! Frozen frames of version 22: the bytes a client of 22 reads for a lobby's state, in a reply
 //! and in an event, with each value of its cheats. A change of their layout fails here, whatever
 //! the registry says.
 
@@ -15,10 +15,11 @@ fn lobby(cheats: Option<bool>) -> LobbyState {
         rated: false,
         locked: true,
         members: vec![LobbyMember {
+            retired_bot_version: None,
             account: AccountId(3),
             nickname: "olga".to_owned(),
             kind: AccountKind::Human,
-            bot_version: None,
+            version: None,
             rating: None,
             slot: 0,
             team: 0,
@@ -55,17 +56,17 @@ fn frames() -> Vec<(ServerMsg, &'static str)> {
 }
 
 const REPLY_NONE: &str =
-    "28000000000907070773616e64626f780466756c6c030000010103046f6c6761000000000000000002050500";
+    "29000000000907070773616e64626f780466756c6c030000010103046f6c676100000000000000000002050500";
 const REPLY_OFF: &str =
-    "29000000000907070773616e64626f780466756c6c030000010103046f6c676100000000000000000205050100";
+    "2a000000000907070773616e64626f780466756c6c030000010103046f6c67610000000000000000000205050100";
 const REPLY_ON: &str =
-    "29000000000907070773616e64626f780466756c6c030000010103046f6c676100000000000000000205050101";
+    "2a000000000907070773616e64626f780466756c6c030000010103046f6c67610000000000000000000205050101";
 const EVENT_NONE: &str =
-    "270000000206070773616e64626f780466756c6c030000010103046f6c6761000000000000000002050500";
+    "280000000206070773616e64626f780466756c6c030000010103046f6c676100000000000000000002050500";
 const EVENT_OFF: &str =
-    "280000000206070773616e64626f780466756c6c030000010103046f6c676100000000000000000205050100";
+    "290000000206070773616e64626f780466756c6c030000010103046f6c67610000000000000000000205050100";
 const EVENT_ON: &str =
-    "280000000206070773616e64626f780466756c6c030000010103046f6c676100000000000000000205050101";
+    "290000000206070773616e64626f780466756c6c030000010103046f6c67610000000000000000000205050101";
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -79,7 +80,7 @@ fn unhex(text: &str) -> Vec<u8> {
 }
 
 #[test]
-fn a_lobby_state_of_version_12_keeps_its_bytes_with_every_cheats_value() {
+fn a_lobby_state_of_version_22_keeps_its_bytes_with_every_cheats_value() {
     for (msg, frozen) in frames() {
         let bytes = encode_frame_to_vec(&msg).expect("encoded");
         assert_eq!(hex(&bytes), frozen, "the frame of {msg:?} changed");

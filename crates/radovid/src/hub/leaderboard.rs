@@ -20,8 +20,10 @@ impl Hub {
         id: AccountId,
         now: std::time::Instant,
     ) -> Result<(), Error> {
-        let account = self.accounts.get_mut(&id).ok_or(Error::NotLoggedIn)?;
-        account
+        let main = self.main_account(id);
+        self.accounts.get(&id).ok_or(Error::NotLoggedIn)?;
+        let owner = self.owners.get_mut(&main).ok_or(Error::NotLoggedIn)?;
+        owner
             .lookup_budget
             .take(now)
             .map_err(|retry_after_ms| Error::Throttled { retry_after_ms })
@@ -35,7 +37,16 @@ impl Hub {
     }
 
     pub(super) fn sweep_lookup_accounts(&mut self, now: std::time::Instant) {
-        self.accounts.retain(|_, account| !account.is_idle_at(now));
+        let idle: Vec<_> = self
+            .accounts
+            .iter()
+            .filter(|(_, account)| account.has_no_activity())
+            .map(|(id, _)| *id)
+            .collect();
+        for id in idle {
+            self.forget_if_idle_at(id, now);
+        }
+        self.owners.retain(|_, owner| !owner.is_idle_at(now));
     }
 
     pub(super) fn prepare_lookup(
@@ -129,26 +140,28 @@ impl Hub {
             }
             _ => return Err(Error::Internal),
         };
+        let main = self.main_account(id);
         if self
-            .accounts
-            .get(&id)
-            .is_some_and(|account| account.lookup_pending)
+            .owners
+            .get(&main)
+            .is_some_and(|owner| owner.lookup_pending)
         {
             return Err(Error::Throttled {
                 retry_after_ms: 250,
             });
         }
         self.charge_lookup(id)?;
-        self.accounts
-            .get_mut(&id)
+        self.owners
+            .get_mut(&main)
             .ok_or(Error::NotLoggedIn)?
             .lookup_pending = true;
         Ok((id, lookup))
     }
 
     pub(super) fn lookup_done(&mut self, id: AccountId) {
-        if let Some(account) = self.accounts.get_mut(&id) {
-            account.lookup_pending = false;
+        let main = self.main_account(id);
+        if let Some(owner) = self.owners.get_mut(&main) {
+            owner.lookup_pending = false;
         }
         self.forget_if_idle(id);
     }

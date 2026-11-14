@@ -14,7 +14,9 @@ use crate::config::RulesetConfig;
 use crate::matching::{self, Candidate};
 use crate::rating::INITIAL_RATING;
 
-pub(super) const QUEUE_SCAN_BUDGET: usize = crate::config::MAX_QUEUE_CAPACITY as usize;
+/// What one tick of pairing may spend. A queue longer than this is paired among its oldest entries
+/// first: the longest waiting are the ones a group is formed around.
+pub(super) const QUEUE_SCAN_BUDGET: usize = matching::TICK_BUDGET;
 const QUEUE_AUDIENCES: [Audience; MAX_QUEUE_AUDIENCES] = [Audience::HumansOnly, Audience::Everyone];
 
 struct PendingSearch {
@@ -403,17 +405,20 @@ impl Hub {
             if queue.len() < ruleset.seats() {
                 break;
             }
-            if queue.len() > self.pair_work {
+            let considered = queue.len().min(QUEUE_SCAN_BUDGET);
+            if considered > self.pair_work {
                 return false;
             }
             let candidates: Vec<_> = queue
                 .iter()
+                .take(considered)
                 .enumerate()
                 .filter_map(|(order, id)| {
                     let entry = self.entries.get(id)?;
                     entry.proposal.is_none().then(|| Candidate {
                         entry: *id,
                         account: entry.account,
+                        main_account: self.main_account(entry.account),
                         source: entry.source,
                         rating: entry.rating,
                         order,
@@ -423,7 +428,7 @@ impl Hub {
                     })
                 })
                 .collect();
-            self.pair_work -= queue.len() - candidates.len();
+            self.pair_work -= considered - candidates.len();
             if candidates.len() < ruleset.seats() {
                 self.pair_work -= candidates.len();
                 break;

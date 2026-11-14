@@ -3,7 +3,10 @@
 //! `{match_id}`, `{port}`, `{seats}` (`ticket_hex:team:name:kind` per slot in
 //! slot order, comma separated; kind is `bot` or `human`, the account's own),
 //! `{ticket_<slot>}`, `{team_<slot>}`, `{name_<slot>}`, `{kind_<slot>}`; `{{` and `}}` are literal braces. Nothing else is
-//! interpreted. `{accounts}` and `{account_<slot>}` are public account ids in slot order. Tickets may only go into the environment: an argument shows
+//! interpreted. `{accounts}` and `{account_<slot>}` are public account ids in slot order.
+//! `{seats_with_versions}` appends `:v=<hex>` to each seat (`v=-` for no
+//! version). Encoding preserves opaque names containing delimiters. Tickets may only go into
+//! the environment: an argument shows
 //! in every process listing.
 
 use radovid_proto::{AccountId, AccountKind, MatchId, Ticket};
@@ -15,10 +18,11 @@ pub struct SeatSpec {
     pub account: AccountId,
     pub ticket: Ticket,
     pub team: u8,
-    /// `[A-Za-z0-9_]`, unique within the match.
+    /// A validated display nickname; multiple seats may share it.
     pub name: String,
     /// What the account is; only an administrator changes it.
     pub kind: AccountKind,
+    pub version: Option<String>,
 }
 
 impl SeatSpec {
@@ -110,7 +114,7 @@ pub fn check_with(
         let secret = match name {
             "match_id" | "port" | "accounts" => false,
             "artifact" if artifact => false,
-            "seats" => true,
+            "seats" | "seats_with_versions" => true,
             _ => match per_seat(name) {
                 Some((slot, _)) if slot >= seats => {
                     return Err(format!("{{{name}}}: the ruleset has {seats} seats"));
@@ -150,18 +154,29 @@ pub fn expand(template: &str, vars: &Vars<'_>) -> String {
                         .join(","),
                 );
             }
-            Piece::Name("seats") => {
+            Piece::Name(kind @ ("seats" | "seats_with_versions")) => {
                 let seats: Vec<String> = vars
                     .seats
                     .iter()
                     .map(|s| {
-                        format!(
+                        let mut seat = format!(
                             "{}:{}:{}:{}",
                             s.ticket.to_hex(),
                             s.team,
                             s.name,
                             s.kind_word()
-                        )
+                        );
+                        if kind == "seats_with_versions" {
+                            let encoded = s.version.as_ref().map_or_else(
+                                || "-".to_owned(),
+                                |version| {
+                                    version.bytes().map(|byte| format!("{byte:02x}")).collect()
+                                },
+                            );
+                            seat.push_str(":v=");
+                            seat.push_str(&encoded);
+                        }
+                        seat
                     })
                     .collect();
                 out.push_str(&seats.join(","));
@@ -199,6 +214,7 @@ mod profile_tests {
                 team: 0,
                 name: "player".into(),
                 kind: AccountKind::Human,
+                version: None,
             },
             SeatSpec {
                 account: AccountId(99),
@@ -206,6 +222,7 @@ mod profile_tests {
                 team: 1,
                 name: "bot".into(),
                 kind: AccountKind::Bot,
+                version: None,
             },
         ];
         let vars = Vars {
@@ -220,5 +237,52 @@ mod profile_tests {
             check("{seats}", 2, false).is_err(),
             "existing ticket-bearing format remains secret"
         );
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn versions_are_opaque_separate_fields_and_ticket_placeholders_stay_private() {
+        let seats = [
+            SeatSpec {
+                account: AccountId(1),
+                ticket: Ticket([1; 32]),
+                team: 0,
+                name: "engine".into(),
+                kind: AccountKind::Bot,
+                version: Some("v1, (x:y)".into()),
+            },
+            SeatSpec {
+                account: AccountId(2),
+                ticket: Ticket([2; 32]),
+                team: 1,
+                name: "person".into(),
+                kind: AccountKind::Human,
+                version: None,
+            },
+        ];
+        let vars = Vars {
+            match_id: MatchId(7),
+            port: 1234,
+            seats: &seats,
+            artifact: None,
+        };
+        assert_eq!(
+            expand("{seats_with_versions}", &vars),
+            format!(
+                "{}:0:engine:bot:v=76312c2028783a7929,{}:1:person:human:v=-",
+                seats[0].ticket.to_hex(),
+                seats[1].ticket.to_hex()
+            )
+        );
+        assert_eq!(
+            check("{seats_with_versions}", 2, false)
+                .expect_err("tickets cannot be exposed in arguments"),
+            "{seats_with_versions} carries tickets: put it in env, where no process listing shows it"
+        );
+        assert!(check("{seats_with_versions}", 2, true).is_ok());
     }
 }

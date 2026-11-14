@@ -21,6 +21,14 @@ where
 }
 
 fuzz_target!(|data: &[u8]| {
+    if let Ok(name) = std::str::from_utf8(data) {
+        if radovid_proto::valid_version(name) {
+            assert!(!name.is_empty());
+            assert!(name.len() <= radovid_proto::MAX_VERSION_LEN);
+            assert_eq!(name, name.trim());
+            assert!(name.bytes().all(|byte| (32..=126).contains(&byte)));
+        }
+    }
     let _ = radovid::db::decode_pending_result(data);
     if data.len() <= radovid_proto::MAX_GAME_REPORT_LEN + 4096 {
         let mut digest = Sha256::new();

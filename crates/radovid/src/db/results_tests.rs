@@ -20,7 +20,7 @@ async fn fixture() -> (Scratch, Db, MatchId, Vec<NewSeat>) {
     let mut seats = Vec::new();
     for (index, name) in ["alpha", "beta"].into_iter().enumerate() {
         let account = db
-            .create_account(name.into(), "hash".into(), AccountKind::Human, None)
+            .create_account(name.into(), "hash".into(), AccountKind::Human)
             .await
             .expect("account");
         seats.push(NewSeat {

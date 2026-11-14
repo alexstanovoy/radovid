@@ -63,7 +63,6 @@ impl Fixture {
                 name.into(),
                 "authenticated fixture".into(),
                 AccountKind::Human,
-                None,
             )
             .await
             .expect("account");
@@ -930,5 +929,370 @@ async fn cancelling_and_restarting_a_lobby_keeps_exactly_one_pending_timer() {
         fixture.hub.matches.len(),
         1,
         "the current timer still launches the game"
+    );
+}
+
+impl Fixture {
+    async fn version(&mut self, owner: AccountId, name: &str) -> (AccountId, SessionId) {
+        let account = self
+            .hub
+            .db
+            .select_version(owner, name.into())
+            .await
+            .expect("database")
+            .expect("version");
+        let id = account.id;
+        let (events, receiver) = event_channel();
+        self.events.push(receiver);
+        let (reply, answer) = oneshot::channel();
+        self.hub.attach(Attach {
+            account,
+            token_hash: [0; 32],
+            game_fingerprint: self.hub.config.rulesets[0].game_fingerprint,
+            source: "127.0.0.1".parse().expect("source"),
+            events,
+            reply,
+        });
+        (id, answer.await.expect("reply").expect("attached").0)
+    }
+}
+
+#[tokio::test]
+async fn versions_remain_separate_after_widening_and_requeue_and_do_not_hide_eligible_peers() {
+    for mode in ["ranked", "casual"] {
+        let mut fixture = Fixture::new();
+        let (owner, _) = fixture.account("engine").await;
+        fixture
+            .hub
+            .db
+            .set_kind(owner, AccountKind::Bot)
+            .await
+            .expect("kind");
+        let (_, first) = fixture.version(owner, "v1").await;
+        let (_, second) = fixture.version(owner, "v2").await;
+        let a = fixture.join(first, mode).await;
+        let b = fixture.join(second, mode).await;
+        for entry in [a, b] {
+            fixture.hub.entries.get_mut(&entry).expect("entry").since -= Duration::from_secs(600);
+        }
+        fixture.hub.tick();
+        assert!(
+            fixture.hub.proposals.is_empty(),
+            "widening cannot pair an owner's versions"
+        );
+        let (peer, peer_session) = fixture.account("peer").await;
+        fixture.join(peer_session, mode).await;
+        let proposal = *fixture
+            .hub
+            .proposals
+            .keys()
+            .next()
+            .expect("third party is matched");
+        let first_id = fixture.hub.sessions[&first].account;
+        fixture
+            .hub
+            .match_accept(first_id, proposal)
+            .await
+            .expect("accept");
+        fixture.hub.match_decline(peer, proposal).expect("decline");
+        fixture.hub.tick();
+        assert!(
+            fixture.hub.proposals.is_empty(),
+            "requeue cannot pair an owner's versions"
+        );
+        // An incompatible older version cannot hide a compatible newer one.
+        fixture.hub.entries.get_mut(&a).expect("entry").rating = 10_000.0;
+        let (_, fresh_session) = fixture.account("fresh").await;
+        let c = fixture.join(fresh_session, mode).await;
+        let selected = fixture
+            .hub
+            .proposals
+            .values()
+            .next()
+            .expect("eligible version is not starved");
+        assert!(selected.entries.contains(&b));
+        assert!(selected.entries.contains(&c));
+        assert!(!selected.entries.contains(&a));
+    }
+}
+
+#[tokio::test]
+async fn versions_cannot_attach_if_owner_was_banned_or_deleted_after_authentication() {
+    for deleted in [false, true] {
+        let mut fixture = Fixture::new();
+        let (owner, _) = fixture.account("engine").await;
+        fixture
+            .hub
+            .db
+            .set_kind(owner, AccountKind::Bot)
+            .await
+            .expect("kind");
+        let stale = fixture
+            .hub
+            .db
+            .select_version(owner, "v1".into())
+            .await
+            .expect("database")
+            .expect("version");
+        let error = if deleted {
+            fixture.hub.db.delete_account(owner).await.expect("delete");
+            Error::BadSession
+        } else {
+            fixture
+                .hub
+                .db
+                .set_ban(
+                    owner,
+                    Some(crate::db::Ban {
+                        reason: "blocked".into(),
+                        until: None,
+                    }),
+                )
+                .await
+                .expect("ban");
+            Error::Banned {
+                reason: "blocked".into(),
+                until: None,
+            }
+        };
+        let (events, _receiver) = event_channel();
+        let (reply, answer) = oneshot::channel();
+        fixture
+            .hub
+            .handle(Cmd::Attach(Box::new(Attach {
+                account: stale,
+                token_hash: [0; 32],
+                game_fingerprint: fixture.hub.config.rulesets[0].game_fingerprint,
+                source: "127.0.0.1".parse().expect("source"),
+                events,
+                reply,
+            })))
+            .await;
+        assert_eq!(answer.await.expect("reply"), Err(error));
+    }
+}
+
+#[tokio::test]
+async fn a_kind_change_waits_for_the_match_to_end_and_a_bot_main_stays_unrated() {
+    for phase in [
+        matches::Phase::Waiting,
+        matches::Phase::Starting,
+        matches::Phase::Running,
+    ] {
+        let mut fixture = Fixture::new();
+        let (admin, admin_session) = fixture.account("admin").await;
+        fixture
+            .hub
+            .db
+            .grant_admin("admin".into())
+            .await
+            .expect("database query");
+        fixture
+            .hub
+            .accounts
+            .get_mut(&admin)
+            .expect("admin fixture")
+            .info
+            .admin = true;
+        let (human, _) = fixture.account("human").await;
+        let (peer, _) = fixture.account("peer").await;
+        let game = fixture.game(&[human, peer]).await;
+        fixture
+            .hub
+            .matches
+            .get_mut(&game)
+            .expect("pending match")
+            .phase = phase;
+        let change = |kind| ClientMsg::AdminSetKind {
+            account: human,
+            kind,
+        };
+        assert_eq!(
+            fixture
+                .hub
+                .request(admin_session, change(AccountKind::Human))
+                .await,
+            Ok(Reply::Done),
+            "same-kind requests remain no-ops"
+        );
+        let error = fixture
+            .hub
+            .request(admin_session, change(AccountKind::Bot))
+            .await
+            .expect_err("a kind change during a match is forbidden");
+        assert_eq!(error, Error::Forbidden);
+        assert_eq!(error.to_string(), "Forbidden");
+        assert_eq!(
+            fixture
+                .hub
+                .db
+                .account_by_id(human)
+                .await
+                .expect("database query")
+                .expect("account exists")
+                .kind,
+            AccountKind::Human
+        );
+        fixture.win(game).await;
+        assert!(
+            fixture
+                .hub
+                .db
+                .rating(human, RulesetId("ranked".into()))
+                .await
+                .expect("database query")
+                .is_some()
+        );
+        assert_eq!(
+            fixture
+                .hub
+                .request(admin_session, change(AccountKind::Bot))
+                .await,
+            Ok(Reply::Done)
+        );
+        assert!(
+            fixture
+                .hub
+                .db
+                .rating(human, RulesetId("ranked".into()))
+                .await
+                .expect("database query")
+                .is_none(),
+            "conversion removes the main's former human rating"
+        );
+        let (version, _) = fixture.version(human, "v1").await;
+        assert!(
+            fixture
+                .hub
+                .db
+                .rating(version, RulesetId("ranked".into()))
+                .await
+                .expect("database query")
+                .is_none(),
+            "a selected version starts unrated"
+        );
+        let game = fixture.game(&[version, peer]).await;
+        fixture.win(game).await;
+        assert!(
+            fixture
+                .hub
+                .db
+                .rating(version, RulesetId("ranked".into()))
+                .await
+                .expect("database query")
+                .is_some()
+        );
+        assert!(
+            fixture
+                .hub
+                .db
+                .rating(human, RulesetId("ranked".into()))
+                .await
+                .expect("database query")
+                .is_none(),
+            "only the played version receives a rating"
+        );
+    }
+}
+
+#[tokio::test]
+async fn lookup_quota_belongs_to_the_main_account_not_to_each_version() {
+    let mut fixture = Fixture::new();
+    let (owner, _) = fixture.account("engine").await;
+    fixture
+        .hub
+        .db
+        .set_kind(owner, AccountKind::Bot)
+        .await
+        .expect("kind");
+    let (first, _) = fixture.version(owner, "v1").await;
+    let (second, _) = fixture.version(owner, "v2").await;
+    let now = std::time::Instant::now();
+    for _ in 0..4 {
+        fixture
+            .hub
+            .charge_lookup_at(first, now)
+            .expect("the burst of the main account");
+    }
+    assert_eq!(
+        fixture.hub.charge_lookup_at(second, now),
+        Err(Error::Throttled {
+            retry_after_ms: 250
+        }),
+        "another version cannot multiply the quota"
+    );
+}
+
+#[tokio::test]
+async fn a_second_version_cannot_exceed_the_session_cap_of_the_main_account() {
+    let mut fixture = Fixture::new();
+    let (owner, _) = fixture.account("engine").await;
+    fixture
+        .hub
+        .db
+        .set_kind(owner, AccountKind::Bot)
+        .await
+        .expect("kind");
+    // The main account's own session counts too: fill what is left through the first version.
+    for _ in 1..MAX_SESSIONS_PER_ACCOUNT {
+        fixture.version(owner, "v1").await;
+    }
+    let second = fixture
+        .hub
+        .db
+        .select_version(owner, "v2".into())
+        .await
+        .expect("database")
+        .expect("version");
+    let (events, _receiver) = event_channel();
+    let (reply, answer) = oneshot::channel();
+    fixture.hub.attach(Attach {
+        account: second,
+        token_hash: [0; 32],
+        game_fingerprint: fixture.hub.config.rulesets[0].game_fingerprint,
+        source: "127.0.0.1".parse().expect("source"),
+        events,
+        reply,
+    });
+    assert_eq!(
+        answer.await.expect("reply").err(),
+        Some(Error::TooManySessions),
+        "the cap counts the sessions of every version together"
+    );
+}
+
+#[tokio::test]
+async fn a_graceful_shutdown_tells_every_online_bot_version_the_server_is_stopping() {
+    let mut fixture = Fixture::new();
+    // Only the version is online, as for a real bot: its main account holds no session.
+    let owner = fixture
+        .hub
+        .db
+        .create_account(
+            "engine".into(),
+            "authenticated fixture".into(),
+            AccountKind::Bot,
+        )
+        .await
+        .expect("account");
+    let (_, session) = fixture.version(owner, "v1").await;
+    let events = fixture.events.last_mut().expect("the version's events");
+    fixture.hub.shutdown().await;
+    let mut told = Vec::new();
+    while let Ok(message) = events.try_recv() {
+        told.push(message);
+    }
+    assert!(
+        told.iter().any(|message| matches!(
+            message,
+            ServerMsg::Event(Event::Bye {
+                error: Error::ServerStopping
+            })
+        )),
+        "the bot version's session got no ServerStopping: {told:?}"
+    );
+    assert!(
+        !fixture.hub.sessions.contains_key(&session),
+        "the bot version's session is detached"
     );
 }

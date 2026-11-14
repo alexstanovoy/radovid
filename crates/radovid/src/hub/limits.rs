@@ -54,7 +54,13 @@ impl Hub {
             return Err(Error::AudienceMismatch);
         }
         let limit = ruleset.games_per_account(&self.config.limits, account.info.kind);
-        if limit != 0 && account.in_flight() >= usize::from(limit) {
+        let main = self.main_account(s.account);
+        let in_flight: usize = self
+            .identities_of(main)
+            .filter_map(|identity| self.accounts.get(&identity))
+            .map(super::Account::in_flight)
+            .sum();
+        if limit != 0 && in_flight >= usize::from(limit) {
             return Err(Error::TooManyGames { limit });
         }
         let per_source = self.config.limits.games_per_source;
@@ -102,7 +108,7 @@ impl Hub {
             .account;
         if let Some(until) = self
             .penalties
-            .get(&id)
+            .get(&self.main_account(id))
             .and_then(|p| p.decline_until)
             .filter(|t| *t > Instant::now())
         {
@@ -148,7 +154,7 @@ impl Hub {
 
     /// Milliseconds before the account may queue again.
     pub(super) fn cooldown_ms(&self, id: AccountId) -> u32 {
-        let Some(penalty) = self.penalties.get(&id) else {
+        let Some(penalty) = self.penalties.get(&self.main_account(id)) else {
             return 0;
         };
         let now = Instant::now();
@@ -162,7 +168,7 @@ impl Hub {
     pub(super) fn decline_cooldown(&mut self, id: AccountId) -> u32 {
         let secs = self.config.limits.decline_cooldown_secs;
         if secs > 0 {
-            let penalty = self.penalties.entry(id).or_default();
+            let penalty = self.penalties.entry(self.main_account(id)).or_default();
             penalty.decline_until = Some(Instant::now() + Duration::from_secs(u64::from(secs)));
         }
         secs * 1000

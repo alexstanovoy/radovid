@@ -103,7 +103,9 @@ impl RatingWindow {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct ClientInfo {
-    pub bot_version: Option<String>,
+    #[doc(hidden)]
+    pub retired_bot_version: Option<String>,
+    pub version: Option<String>,
 }
 
 /// The caller's own account.
@@ -114,6 +116,9 @@ pub struct AccountInfo {
     pub nickname: String,
     pub kind: AccountKind,
     pub admin: bool,
+    pub version: Option<String>,
+    /// Credential-owning account; absent for a main account.
+    pub main_account: Option<AccountId>,
 }
 
 /// Anyone's account.
@@ -123,10 +128,14 @@ pub struct PublicAccount {
     pub nickname: String,
     pub kind: AccountKind,
     pub online: bool,
-    pub bot_version: Option<String>,
+    #[doc(hidden)]
+    pub retired_bot_version: Option<String>,
     #[serde(deserialize_with = "profile_ratings")]
     pub ratings: Vec<(RulesetId, RatingSummary)>,
     pub avatar: Option<AvatarVersion>,
+    pub version: Option<String>,
+    /// Credential-owning account; absent for a main account.
+    pub main_account: Option<AccountId>,
 }
 
 /// Content hash; cache keys also include the service and account.
@@ -387,8 +396,10 @@ pub struct SeatInfo {
     pub account: AccountId,
     pub nickname: String,
     pub kind: AccountKind,
-    pub bot_version: Option<String>,
+    #[doc(hidden)]
+    pub retired_bot_version: Option<String>,
     pub rating: Option<Rating>,
+    pub version: Option<String>,
 }
 
 /// Everything a client needs to take its seat in a running match: where the
@@ -423,6 +434,7 @@ pub struct SeatResult {
     /// Absent when unrated or null.
     pub before: Option<Rating>,
     pub after: Option<Rating>,
+    pub version: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -445,11 +457,13 @@ pub struct LobbyMember {
     pub account: AccountId,
     pub nickname: String,
     pub kind: AccountKind,
-    pub bot_version: Option<String>,
+    #[doc(hidden)]
+    pub retired_bot_version: Option<String>,
     pub rating: Option<Rating>,
     pub slot: u8,
     pub team: u8,
     pub ready: bool,
+    pub version: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -489,6 +503,7 @@ pub struct LobbySummary {
     pub locked: bool,
     pub members: u8,
     pub seats: u8,
+    pub version: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -497,7 +512,8 @@ pub struct LadderRow {
     pub account: AccountId,
     pub nickname: String,
     pub kind: AccountKind,
-    pub bot_version: Option<String>,
+    #[doc(hidden)]
+    pub retired_bot_version: Option<String>,
     pub rating: Rating,
     pub games: u32,
     pub wins: u32,
@@ -505,4 +521,5 @@ pub struct LadderRow {
     pub losses: u32,
     pub last_played: Option<UnixMs>,
     pub avatar: Option<AvatarVersion>,
+    pub version: Option<String>,
 }

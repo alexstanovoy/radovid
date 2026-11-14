@@ -2,8 +2,9 @@ use crate::*;
 
 #[test]
 fn nested_avatar_fields_require_protocol_20() {
-    assert_eq!(MIN_PROTO_VERSION, 20);
-    assert_eq!(PROTO_VERSION, 21);
+    // Bot versions raised the floor to the protocol that appended their fields.
+    assert_eq!(MIN_PROTO_VERSION, 22);
+    assert_eq!(PROTO_VERSION, 22);
 }
 
 #[test]
