@@ -13,7 +13,6 @@ use port_lease::PortLease;
 use radovid::config::{
     Config, LauncherConfig, LauncherKind, LimitsConfig, PerKind, PortRange, RulesetConfig,
 };
-use radovid::password::PasswordCost;
 use radovid::service::Service;
 use radovid::tls;
 use radovid_client::proto::*;
@@ -299,28 +298,9 @@ pub fn try_start(
 ) -> Result<Env, String> {
     let dir = test_dir();
     let identity = self_signed();
-    let mut config = Config {
-        public_identity: None,
-        web: None,
-        listen: "127.0.0.1:0".parse().expect("address"),
-        database: dir.join("radovid.db"),
-        tls_cert: PathBuf::new(),
-        tls_key: PathBuf::new(),
-        game_ports: PortRange { first: 1, last: 1 },
-        max_connections: 1024,
-        server_name: "radovid-test".to_owned(),
-        password: PasswordCost {
-            memory_kib: 1024,
-            iterations: 1,
-            ..PasswordCost::default()
-        },
-        limits: test_limits(),
-        artifacts: Default::default(),
-        lobby_teams: vec![5, 5],
-        lobby_ruleset: None,
-        rulesets,
-        patience: quick_patience(),
-    };
+    let mut config = radovid::test_support::config(dir.join("radovid.db"), rulesets);
+    config.limits = test_limits();
+    config.patience = quick_patience();
     adjust(&mut config);
     let capacity = u16::try_from(config.limits.game_capacity).expect("a small game capacity");
     let ports = PortLease::block(capacity);

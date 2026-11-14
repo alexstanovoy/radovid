@@ -109,45 +109,37 @@ fn ruleset(id: &str, rated: bool, teams: Vec<u8>, behaviour: &str, max_secs: u64
     }
 }
 
+/// The plain test service of `radovid::test_support::config`, with what this target changes.
 fn config(dir: &std::path::Path) -> Config {
-    Config {
-        public_identity: None,
-        listen: "127.0.0.1:0".parse().expect("address"),
-        database: dir.join("radovid.db"),
-        tls_cert: PathBuf::new(),
-        tls_key: PathBuf::new(),
-        game_ports: PortRange {
-            first: 41000,
-            last: 41015,
-        },
-        max_connections: 256,
-        server_name: "fuzz".to_owned(),
-        password: PasswordCost {
-            memory_kib: 64,
-            iterations: 1,
-            ..PasswordCost::default()
-        },
-        artifacts: Default::default(),
-        lobby_teams: vec![5, 5],
-        lobby_ruleset: None,
-        web: None,
-        limits: LimitsConfig {
-            games_per_account: PerKind { human: 2, bot: 4 },
-            games_per_source: 200,
-            accept_timeout_secs: 2,
-            decline_cooldown_secs: 1,
-            game_capacity: 4,
-            lobby_games_max: 3,
-            queue_capacity: 32,
-            ..LimitsConfig::default()
-        },
-        rulesets: vec![
-            ruleset("solo", true, vec![1, 1], "team0", 30),
-            ruleset("duel", false, vec![1, 1], "draw", 30),
-            ruleset("trio", false, vec![2, 1], "crash", 30),
-            ruleset("hang", false, vec![1, 1], "hang", 3),
-        ],
-    }
+    let rulesets = vec![
+        ruleset("solo", true, vec![1, 1], "team0", 30),
+        ruleset("duel", false, vec![1, 1], "draw", 30),
+        ruleset("trio", false, vec![2, 1], "crash", 30),
+        ruleset("hang", false, vec![1, 1], "hang", 3),
+    ];
+    let mut config = radovid::test_support::config(dir.join("radovid.db"), rulesets);
+    config.game_ports = PortRange {
+        first: 41000,
+        last: 41015,
+    };
+    config.max_connections = 256;
+    config.server_name = "fuzz".to_owned();
+    config.password = PasswordCost {
+        memory_kib: 64,
+        iterations: 1,
+        ..PasswordCost::default()
+    };
+    config.limits = LimitsConfig {
+        games_per_account: PerKind { human: 2, bot: 4 },
+        games_per_source: 200,
+        accept_timeout_secs: 2,
+        decline_cooldown_secs: 1,
+        game_capacity: 4,
+        lobby_games_max: 3,
+        queue_capacity: 32,
+        ..LimitsConfig::default()
+    };
+    config
 }
 
 /// A directory of this process's own for the service's database, on disk

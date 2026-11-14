@@ -13,7 +13,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-radovid = { path = "../crates/radovid" }
+radovid = { path = "../crates/radovid", features = ["test_support"] }
 radovid_client = { path = "../crates/radovid_client" }
 radovid_proto = { path = "../crates/radovid_proto" }
 libfuzzer-sys = "0.4"
