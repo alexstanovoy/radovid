@@ -105,6 +105,36 @@ fn a_port_nobody_listens_on_is_refused() {
 }
 
 #[test]
+fn a_check_sends_one_hello_and_nothing_that_says_who_is_asking() {
+    let _alone = alone();
+    let server = Impostor::start(Behaviour::Echo);
+    assert_eq!(
+        check(&server.url, &trusting(&server)),
+        Err(ServiceFault::NotService)
+    );
+    let said = server.received();
+    assert_eq!(said.len(), 1, "one message, and it is the Hello");
+    let payload = radovid_client::proto::whole_frame(
+        &said[0],
+        radovid_client::proto::MAX_CONTROL_PAYLOAD_LEN,
+    )
+    .expect("a whole frame");
+    let frame: radovid_client::proto::ClientFrame =
+        radovid_client::proto::decode_payload(payload).expect("a message of the protocol");
+    let radovid_client::proto::ClientMsg::Hello {
+        proto,
+        game_fingerprint,
+        client,
+    } = frame.msg
+    else {
+        panic!("the one message is not a Hello: {:?}", frame.msg);
+    };
+    // The protocol version, the game wire and the library's own name: no login, no token.
+    assert_eq!((proto, game_fingerprint), (PROTO_VERSION, FINGERPRINT));
+    assert!(client.starts_with("radovid_client/"), "{client:?}");
+}
+
+#[test]
 fn a_host_that_does_not_exist_is_not_found() {
     let _alone = alone();
     // `.invalid` never resolves (RFC 6761).

@@ -99,14 +99,37 @@ pub(crate) fn judge(seq: u32, answer: Incoming) -> Result<ServiceFound, ServiceF
     }
 }
 
-/// A name a service gave, fit to show: no control characters, bounded.
+/// A name a service gave, fit to show: bounded, on one line, and with nothing that is not
+/// drawn or that changes how the text around it reads.
 fn tidy(name: &str) -> String {
     name.chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !is_unseen(*c))
         .take(MAX_NAME_CHARS)
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+/// Characters that make no mark of their own or that act on the text near them: the control
+/// characters (newlines among them), the line and paragraph separators, the zero-width and
+/// direction marks and overrides (which can make a host read as another), the invisible
+/// operators, the tag characters and combining marks (a name tall with them would be drawn over
+/// what is above and below it).
+fn is_unseen(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{AD}'
+                | '\u{300}'..='\u{36F}'
+                | '\u{61C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{2028}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 #[cfg(test)]
@@ -138,6 +161,41 @@ mod tests {
         );
         let long = judge(1, welcome(&"é".repeat(500))).expect("passes");
         assert_eq!(long.name.chars().count(), MAX_NAME_CHARS);
+    }
+
+    #[test]
+    fn a_name_with_what_is_not_drawn_or_changes_how_text_reads_is_shown_without_it() {
+        let named = |server: &str| {
+            judge(
+                1,
+                Incoming::Reply {
+                    seq: 1,
+                    result: Ok(Reply::Welcome {
+                        proto: PROTO_VERSION,
+                        server: server.to_owned(),
+                        rulesets: Vec::new(),
+                    }),
+                },
+            )
+            .expect("passes")
+            .name
+        };
+        // A right-to-left override that would reverse what follows, an isolate, a zero-width
+        // joiner, a line and a paragraph separator, newlines, an escape, a tag, a combining mark.
+        assert_eq!(named("Safe\u{202E}gnirts\u{2066}\u{200D}"), "Safegnirts");
+        assert_eq!(
+            named("one\u{2028}two\u{2029}three\r\nfour\u{1B}[0m"),
+            "onetwothreefour[0m"
+        );
+        assert_eq!(named("a\u{E0041}b\u{301}\u{FEFF}c\u{AD}"), "abc");
+        // Only the hostile characters count against the bound.
+        let flood = format!("{}{}", "\u{202E}".repeat(10_000), "x".repeat(100));
+        assert_eq!(named(&flood), "x".repeat(MAX_NAME_CHARS));
+        assert_eq!(
+            named("\u{202E}\n\t"),
+            "",
+            "nothing left is a service with no name"
+        );
     }
 
     #[test]

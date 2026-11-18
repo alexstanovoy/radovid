@@ -46,6 +46,9 @@ pub enum Behaviour {
     Mistaken,
 }
 
+/// The binary messages a server has read from its clients, in the order they came.
+type Received = Arc<Mutex<Vec<Vec<u8>>>>;
+
 /// A running server on a loopback port, stopped when dropped.
 pub struct Impostor {
     /// `wss://127.0.0.1:PORT`.
@@ -55,6 +58,7 @@ pub struct Impostor {
     address: SocketAddr,
     stop: Arc<AtomicBool>,
     sent: Arc<AtomicU64>,
+    received: Received,
     accepted: Mutex<Receiver<()>>,
     ended: Mutex<Receiver<()>>,
 }
@@ -69,13 +73,14 @@ impl Impostor {
         let address = listener.local_addr().expect("bound");
         let stop = Arc::new(AtomicBool::new(false));
         let sent = Arc::new(AtomicU64::new(0));
+        let received = Received::default();
         let (ended_tx, ended) = std::sync::mpsc::channel();
         let (accepted_tx, accepted) = std::sync::mpsc::channel();
-        let shared = (Arc::clone(&stop), Arc::clone(&sent));
+        let shared = (Arc::clone(&stop), Arc::clone(&sent), Arc::clone(&received));
         std::thread::Builder::new()
             .name("impostor".to_owned())
             .spawn(move || {
-                let (stop, sent) = shared;
+                let (stop, sent, received) = shared;
                 for stream in listener.incoming().take(MAX_CONNECTIONS) {
                     if stop.load(Ordering::Acquire) {
                         return;
@@ -84,10 +89,11 @@ impl Impostor {
                     let _ = accepted_tx.send(());
                     let (behaviour, tls) = (behaviour.clone(), Arc::clone(&tls));
                     let (sent, ended) = (Arc::clone(&sent), ended_tx.clone());
+                    let received = Arc::clone(&received);
                     let spawned = std::thread::Builder::new()
                         .name("impostor-connection".to_owned())
                         .spawn(move || {
-                            serve(&behaviour, stream, tls, &sent);
+                            serve(&behaviour, stream, tls, &sent, &received);
                             let _ = ended.send(());
                         });
                     if spawned.is_err() {
@@ -102,6 +108,7 @@ impl Impostor {
             address,
             stop,
             sent,
+            received,
             accepted: Mutex::new(accepted),
             ended: Mutex::new(ended),
         }
@@ -110,6 +117,12 @@ impl Impostor {
     /// Bytes the server has sent so far.
     pub fn sent(&self) -> u64 {
         self.sent.load(Ordering::Acquire)
+    }
+
+    /// The binary messages the clients have sent so far, as they came: what a client says to a
+    /// server it has not signed in to, for a test that it says nothing it should not.
+    pub fn received(&self) -> Vec<Vec<u8>> {
+        self.received.lock().expect("the received messages").clone()
     }
 
     /// Waits until the server has taken one more connection.
@@ -143,6 +156,7 @@ fn serve(
     mut tcp: TcpStream,
     tls: Arc<rustls::ServerConfig>,
     sent: &AtomicU64,
+    received: &Received,
 ) {
     let _ = tcp.set_read_timeout(Some(HANG_GUARD));
     let _ = tcp.set_write_timeout(Some(HANG_GUARD));
@@ -167,7 +181,7 @@ fn serve(
             let Ok(mut ws) = tungstenite::accept(StreamOwned::new(connection, tcp)) else {
                 return;
             };
-            speak(other, &mut ws, sent);
+            speak(other, &mut ws, sent, received);
         }
     }
 }
@@ -175,13 +189,14 @@ fn serve(
 type Ws = tungstenite::WebSocket<StreamOwned<ServerConnection, TcpStream>>;
 
 /// What a WebSocket server of this behaviour says once the handshake is done.
-fn speak(behaviour: &Behaviour, ws: &mut Ws, sent: &AtomicU64) {
+fn speak(behaviour: &Behaviour, ws: &mut Ws, sent: &AtomicU64, received: &Received) {
     match behaviour {
         Behaviour::Echo => {
             while let Ok(message) = ws.read() {
                 let Message::Binary(bytes) = message else {
                     continue;
                 };
+                keep(received, &bytes);
                 if ws.send(Message::Binary(bytes)).is_err() {
                     return;
                 }
@@ -192,11 +207,11 @@ fn speak(behaviour: &Behaviour, ws: &mut Ws, sent: &AtomicU64) {
             if ws.send(Message::Binary(vec![0; len].into())).is_ok() {
                 sent.fetch_add(len as u64, Ordering::AcqRel);
             }
-            drain(ws);
+            drain(ws, received);
         }
         Behaviour::Endless => endless(ws, sent),
         Behaviour::Refuses(error) => {
-            if let Some(seq) = hello_seq(ws) {
+            if let Some(seq) = hello_seq(ws, received) {
                 reply(
                     ws,
                     &ServerMsg::Refused {
@@ -206,28 +221,29 @@ fn speak(behaviour: &Behaviour, ws: &mut Ws, sent: &AtomicU64) {
                     sent,
                 );
             }
-            drain(ws);
+            drain(ws, received);
         }
         Behaviour::Mistaken => {
-            if let Some(seq) = hello_seq(ws) {
+            if let Some(seq) = hello_seq(ws, received) {
                 let done = ServerMsg::Reply {
                     seq,
                     reply: radovid_proto::Reply::Done,
                 };
                 reply(ws, &done, sent);
             }
-            drain(ws);
+            drain(ws, received);
         }
         Behaviour::PlainHttp | Behaviour::Silent | Behaviour::HangUp => {}
     }
 }
 
 /// The sequence number of the client's first message.
-fn hello_seq(ws: &mut Ws) -> Option<u32> {
+fn hello_seq(ws: &mut Ws, received: &Received) -> Option<u32> {
     loop {
         let Message::Binary(bytes) = ws.read().ok()? else {
             continue;
         };
+        keep(received, &bytes);
         let payload = whole_frame(&bytes, radovid_proto::MAX_CONTROL_PAYLOAD_LEN)?;
         return decode_payload::<ClientFrame>(payload)
             .ok()
@@ -246,8 +262,21 @@ fn reply(ws: &mut Ws, message: &ServerMsg, sent: &AtomicU64) {
 }
 
 /// Reads until the client ends the connection.
-fn drain(ws: &mut Ws) {
-    while ws.read().is_ok() {}
+fn drain(ws: &mut Ws, received: &Received) {
+    while let Ok(message) = ws.read() {
+        if let Message::Binary(bytes) = message {
+            keep(received, &bytes);
+        }
+    }
+}
+
+/// Remembers a message of a client, up to a bound: a test reads a few.
+fn keep(received: &Received, bytes: &[u8]) {
+    const MAX_KEPT: usize = 64;
+    let mut kept = received.lock().expect("the received messages");
+    if kept.len() < MAX_KEPT {
+        kept.push(bytes.to_vec());
+    }
 }
 
 /// Fragments of one binary message, written raw, until the connection breaks or the cap is spent.
