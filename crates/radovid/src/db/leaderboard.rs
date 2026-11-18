@@ -9,14 +9,14 @@ const PROFILE_TOTAL_RANK_VM_STEPS: u32 = 20_000_000;
 const PROFILE_METADATA_VM_STEPS: u32 = 10_000;
 
 pub(super) fn bounded<T>(
-    connection: &Connection,
+    connection: &mut Connection,
     work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
     bounded_with_limit(connection, LOOKUP_VM_STEPS, work)
 }
 
 fn bounded_with_limit<T>(
-    connection: &Connection,
+    connection: &mut Connection,
     steps: u32,
     work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
@@ -39,13 +39,13 @@ fn bounded_with_limit<T>(
         connection,
         active: true,
     };
-    let result = work(connection);
+    let result = work(guard.connection);
     guard.clear()?;
     result
 }
 
 struct LookupBudget<'a> {
-    connection: &'a Connection,
+    connection: &'a mut Connection,
     active: bool,
 }
 
@@ -77,12 +77,42 @@ pub(super) fn read_lookup<T>(
 
 fn read_snapshot<T>(
     connection: &mut Connection,
-    work: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    work: impl FnOnce(&mut Connection) -> rusqlite::Result<T>,
 ) -> rusqlite::Result<T> {
-    let transaction = connection.transaction()?;
-    let result = work(&transaction)?;
-    transaction.commit()?;
+    connection.execute_batch("BEGIN")?;
+    let mut snapshot = OpenSnapshot {
+        connection,
+        open: true,
+    };
+    let result = work(snapshot.connection)?;
+    snapshot.commit()?;
     Ok(result)
+}
+
+/// A read transaction that hands out the connection itself: `rusqlite::Transaction` only dereferences to a shared
+/// `&Connection`, while the work budgets of `bounded_with_limit` install a progress handler, which needs `&mut Connection`.
+struct OpenSnapshot<'a> {
+    connection: &'a mut Connection,
+    open: bool,
+}
+
+impl OpenSnapshot<'_> {
+    fn commit(&mut self) -> rusqlite::Result<()> {
+        self.connection.execute_batch("COMMIT")?;
+        self.open = false;
+        Ok(())
+    }
+}
+
+impl Drop for OpenSnapshot<'_> {
+    fn drop(&mut self) {
+        if self.open
+            && !self.connection.is_autocommit()
+            && let Err(error) = self.connection.execute_batch("ROLLBACK")
+        {
+            eprintln!("ERROR: rolling back database read snapshot: {error}");
+        }
+    }
 }
 
 const ROW: &str = "r.account,a.nickname,r.kind,a.version,r.rating,r.deviation,r.games,r.wins,r.draws,r.losses,r.last_played,(SELECT version FROM avatars WHERE account=a.id)";
@@ -198,7 +228,7 @@ impl Db {
 }
 
 fn profile_rows(
-    connection: &Connection,
+    connection: &mut Connection,
     account: AccountId,
     rulesets: Vec<RulesetId>,
     visible: &str,
@@ -217,7 +247,7 @@ fn profile_rows(
 }
 
 fn profile_rows_capped(
-    connection: &Connection,
+    connection: &mut Connection,
     account: AccountId,
     rulesets: Vec<RulesetId>,
     visible: &str,
@@ -264,7 +294,7 @@ fn profile_rows_capped(
 }
 
 fn profile_rank(
-    connection: &Connection,
+    connection: &mut Connection,
     ruleset: &RulesetId,
     row: &LadderRow,
     visible: &str,
@@ -282,9 +312,9 @@ fn profile_rank(
         if limit == 0 {
             return Ok(None);
         }
-        let mut statement = connection.prepare(&rank_range_query(visible, range))?;
-        let result = bounded_with_limit(connection, limit, |_| {
-            statement.query_row(
+        let (result, used) = bounded_with_limit(connection, limit, |connection| {
+            let mut statement = connection.prepare(&rank_range_query(visible, range))?;
+            let result = statement.query_row(
                 params![
                     ruleset.0,
                     kind_code(row.kind),
@@ -293,10 +323,11 @@ fn profile_rank(
                     row.account.0 as i64
                 ],
                 |row| row.get::<_, u32>(0),
-            )
-        });
-        let used = u32::try_from(statement.get_status(rusqlite::StatementStatus::VmStep))
-            .unwrap_or(u32::MAX);
+            );
+            let used = u32::try_from(statement.get_status(rusqlite::StatementStatus::VmStep))
+                .unwrap_or(u32::MAX);
+            Ok((result, used))
+        })?;
         remaining = remaining.saturating_sub(used);
         *total = total.saturating_sub(used);
         match result {
@@ -628,14 +659,14 @@ mod tests {
     #[test]
     fn a_profiles_total_rank_budget_is_shared_across_modes_without_losing_summaries() {
         let db = fixture();
-        let connection = db.conn.lock().expect("connection");
+        let mut connection = db.conn.lock().expect("connection");
         let ruleset = RulesetId("duel".into());
         let own = find_own_row(&connection, &ruleset, AccountId(1), VISIBLE)
             .expect("row")
             .expect("played");
         let mut remaining = 100_000;
         let rank = profile_rank(
-            &connection,
+            &mut connection,
             &ruleset,
             &own,
             VISIBLE,
@@ -646,7 +677,7 @@ mod tests {
         let used = 100_000 - remaining;
         assert!(used > 1);
         let rows = profile_rows_capped(
-            &connection,
+            &mut connection,
             AccountId(1),
             vec![ruleset, RulesetId("teams".into())],
             VISIBLE,
@@ -958,10 +989,34 @@ mod tests {
     }
 
     #[test]
-    fn guard_only_lookup_unwind_clears_the_progress_hook() {
-        let connection = Connection::open_in_memory().expect("database");
+    fn a_snapshot_whose_work_unwinds_rolls_the_read_transaction_back() {
+        let mut connection = Connection::open_in_memory().expect("database");
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _: rusqlite::Result<()> = bounded(&connection, |_| panic!("test fixture unwinds"));
+            let _: rusqlite::Result<()> =
+                read_snapshot(&mut connection, |_| panic!("test fixture unwinds"));
+        }));
+        assert!(panic.is_err());
+        assert!(
+            connection.is_autocommit(),
+            "the unwound snapshot left its transaction open"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_whose_work_fails_rolls_the_read_transaction_back_and_reports_the_error() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        let error = read_snapshot::<()>(&mut connection, |_| Err(rusqlite::Error::InvalidQuery))
+            .expect_err("work fails");
+        assert_eq!(error.to_string(), "Query is not read-only");
+        assert!(connection.is_autocommit());
+    }
+
+    #[test]
+    fn guard_only_lookup_unwind_clears_the_progress_hook() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: rusqlite::Result<()> =
+                bounded(&mut connection, |_| panic!("test fixture unwinds"));
         }));
         assert!(panic.is_err());
         let total: i64 = connection.query_row("WITH RECURSIVE work(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM work WHERE i<4000000) SELECT sum(i) FROM work", [], |row| row.get(0)).expect("an unbudgeted query must not inherit a previous lookup's hook");

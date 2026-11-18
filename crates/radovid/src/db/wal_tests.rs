@@ -243,3 +243,15 @@ async fn the_hard_wal_limit_refuses_mutations_but_keeps_authentication_reads_ava
         .await
         .expect("write recovers");
 }
+
+/// RUSTSEC-2026-0459 (CVE-2026-119375): SQLite before 3.54.0 returns uninitialised page-cache memory for a crafted database whose
+/// `-wal` sibling has a different page size. Checks the library actually linked, so it holds without the advisory database.
+#[test]
+fn linked_sqlite_is_at_least_3_54_0_which_fixes_the_wal_page_size_leak() {
+    const FIRST_FIXED_VERSION_NUMBER: i32 = 3_054_000;
+    assert!(
+        rusqlite::version_number() >= FIRST_FIXED_VERSION_NUMBER,
+        "linked SQLite {} predates 3.54.0 (RUSTSEC-2026-0459)",
+        rusqlite::version()
+    );
+}
