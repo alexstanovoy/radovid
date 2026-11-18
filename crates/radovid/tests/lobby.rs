@@ -1113,6 +1113,9 @@ fn a_lobby_name_that_hides_or_disguises_text_is_refused_as_a_bad_lobby_name() {
         ("zero width only", "\u{200b}\u{200d}"),
         ("leading and trailing spaces", "  Friday  "),
         ("no-break space", "Friday\u{a0}Night"),
+        ("invisible variation selector", "Friday\u{fe0f}"),
+        ("combining mark alone", "\u{301}"),
+        ("stacked combining marks", "x\u{301}\u{301}\u{301}\u{301}"),
     ] {
         assert_eq!(
             owner.ask(create_request(name)),
@@ -1156,4 +1159,35 @@ fn a_lobby_search_for_hidden_text_is_refused_as_a_bad_lobby_name() {
         }),
         Err(Error::BadLobbyName)
     );
+}
+
+#[test]
+fn an_invisible_suffix_does_not_make_a_lobby_name_new() {
+    let env = start_small();
+    let mut olga = env.account("olga", AccountKind::Human);
+    let mut fritz = env.account("fritz", AccountKind::Human);
+    create(&mut olga, "Пятница", None);
+    assert_eq!(
+        fritz.ask(create_request("Пятница\u{fe0f}")),
+        Err(Error::BadLobbyName)
+    );
+}
+
+#[test]
+fn a_lobby_search_takes_any_fragment_of_a_name_and_refuses_any_hidden_character() {
+    let env = start_small();
+    let mut owner = env.account("olga", AccountKind::Human);
+    let mut seeker = env.account("sam", AccountKind::Human);
+    create(&mut owner, "Friday Night", None);
+    let mut search = |query: &str| {
+        seeker.ask(ClientMsg::LobbySearch {
+            query: query.to_owned(),
+        })
+    };
+    for fragment in ["Friday ", " Night", "y  N"] {
+        assert!(search(fragment).is_ok(), "{fragment:?}");
+    }
+    for query in ["fri\u{202e}day", "Пятница\u{fe0f}", "fri\u{200b}day"] {
+        assert_eq!(search(query), Err(Error::BadLobbyName), "{query:?}");
+    }
 }

@@ -145,7 +145,7 @@ impl core::fmt::Display for Error {
             Self::VersionNotAllowed => f.write_str("human accounts cannot select a version"),
             Self::BadVersion => write!(
                 f,
-                "a version name must be 1 to {} printable ASCII bytes without edge whitespace",
+                "a version name must be 1 to {} printable ASCII bytes with no space at either end and no two spaces in a row",
                 crate::MAX_VERSION_LEN
             ),
             Self::VersionLimit => write!(

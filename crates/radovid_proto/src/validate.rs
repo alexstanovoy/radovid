@@ -37,8 +37,7 @@ pub fn valid_lobby_name(name: &str) -> bool {
 }
 
 /// Whether `character` may appear in text shown to other players: not a control character, not
-/// whitespace other than the plain space, and not in `HIDDEN_CHARACTERS`. A lobby search holds
-/// to this too, since it can only ever name what a lobby name may hold.
+/// whitespace other than the plain space, and not in `HIDDEN_CHARACTERS`.
 pub fn valid_display_character(character: char) -> bool {
     !character.is_control()
         && (character == ' ' || !character.is_whitespace())
@@ -47,83 +46,120 @@ pub fn valid_display_character(character: char) -> bool {
             .any(|&(first, last)| (first..=last).contains(&character))
 }
 
+/// A piece of displayable text, such as a lobby search query: every character is one that
+/// `valid_display_text` admits, but the edges, the spaces and the combining marks are free,
+/// because a fragment is not shown as it is.
+pub fn valid_display_fragment(fragment: &str) -> bool {
+    fragment.chars().all(valid_display_character)
+}
+
 /// The one rule for free text that other players read (lobby names, ban reasons, version names):
 /// non-empty, every character passes `valid_display_character`, no space at either end and no two
-/// spaces in a row, so that no text looks empty, padded, reordered or like another text.
+/// spaces in a row, no combining mark (`is_combining_mark`) at the start, after a space or more
+/// than `MAX_COMBINING_MARKS` in a row, so that no text looks empty, padded, reordered, smeared
+/// over its neighbours or like another text.
 ///
-/// It admits every script and ordinary emoji, including the emoji presentation selector
-/// (U+FE0F) that single-code-point emoji such as a heart need, but only straight after a
-/// non-ASCII character and never twice in a row. Emoji sequences made with a zero-width joiner
-/// (families, professions, flags of people) are refused: the joiner is also how text is hidden.
-/// Lengths are the caller's rule.
+/// It admits every script and the emoji that draw as emoji by themselves. It refuses every
+/// invisible character, so an emoji that needs the emoji presentation selector (U+FE0F, such as
+/// a heart or a sun) is refused, as are the emoji sequences made with a zero-width joiner
+/// (families, professions) and the keycaps. The zero-width joiner and non-joiner are refused
+/// everywhere, which also refuses the orthography that spells words with them (Persian,
+/// Kurdish and Urdu, some Indic scripts): they are also how text is hidden, and a name may be
+/// spelled without them. Lengths are the caller's rule. The tables follow Unicode 16.0.
 pub fn valid_display_text(text: &str) -> bool {
     if text.starts_with(' ') || text.ends_with(' ') || text.contains("  ") {
         return false;
     }
-    let mut previous = None;
+    let mut previous = ' ';
+    let mut marks_in_a_row = 0;
     for character in text.chars() {
-        let admitted = if character == EMOJI_PRESENTATION_SELECTOR {
-            previous.is_some_and(|before: char| {
-                !before.is_ascii() && before != EMOJI_PRESENTATION_SELECTOR
-            })
-        } else {
-            valid_display_character(character)
-        };
-        if !admitted {
+        if !valid_display_character(character) {
             return false;
         }
-        previous = Some(character);
+        if is_combining_mark(character) {
+            marks_in_a_row += 1;
+            if previous == ' ' || marks_in_a_row > MAX_COMBINING_MARKS {
+                return false;
+            }
+        } else {
+            marks_in_a_row = 0;
+        }
+        previous = character;
     }
-    previous.is_some()
+    !text.is_empty()
 }
 
-/// VARIATION SELECTOR-16: the only variation selector admitted, see `valid_display_text`.
-const EMOJI_PRESENTATION_SELECTOR: char = '\u{fe0f}';
+/// The most combining marks one character may carry; Vietnamese and Hebrew with vowel points
+/// need two or three.
+const MAX_COMBINING_MARKS: usize = 3;
+
+/// The combining diacritics blocks: marks that draw over the character before them. Other
+/// scripts' combining marks are left alone: telling them apart takes general-category tables.
+fn is_combining_mark(character: char) -> bool {
+    matches!(character,
+        '\u{300}'..='\u{36f}'
+        | '\u{1ab0}'..='\u{1aff}'
+        | '\u{1dc0}'..='\u{1dff}'
+        | '\u{20d0}'..='\u{20ff}'
+        | '\u{fe20}'..='\u{fe2f}')
+}
 
 /// What no displayed text may hold besides control characters and whitespace, which `char`
 /// itself classifies (so U+0085, U+00A0, U+1680, U+2000..U+200A, U+2028 LINE SEPARATOR,
 /// U+2029 PARAGRAPH SEPARATOR, U+202F, U+205F and U+3000 are refused as whitespace). Sorted and
-/// disjoint, inclusive on both ends. Most of it is the Unicode `Default_Ignorable_Code_Point`
-/// property; the standard library has no table for it and a dependency is not worth one.
-/// Unassigned code points other than noncharacters are not listed: the table would age with
-/// every Unicode release, and they draw as a visible box rather than nothing.
+/// disjoint, inclusive on both ends. It is the Unicode 16.0 format characters (category Cf,
+/// among them every bidirectional control), private use (Co), noncharacters, and the
+/// `Default_Ignorable_Code_Point` ones of other categories; the standard library has no table
+/// for them and a dependency is not worth one. Other unassigned code points are not listed: the
+/// table would age with every Unicode release, and they draw as a visible box, not as nothing.
+/// `exactly_the_invisible_characters_of_unicode_are_refused_over_every_scalar_value` checks it
+/// against a separate description by category.
 const HIDDEN_CHARACTERS: &[(char, char)] = &[
     ('\u{ad}', '\u{ad}'),         // SOFT HYPHEN
     ('\u{34f}', '\u{34f}'),       // COMBINING GRAPHEME JOINER
-    ('\u{61c}', '\u{61c}'),       // ARABIC LETTER MARK
-    ('\u{115f}', '\u{1160}'),     // HANGUL CHOSEONG FILLER, HANGUL JUNGSEONG FILLER
-    ('\u{17b4}', '\u{17b5}'),     // KHMER VOWEL INHERENT AQ, KHMER VOWEL INHERENT AA
-    ('\u{180b}', '\u{180f}'),     // MONGOLIAN FREE VARIATION SELECTOR ONE..FOUR, VOWEL SEPARATOR
-    ('\u{200b}', '\u{200f}'),     // ZERO WIDTH SPACE, NON-JOINER, JOINER, LRM, RLM
-    ('\u{202a}', '\u{202e}'),     // LRE, RLE, PDF, LRO, RLO
-    ('\u{2060}', '\u{206f}'),     // WORD JOINER, invisible operators, isolates, deprecated formats
-    ('\u{2800}', '\u{2800}'),     // BRAILLE PATTERN BLANK, draws as an empty cell
-    ('\u{3164}', '\u{3164}'),     // HANGUL FILLER
-    ('\u{e000}', '\u{f8ff}'),     // PRIVATE USE AREA
-    ('\u{fdd0}', '\u{fdef}'),     // NONCHARACTERS
-    ('\u{fe00}', '\u{fe0f}'),     // VARIATION SELECTOR-1..16 (`valid_display_text` re-admits -16)
-    ('\u{feff}', '\u{feff}'),     // ZERO WIDTH NO-BREAK SPACE, BYTE ORDER MARK
-    ('\u{ffa0}', '\u{ffa0}'),     // HALFWIDTH HANGUL FILLER
-    ('\u{fff0}', '\u{fff8}'),     // unassigned default ignorables
-    ('\u{fffe}', '\u{ffff}'),     // NONCHARACTERS
-    ('\u{1bca0}', '\u{1bca3}'),   // SHORTHAND FORMAT LETTER OVERLAP..UP STEP
-    ('\u{1d173}', '\u{1d17a}'),   // MUSICAL SYMBOL BEGIN BEAM..END PHRASE
-    ('\u{1fffe}', '\u{1ffff}'),   // NONCHARACTERS
-    ('\u{2fffe}', '\u{2ffff}'),   // NONCHARACTERS
-    ('\u{3fffe}', '\u{3ffff}'),   // NONCHARACTERS
-    ('\u{4fffe}', '\u{4ffff}'),   // NONCHARACTERS
-    ('\u{5fffe}', '\u{5ffff}'),   // NONCHARACTERS
-    ('\u{6fffe}', '\u{6ffff}'),   // NONCHARACTERS
-    ('\u{7fffe}', '\u{7ffff}'),   // NONCHARACTERS
-    ('\u{8fffe}', '\u{8ffff}'),   // NONCHARACTERS
-    ('\u{9fffe}', '\u{9ffff}'),   // NONCHARACTERS
-    ('\u{afffe}', '\u{affff}'),   // NONCHARACTERS
-    ('\u{bfffe}', '\u{bffff}'),   // NONCHARACTERS
-    ('\u{cfffe}', '\u{cffff}'),   // NONCHARACTERS
-    ('\u{dfffe}', '\u{dffff}'),   // NONCHARACTERS
-    ('\u{e0000}', '\u{e0fff}'),   // TAG CHARACTERS, VARIATION SELECTOR-17..256, unassigned
-    ('\u{efffe}', '\u{effff}'),   // NONCHARACTERS
-    ('\u{f0000}', '\u{fffff}'),   // SUPPLEMENTARY PRIVATE USE AREA-A, with its NONCHARACTERS
+    ('\u{600}', '\u{605}'), // ARABIC NUMBER SIGN..SUBTENDING MARK, which draw over the text that follows
+    ('\u{61c}', '\u{61c}'), // ARABIC LETTER MARK
+    ('\u{6dd}', '\u{6dd}'), // ARABIC END OF AYAH
+    ('\u{70f}', '\u{70f}'), // SYRIAC ABBREVIATION MARK
+    ('\u{890}', '\u{891}'), // ARABIC POUND MARK ABOVE, PIASTRE MARK ABOVE
+    ('\u{8e2}', '\u{8e2}'), // ARABIC DISPUTED END OF AYAH
+    ('\u{115f}', '\u{1160}'), // HANGUL CHOSEONG FILLER, JUNGSEONG FILLER
+    ('\u{17b4}', '\u{17b5}'), // KHMER VOWEL INHERENT AQ, AA
+    ('\u{180b}', '\u{180f}'), // MONGOLIAN FREE VARIATION SELECTOR ONE..THREE, VOWEL SEPARATOR, FOUR
+    ('\u{200b}', '\u{200f}'), // ZERO WIDTH SPACE, NON-JOINER, JOINER, LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK
+    ('\u{202a}', '\u{202e}'), // LRE, RLE, PDF, LRO, RLO
+    ('\u{2060}', '\u{206f}'), // WORD JOINER, invisible operators, isolates, deprecated format characters
+    ('\u{2800}', '\u{2800}'), // BRAILLE PATTERN BLANK, draws as an empty cell
+    ('\u{3164}', '\u{3164}'), // HANGUL FILLER
+    ('\u{e000}', '\u{f8ff}'), // PRIVATE USE AREA
+    ('\u{fdd0}', '\u{fdef}'), // NONCHARACTERS
+    ('\u{fe00}', '\u{fe0f}'), // VARIATION SELECTOR-1..16
+    ('\u{feff}', '\u{feff}'), // ZERO WIDTH NO-BREAK SPACE, BYTE ORDER MARK
+    ('\u{ffa0}', '\u{ffa0}'), // HALFWIDTH HANGUL FILLER
+    ('\u{fff0}', '\u{fffb}'), // unassigned default ignorables, INTERLINEAR ANNOTATION ANCHOR..TERMINATOR
+    ('\u{fffe}', '\u{ffff}'), // NONCHARACTERS
+    ('\u{110bd}', '\u{110bd}'), // KAITHI NUMBER SIGN
+    ('\u{110cd}', '\u{110cd}'), // KAITHI NUMBER SIGN ABOVE
+    ('\u{13430}', '\u{1343f}'), // EGYPTIAN HIEROGLYPH VERTICAL JOINER..END WALLED ENCLOSURE
+    ('\u{16fe4}', '\u{16fe4}'), // KHITAN SMALL SCRIPT FILLER, draws as nothing
+    ('\u{1bca0}', '\u{1bca3}'), // SHORTHAND FORMAT LETTER OVERLAP..UP STEP
+    ('\u{1d173}', '\u{1d17a}'), // MUSICAL SYMBOL BEGIN BEAM..END PHRASE
+    ('\u{1fffe}', '\u{1ffff}'), // NONCHARACTERS
+    ('\u{2fffe}', '\u{2ffff}'), // NONCHARACTERS
+    ('\u{3fffe}', '\u{3ffff}'), // NONCHARACTERS
+    ('\u{4fffe}', '\u{4ffff}'), // NONCHARACTERS
+    ('\u{5fffe}', '\u{5ffff}'), // NONCHARACTERS
+    ('\u{6fffe}', '\u{6ffff}'), // NONCHARACTERS
+    ('\u{7fffe}', '\u{7ffff}'), // NONCHARACTERS
+    ('\u{8fffe}', '\u{8ffff}'), // NONCHARACTERS
+    ('\u{9fffe}', '\u{9ffff}'), // NONCHARACTERS
+    ('\u{afffe}', '\u{affff}'), // NONCHARACTERS
+    ('\u{bfffe}', '\u{bffff}'), // NONCHARACTERS
+    ('\u{cfffe}', '\u{cffff}'), // NONCHARACTERS
+    ('\u{dfffe}', '\u{dffff}'), // NONCHARACTERS
+    ('\u{e0000}', '\u{e0fff}'), // TAG CHARACTERS, VARIATION SELECTOR-17..256, unassigned default ignorables
+    ('\u{efffe}', '\u{effff}'), // NONCHARACTERS
+    ('\u{f0000}', '\u{fffff}'), // SUPPLEMENTARY PRIVATE USE AREA-A, with its NONCHARACTERS
     ('\u{100000}', '\u{10ffff}'), // SUPPLEMENTARY PRIVATE USE AREA-B, with its NONCHARACTERS
 ];
 
@@ -191,7 +227,7 @@ mod version_tests {
 }
 
 #[cfg(test)]
-mod lobby_name_tests {
+mod display_text_tests {
     use super::*;
 
     #[test]
@@ -226,13 +262,37 @@ mod lobby_name_tests {
             ("tag character", "fri\u{e0041}day"),
             ("text variation selector", "fri\u{fe0e}day"),
             ("ideographic variation selector", "\u{845b}\u{e0100}"),
+            (
+                "emoji needing the presentation selector",
+                "I \u{2764}\u{fe0f} it",
+            ),
+            ("keycap", "1\u{fe0f}\u{20e3}"),
             ("emoji variation selector after a letter", "a\u{fe0f}"),
+            ("emoji variation selector after cyrillic", "Пятница\u{fe0f}"),
             ("emoji variation selector only", "\u{fe0f}"),
             ("emoji variation selector after a space", "a \u{fe0f}"),
             ("emoji variation selector twice", "\u{2764}\u{fe0f}\u{fe0f}"),
             (
                 "family emoji joined by zero width joiner",
                 "👨\u{200d}👩\u{200d}👧",
+            ),
+            ("egyptian hieroglyph format control", "fri\u{13430}day"),
+            ("interlinear annotation anchor", "fri\u{fff9}day"),
+            ("arabic number sign", "fri\u{600}day"),
+            ("combining mark alone", "\u{301}"),
+            ("combining mark first", "\u{323}Friday"),
+            ("combining mark after a space", "Friday \u{301}night"),
+            (
+                "four combining marks on one letter",
+                "a\u{301}\u{302}\u{303}\u{304}",
+            ),
+            (
+                "many combining marks",
+                &format!("x{}", "\u{301}".repeat(31)),
+            ),
+            (
+                "four marks of the extended block",
+                "a\u{1ab0}\u{1ab1}\u{1ab2}\u{1ab3}",
             ),
             ("leading space", " friday"),
             ("trailing space", "friday "),
@@ -261,9 +321,14 @@ mod lobby_name_tests {
             ("hebrew", "ליל שישי"),
             ("devanagari with combining marks", "शुक्रवार रात"),
             ("emoji", "party 🎉🔥"),
-            ("emoji with presentation selector", "I \u{2764}\u{fe0f} it"),
             ("emoji with skin tone", "👍🏽"),
+            ("emoji drawn as emoji by themselves", "😀🚀🐱"),
             ("single character", "x"),
+            ("vietnamese with stacked marks", "Vie\u{323}\u{302}t Nam"),
+            (
+                "three combining marks on one letter",
+                "a\u{301}\u{302}\u{303}",
+            ),
             ("exactly the longest", &"я".repeat(MAX_LOBBY_NAME_LEN)),
         ];
         for (script, name) in admitted {
@@ -272,7 +337,7 @@ mod lobby_name_tests {
     }
 
     #[test]
-    fn hidden_character_table_is_sorted_disjoint_and_refused_to_its_edges() {
+    fn hidden_character_table_is_sorted_and_disjoint() {
         for pair in HIDDEN_CHARACTERS.windows(2) {
             assert!(
                 pair[0].1 < pair[1].0,
@@ -281,31 +346,118 @@ mod lobby_name_tests {
         }
         for &(first, last) in HIDDEN_CHARACTERS {
             assert!(first <= last, "{first:?}..{last:?}");
-            for code in (first as u32)..=(last as u32) {
-                if let Some(character) = char::from_u32(code) {
-                    assert!(!valid_display_character(character), "U+{code:04X}");
+        }
+    }
+
+    /// Unicode 16.0 as `unicodedata` reports it: every code point of general category Cf or Co,
+    /// listed here as ranges, and the `Default_Ignorable_Code_Point` ones of other categories.
+    /// Written apart from `HIDDEN_CHARACTERS` so that a gap in either shows up as a difference.
+    const FORMAT_CATEGORY: &[(u32, u32)] = &[
+        (0xad, 0xad),
+        (0x600, 0x605),
+        (0x61c, 0x61c),
+        (0x6dd, 0x6dd),
+        (0x70f, 0x70f),
+        (0x890, 0x891),
+        (0x8e2, 0x8e2),
+        (0x180e, 0x180e),
+        (0x200b, 0x200f),
+        (0x202a, 0x202e),
+        (0x2060, 0x2064),
+        (0x2066, 0x206f),
+        (0xfeff, 0xfeff),
+        (0xfff9, 0xfffb),
+        (0x110bd, 0x110bd),
+        (0x110cd, 0x110cd),
+        (0x13430, 0x1343f),
+        (0x1bca0, 0x1bca3),
+        (0x1d173, 0x1d17a),
+        (0xe0001, 0xe0001),
+        (0xe0020, 0xe007f),
+    ];
+    const PRIVATE_USE_CATEGORY: &[(u32, u32)] =
+        &[(0xe000, 0xf8ff), (0xf0000, 0xffffd), (0x10_0000, 0x10_fffd)];
+    const DEFAULT_IGNORABLE_OF_OTHER_CATEGORIES: &[(u32, u32)] = &[
+        (0x34f, 0x34f),
+        (0x115f, 0x1160),
+        (0x17b4, 0x17b5),
+        (0x180b, 0x180d),
+        (0x180f, 0x180f),
+        (0x2065, 0x2065),
+        (0x3164, 0x3164),
+        (0xfe00, 0xfe0f),
+        (0xffa0, 0xffa0),
+        (0xfff0, 0xfff8),
+        (0xe0000, 0xe0fff),
+    ];
+    /// Not in any Unicode category of invisible characters, but draws as an empty cell.
+    const DRAWN_EMPTY: &[(u32, u32)] = &[(0x2800, 0x2800), (0x16fe4, 0x16fe4)];
+
+    fn is_noncharacter(code: u32) -> bool {
+        (0xfdd0..=0xfdef).contains(&code) || code & 0xfffe == 0xfffe
+    }
+
+    #[test]
+    fn exactly_the_invisible_characters_of_unicode_are_refused_over_every_scalar_value() {
+        let listed = |ranges: &[(u32, u32)], code: u32| {
+            ranges
+                .iter()
+                .any(|&(first, last)| (first..=last).contains(&code))
+        };
+        for character in (0..=0x10_ffff_u32).filter_map(char::from_u32) {
+            let code = character as u32;
+            let invisible = character.is_control()
+                || (character.is_whitespace() && character != ' ')
+                || is_noncharacter(code)
+                || [
+                    FORMAT_CATEGORY,
+                    PRIVATE_USE_CATEGORY,
+                    DEFAULT_IGNORABLE_OF_OTHER_CATEGORIES,
+                    DRAWN_EMPTY,
+                ]
+                .iter()
+                .any(|ranges| listed(ranges, code));
+            assert_eq!(
+                valid_display_character(character),
+                !invisible,
+                "U+{code:04X} {}",
+                if invisible {
+                    "is invisible and admitted"
+                } else {
+                    "is shown and refused"
                 }
-            }
+            );
         }
     }
 
     #[test]
-    fn every_noncharacter_is_refused() {
-        let planes = (0..=0x10_u32).flat_map(|plane| [plane << 16 | 0xfffe, plane << 16 | 0xffff]);
-        for code in planes.chain(0xfdd0..=0xfdef) {
-            let character = char::from_u32(code).expect("noncharacters are scalar values");
-            assert!(!valid_display_character(character), "U+{code:04X}");
+    fn a_character_is_admitted_in_a_name_exactly_when_it_is_admitted_in_a_search_query() {
+        for character in (0..=0x10_ffff_u32).filter_map(char::from_u32) {
+            assert_eq!(
+                valid_display_text(&format!("a{character}b")),
+                valid_display_fragment(&character.to_string()),
+                "U+{:04X}",
+                character as u32
+            );
         }
     }
 
     #[test]
-    fn every_whitespace_character_but_the_plain_space_is_refused() {
-        for character in (0..=0x10ffff_u32).filter_map(char::from_u32) {
-            if character.is_whitespace() && character != ' ' {
-                assert!(!valid_display_character(character), "{character:?}");
-            }
+    fn a_fragment_may_have_edge_spaces_double_spaces_and_a_leading_mark_but_no_hidden_character() {
+        for fragment in [
+            "",
+            " ",
+            "fri ",
+            "  night",
+            "a  b",
+            "\u{301}",
+            "\u{301}\u{302}\u{303}\u{304}",
+        ] {
+            assert!(valid_display_fragment(fragment), "{fragment:?}");
         }
-        assert!(valid_display_character(' '));
+        for fragment in ["\u{202e}", "a\u{fe0f}", "a\tb", "a\u{a0}"] {
+            assert!(!valid_display_fragment(fragment), "{fragment:?}");
+        }
     }
 
     #[test]
@@ -313,7 +465,14 @@ mod lobby_name_tests {
         assert!(valid_ban_reason(""), "no reason given");
         assert!(valid_ban_reason("спам 垃圾邮件"));
         assert!(!valid_ban_reason(&"x".repeat(MAX_BAN_REASON_LEN + 1)));
-        for reason in ["spam\u{202e}", "\u{200b}", " spam", "two  spaces", "a\nb"] {
+        for reason in [
+            "spam\u{202e}",
+            "\u{200b}",
+            " spam",
+            "two  spaces",
+            "a\nb",
+            "\u{301}",
+        ] {
             assert!(!valid_ban_reason(reason), "{reason:?}");
         }
         assert!(!valid_version("v1  beta"), "two spaces in a row");
