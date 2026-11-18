@@ -2,11 +2,27 @@
 
 use radovid_proto::*;
 
+use super::SessionId;
 use super::matches::Phase;
 use super::{Hub, internal};
 use crate::config::ArtifactAccess;
 use crate::db::{Ban, now_ms};
 use crate::supervisor::End;
+
+async fn change_avatar(
+    database: &crate::db::Db,
+    id: AccountId,
+    png: Option<Vec<u8>>,
+) -> Result<Reply, Error> {
+    let avatar = database
+        .change_avatar(id, png, now_ms())
+        .await
+        .map_err(internal)??;
+    Ok(Reply::Avatar {
+        account: id,
+        avatar,
+    })
+}
 
 impl Hub {
     pub(super) async fn change_avatar(
@@ -14,15 +30,29 @@ impl Hub {
         id: AccountId,
         png: Option<Vec<u8>>,
     ) -> Result<Reply, Error> {
-        let avatar = self
-            .db
-            .change_avatar(id, png, now_ms())
-            .await
-            .map_err(internal)??;
-        Ok(Reply::Avatar {
-            account: id,
-            avatar,
-        })
+        change_avatar(&self.db, id, png).await
+    }
+
+    /// Runs an avatar change beside the hub: decoding and encoding the picture is the one costly
+    /// thing a client can ask the hub for, and every other session waits while the hub does it.
+    pub(super) fn start_avatar_change(
+        &self,
+        session: SessionId,
+        message: ClientMsg,
+        reply: tokio::sync::oneshot::Sender<Result<Reply, Error>>,
+    ) {
+        let Some(id) = self.sessions.get(&session).map(|session| session.account) else {
+            let _ = reply.send(Err(Error::NotLoggedIn));
+            return;
+        };
+        let png = match message {
+            ClientMsg::SetAvatar { png } => Some(png),
+            _ => None,
+        };
+        let database = self.db.clone();
+        tokio::spawn(async move {
+            let _ = reply.send(change_avatar(&database, id, png).await);
+        });
     }
     /// A piece of the replay a finished match left, for an account that sat in it (or, where the
     /// ruleset says so, any account its audience admits).

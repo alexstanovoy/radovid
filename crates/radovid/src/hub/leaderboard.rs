@@ -30,10 +30,24 @@ impl Hub {
     }
 
     pub(super) fn charge_lookup(&mut self, id: AccountId) -> Result<(), Error> {
+        self.charge_lookup_at(id, self.lookup_now())
+    }
+
+    fn lookup_now(&self) -> std::time::Instant {
         let now = std::time::Instant::now();
         #[cfg(any(test, feature = "test_support"))]
         let now = self.lookup_clock.unwrap_or(now);
-        self.charge_lookup_at(id, now)
+        now
+    }
+
+    /// Whether the owner has paid for the avatar images already sent, else when it will have.
+    fn admit_avatar_bytes(&mut self, id: AccountId) -> Result<(), Error> {
+        let (main, now) = (self.main_account(id), self.lookup_now());
+        let owner = self.owners.get_mut(&main).ok_or(Error::NotLoggedIn)?;
+        owner
+            .avatar_bytes
+            .admit(now)
+            .map_err(|retry_after_ms| Error::Throttled { retry_after_ms })
     }
 
     pub(super) fn sweep_lookup_accounts(&mut self, now: std::time::Instant) {
@@ -150,6 +164,12 @@ impl Hub {
                 retry_after_ms: 250,
             });
         }
+        if matches!(
+            message,
+            ClientMsg::GetAvatar { .. } | ClientMsg::GetAvatars { .. }
+        ) {
+            self.admit_avatar_bytes(id)?;
+        }
         self.charge_lookup(id)?;
         self.owners
             .get_mut(&main)
@@ -158,10 +178,11 @@ impl Hub {
         Ok((id, lookup))
     }
 
-    pub(super) fn lookup_done(&mut self, id: AccountId) {
-        let main = self.main_account(id);
+    pub(super) fn lookup_done(&mut self, id: AccountId, avatar_bytes: usize) {
+        let (main, now) = (self.main_account(id), self.lookup_now());
         if let Some(owner) = self.owners.get_mut(&main) {
             owner.lookup_pending = false;
+            owner.avatar_bytes.charge(avatar_bytes, now);
         }
         self.forget_if_idle(id);
     }
@@ -183,9 +204,31 @@ impl Hub {
         let hub = self.me.clone();
         tokio::spawn(async move {
             let result = lookup.run(&database).await;
-            let _ = hub.send(Cmd::LookupDone { account }).await;
+            let avatar_bytes = avatar_bytes(&result);
+            let _ = hub
+                .send(Cmd::LookupDone {
+                    account,
+                    avatar_bytes,
+                })
+                .await;
             let _ = reply.send(result);
         });
+    }
+}
+
+/// Bytes of avatar images a lookup's reply carries.
+pub(super) fn avatar_bytes(result: &Result<Reply, Error>) -> usize {
+    match result {
+        Ok(Reply::Avatar {
+            avatar: Some(avatar),
+            ..
+        }) => avatar.png.len(),
+        Ok(Reply::Avatars { changes, .. }) => changes
+            .iter()
+            .filter_map(|change| change.avatar.as_ref())
+            .map(|avatar| avatar.png.len())
+            .sum(),
+        _ => 0,
     }
 }
 
@@ -253,12 +296,16 @@ impl Lookup {
             Self::Avatars {
                 accounts,
                 requester,
-            } => Ok(Reply::Avatars {
-                changes: database
+            } => {
+                let batch = database
                     .avatars(accounts, requester)
                     .await
-                    .map_err(lookup_error)?,
-            }),
+                    .map_err(lookup_error)?;
+                Ok(Reply::Avatars {
+                    changes: batch.changes,
+                    answered: u8::try_from(batch.answered).map_err(|_| Error::Internal)?,
+                })
+            }
             Self::Avatar { account, requester } => {
                 let avatar = database
                     .avatar(account, requester)

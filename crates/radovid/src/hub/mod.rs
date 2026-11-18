@@ -54,6 +54,8 @@ pub enum Cmd {
     Attach(Box<Attach>),
     LookupDone {
         account: AccountId,
+        /// Bytes of avatar images the lookup's reply carried.
+        avatar_bytes: usize,
     },
     VisibilitySweepDone,
     FinishApplied {
@@ -172,6 +174,8 @@ impl PlayingIdentity {
 /// quota, and the index of its online identities, so that per-account rules never scan everyone.
 struct Owner {
     lookup_budget: crate::throttle::TokenBucket,
+    /// What avatar lookups cost beyond their token: the images they carried.
+    avatar_bytes: crate::throttle::ByteBudget,
     lookup_pending: bool,
     /// The online `Account`s of this owner: itself or its versions, at most 128 of them.
     identities: Vec<AccountId>,
@@ -181,6 +185,11 @@ impl Owner {
     fn new() -> Self {
         Self {
             lookup_budget: crate::throttle::TokenBucket::new(4, 4, std::time::Instant::now()),
+            avatar_bytes: crate::throttle::ByteBudget::new(
+                AVATAR_BYTES_PER_SEC,
+                AVATAR_BYTES_BURST,
+                std::time::Instant::now(),
+            ),
             lookup_pending: false,
             identities: Vec::new(),
         }
@@ -192,7 +201,7 @@ impl Owner {
     }
 
     fn lookup_settled_at(&self, now: std::time::Instant) -> bool {
-        !self.lookup_pending && self.lookup_budget.is_full(now)
+        !self.lookup_pending && self.lookup_budget.is_full(now) && self.avatar_bytes.is_settled(now)
     }
 }
 
@@ -391,12 +400,17 @@ impl Hub {
             } => {
                 if leaderboard::is_lookup(&msg) {
                     self.start_lookup(session, &msg, reply);
+                } else if matches!(msg, ClientMsg::SetAvatar { .. } | ClientMsg::RemoveAvatar) {
+                    self.start_avatar_change(session, msg, reply);
                 } else {
                     let result = self.request(session, msg).await;
                     let _ = reply.send(result);
                 }
             }
-            Cmd::LookupDone { account } => self.lookup_done(account),
+            Cmd::LookupDone {
+                account,
+                avatar_bytes,
+            } => self.lookup_done(account, avatar_bytes),
             Cmd::VisibilitySweepDone => self.visibility_sweep_pending = false,
             Cmd::FinishApplied { match_id, result } => self.finish_applied(match_id, result),
             Cmd::Detach { session } => self.detach(session),
@@ -700,7 +714,7 @@ impl Hub {
         if leaderboard::is_lookup(&msg) {
             let (account, query) = self.prepare_lookup(session, &msg)?;
             let result = query.run(&self.db).await;
-            self.lookup_done(account);
+            self.lookup_done(account, leaderboard::avatar_bytes(&result));
             return result;
         }
         let id = self

@@ -8,7 +8,7 @@ async fn avatar_upload_get_and_remove_use_authenticated_account_and_shared_read_
     let (account, session) = fixture.account("alpha").await;
     let (other, second) = fixture.account("beta").await;
     fixture.hub.lookup_clock = Some(std::time::Instant::now());
-    let png = crate::avatar::tests::image(32, 32);
+    let png = crate::avatar::tests::avatar();
     let Reply::Avatar {
         account: owner,
         avatar: Some(avatar),
@@ -65,19 +65,42 @@ async fn avatar_upload_get_and_remove_use_authenticated_account_and_shared_read_
     );
 }
 
-async fn avatar_page(database: &crate::db::Db) -> Vec<AvatarQuery> {
-    let png = crate::avatar::tests::image(32, 32);
+/// A picture whose avatar is nearly as large as the format allows: noise cannot be compressed.
+fn heavy_avatar() -> &'static [u8] {
+    static IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    IMAGE.get_or_init(|| {
+        let mut state = 1u64;
+        let rgba: Vec<u8> = (0..256 * 256 * 4)
+            .map(|index| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                if index % 4 == 3 {
+                    255
+                } else {
+                    (state >> 56) as u8
+                }
+            })
+            .collect();
+        let png =
+            radovid_proto::encode_avatar_rgba(&rgba).expect("noise fits after reducing colours");
+        assert!(
+            png.len() > MAX_AVATAR_BYTES / 2,
+            "the fixture is heavy: {}",
+            png.len()
+        );
+        png
+    })
+}
+
+async fn avatar_page(database: &crate::db::Db, png: &[u8]) -> Vec<AvatarQuery> {
     let mut queries = Vec::new();
     for index in 0..100 {
         let account = database
             .create_account(format!("row{index}"), "hash".into(), AccountKind::Human)
             .await
             .expect("account");
-        database
-            .change_avatar(account, Some(png.clone()), UnixMs(1))
-            .await
-            .expect("storage")
-            .expect("avatar");
+        database.put_avatar_bytes(account, png).await;
         queries.push(AvatarQuery {
             account,
             version: None,
@@ -87,13 +110,13 @@ async fn avatar_page(database: &crate::db::Db) -> Vec<AvatarQuery> {
 }
 
 #[tokio::test]
-async fn one_batch_fetches_a_hundred_avatars_for_one_lookup_token_and_honors_cached_versions() {
+async fn one_batch_of_cached_versions_costs_one_lookup_token_and_no_image_bytes() {
     let mut fixture = Fixture::new();
     let (_viewer, session) = fixture.account("viewer").await;
     fixture.hub.lookup_clock = Some(std::time::Instant::now());
-    let accounts = avatar_page(&fixture.hub.db).await;
+    let accounts = avatar_page(&fixture.hub.db, &crate::avatar::tests::avatar()).await;
     let first = accounts[0].account;
-    let Reply::Avatars { changes } = fixture
+    let Reply::Avatars { changes, answered } = fixture
         .hub
         .request(session, ClientMsg::GetAvatars { accounts })
         .await
@@ -101,7 +124,7 @@ async fn one_batch_fetches_a_hundred_avatars_for_one_lookup_token_and_honors_cac
     else {
         panic!("batch reply");
     };
-    assert_eq!(changes.len(), 100);
+    assert_eq!((changes.len(), answered), (100, 100));
     let accounts = changes
         .iter()
         .map(|change| AvatarQuery {
@@ -115,7 +138,8 @@ async fn one_batch_fetches_a_hundred_avatars_for_one_lookup_token_and_honors_cac
             .request(session, ClientMsg::GetAvatars { accounts })
             .await,
         Ok(Reply::Avatars {
-            changes: Vec::new()
+            changes: Vec::new(),
+            answered: 100
         })
     );
     for _ in 0..2 {
@@ -134,6 +158,153 @@ async fn one_batch_fetches_a_hundred_avatars_for_one_lookup_token_and_honors_cac
             retry_after_ms: 250
         })
     );
+}
+
+/// Asks until every query is answered, waiting out the throttle on the lookup clock; returns the
+/// replies' image bytes, one entry a reply, and every account's image.
+async fn fetch_everything(
+    fixture: &mut Fixture,
+    session: SessionId,
+    mut queries: Vec<AvatarQuery>,
+) -> (Vec<usize>, Vec<AvatarChange>) {
+    let (mut sizes, mut all) = (Vec::new(), Vec::new());
+    for _ in 0..200 {
+        if queries.is_empty() {
+            return (sizes, all);
+        }
+        match fixture
+            .hub
+            .request(
+                session,
+                ClientMsg::GetAvatars {
+                    accounts: queries.clone(),
+                },
+            )
+            .await
+        {
+            Ok(Reply::Avatars { changes, answered }) => {
+                assert!(answered >= 1, "a reply makes progress");
+                sizes.push(
+                    changes
+                        .iter()
+                        .filter_map(|change| change.avatar.as_ref())
+                        .map(|avatar| avatar.png.len())
+                        .sum(),
+                );
+                all.extend(changes);
+                queries.drain(..usize::from(answered));
+            }
+            Err(Error::Throttled { retry_after_ms }) => {
+                let now = fixture.hub.lookup_clock.expect("virtual clock");
+                fixture.hub.lookup_clock =
+                    Some(now + std::time::Duration::from_millis(u64::from(retry_after_ms)));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    panic!("the batch was not answered in 200 asks");
+}
+
+#[tokio::test]
+async fn a_batch_of_heavy_avatars_is_split_by_the_reply_byte_budget_and_returns_everything() {
+    let mut fixture = Fixture::new();
+    let (_viewer, session) = fixture.account("viewer").await;
+    fixture.hub.lookup_clock = Some(std::time::Instant::now());
+    let accounts = avatar_page(&fixture.hub.db, heavy_avatar()).await;
+    let (sizes, all) = fetch_everything(&mut fixture, session, accounts.clone()).await;
+    assert!(
+        sizes.iter().all(|bytes| *bytes <= MAX_AVATAR_REPLY_BYTES),
+        "{sizes:?}"
+    );
+    assert!(
+        sizes.len() >= 100 * heavy_avatar().len() / MAX_AVATAR_REPLY_BYTES,
+        "{sizes:?}"
+    );
+    let got: Vec<AccountId> = all.iter().map(|change| change.account).collect();
+    let wanted: Vec<AccountId> = accounts.iter().map(|query| query.account).collect();
+    assert_eq!(got, wanted, "every account once, in the order asked");
+    assert!(all.iter().all(|change| {
+        change
+            .avatar
+            .as_ref()
+            .is_some_and(|a| a.png == heavy_avatar())
+    }));
+}
+
+#[tokio::test]
+async fn images_sent_are_charged_to_the_account_and_the_next_avatar_read_waits_for_the_debt() {
+    let mut fixture = Fixture::new();
+    let (_viewer, session) = fixture.account("viewer").await;
+    let start = std::time::Instant::now();
+    fixture.hub.lookup_clock = Some(start);
+    let accounts = avatar_page(&fixture.hub.db, heavy_avatar()).await;
+    let image = heavy_avatar().len();
+    let rate = AVATAR_BYTES_PER_SEC as usize;
+    // A new ask every quarter second keeps the lookup tokens out of the way; each reply carries
+    // about five images, more than a quarter second repays, so the debt rises.
+    let (mut sent, mut elapsed_ms, mut next) = (0usize, 0usize, 0usize);
+    while sent.saturating_sub(rate * elapsed_ms / 1000) < AVATAR_BYTES_BURST as usize {
+        let Reply::Avatars { changes, answered } = fixture
+            .hub
+            .request(
+                session,
+                ClientMsg::GetAvatars {
+                    accounts: accounts[next..].to_vec(),
+                },
+            )
+            .await
+            .expect("admitted while the debt is under the burst")
+        else {
+            panic!("batch reply");
+        };
+        sent += changes.len() * image;
+        next += usize::from(answered);
+        elapsed_ms += 250;
+        fixture.hub.lookup_clock =
+            Some(start + std::time::Duration::from_millis(elapsed_ms as u64));
+    }
+    let owed = sent - rate * elapsed_ms / 1000;
+    let rest = accounts[next..].to_vec();
+    let Err(Error::Throttled { retry_after_ms }) = fixture
+        .hub
+        .request(
+            session,
+            ClientMsg::GetAvatars {
+                accounts: rest.clone(),
+            },
+        )
+        .await
+    else {
+        panic!("the debt is past the burst: {owed} owed");
+    };
+    let expected = (owed - AVATAR_BYTES_BURST as usize) * 1000 / rate;
+    assert!(
+        retry_after_ms as usize >= expected && retry_after_ms as usize <= expected + 250,
+        "{retry_after_ms} vs {expected}"
+    );
+    assert!(
+        fixture
+            .hub
+            .request(
+                session,
+                ClientMsg::Account {
+                    account: accounts[0].account
+                }
+            )
+            .await
+            .is_ok(),
+        "other lookups do not wait for avatar bytes"
+    );
+    let now = fixture.hub.lookup_clock.expect("clock");
+    fixture.hub.lookup_clock =
+        Some(now + std::time::Duration::from_millis(u64::from(retry_after_ms)));
+    assert!(matches!(
+        fixture
+            .hub
+            .request(session, ClientMsg::GetAvatars { accounts: rest })
+            .await,
+        Ok(Reply::Avatars { .. })
+    ));
 }
 
 #[tokio::test]

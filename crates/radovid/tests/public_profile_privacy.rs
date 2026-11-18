@@ -181,7 +181,8 @@ fn avatar_reads_do_not_distinguish_hidden_banned_deleted_and_nonexistent_account
                 }]
             }),
             Ok(Reply::Avatars {
-                changes: Vec::new()
+                changes: Vec::new(),
+                answered: 1
             })
         );
         assert_eq!(
@@ -195,7 +196,8 @@ fn avatar_reads_do_not_distinguish_hidden_banned_deleted_and_nonexistent_account
                 changes: vec![AvatarChange {
                     account: target,
                     avatar: None
-                }]
+                }],
+                answered: 1
             })
         );
     }

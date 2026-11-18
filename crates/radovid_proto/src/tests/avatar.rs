@@ -1,10 +1,44 @@
 use crate::*;
 
 #[test]
-fn nested_avatar_fields_require_protocol_20() {
-    // Bot versions raised the floor to the protocol that appended their fields.
-    assert_eq!(MIN_PROTO_VERSION, 22);
-    assert_eq!(PROTO_VERSION, 22);
+fn the_batch_reply_with_its_answered_count_requires_protocol_25() {
+    // A reply that says how many queries it answers cannot be read by an older client, so the
+    // floor was raised to the protocol that appended the count.
+    assert_eq!(MIN_PROTO_VERSION, 25);
+    assert_eq!(PROTO_VERSION, 25);
+}
+
+#[test]
+fn the_avatar_limits_fit_the_frames_they_travel_in() {
+    // An upload is one control frame; a batch reply is one server frame holding up to the budget.
+    const { assert!(MAX_AVATAR_BYTES + 1024 <= MAX_CONTROL_PAYLOAD_LEN) };
+    const { assert!(MAX_AVATAR_BYTES <= MAX_AVATAR_REPLY_BYTES) };
+    const { assert!(MAX_AVATAR_REPLY_BYTES + 100 * 64 <= MAX_SERVER_PAYLOAD_LEN) };
+    const { assert!(AVATAR_BYTES_BURST as usize >= MAX_AVATAR_REPLY_BYTES) };
+}
+
+#[test]
+fn the_fullest_batch_reply_encodes_within_the_server_frame_and_decodes_back() {
+    let full = MAX_AVATAR_REPLY_BYTES / MAX_AVATAR_BYTES;
+    let reply = ServerMsg::Reply {
+        seq: 1,
+        reply: Reply::Avatars {
+            changes: (1..=full as u64)
+                .map(|account| AvatarChange {
+                    account: AccountId(account),
+                    avatar: Some(Avatar {
+                        version: AvatarVersion([account as u8; 32]),
+                        png: vec![7; MAX_AVATAR_BYTES],
+                    }),
+                })
+                .collect(),
+            answered: MAX_AVATAR_BATCH as u8,
+        },
+    };
+    let encoded = encode_frame_to_vec(&reply).expect("fullest reply");
+    assert!(encoded.len() <= LEN_PREFIX + MAX_SERVER_PAYLOAD_LEN);
+    let payload = whole_frame(&encoded, MAX_SERVER_PAYLOAD_LEN).expect("frame");
+    assert_eq!(decode_payload::<ServerMsg>(payload), Ok(reply));
 }
 
 #[test]
@@ -76,6 +110,7 @@ fn avatar_batches_bound_both_vectors_and_nested_images_before_allocation() {
                     };
                     size
                 ],
+                answered: 1,
             },
         };
         let frame = encode_frame_to_vec(&response).expect("wire");
@@ -97,6 +132,7 @@ fn avatar_batches_bound_both_vectors_and_nested_images_before_allocation() {
                     png: vec![0; MAX_AVATAR_BYTES + 1],
                 }),
             }],
+            answered: 1,
         },
     };
     let frame = encode_frame_to_vec(&response).expect("wire");

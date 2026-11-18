@@ -74,18 +74,8 @@ impl Control {
             decode_payload(payload).map_err(|e| ClientError::Protocol(e.to_string()))?;
         Ok(match msg {
             ServerMsg::Reply { seq, reply } => {
-                let valid = |avatar: &Avatar| avatar_image_data(&avatar.png).is_some();
-                let safe = match &reply {
-                    Reply::Avatar { avatar, .. } => avatar.as_ref().is_none_or(valid),
-                    Reply::Avatars { changes } => changes
-                        .iter()
-                        .all(|change| change.avatar.as_ref().is_none_or(valid)),
-                    _ => true,
-                };
-                if !safe {
-                    return Err(ClientError::Protocol(
-                        "invalid avatar image envelope".into(),
-                    ));
+                if let Err(why) = check_avatars(&reply) {
+                    return Err(ClientError::Protocol(why.into()));
                 }
                 self.note(&reply);
                 Incoming::Reply {
@@ -133,6 +123,38 @@ impl Control {
 
 pub use radovid_proto::control_url;
 
+/// What a client may hand to its image decoder: the envelope of every image is the avatar
+/// format's, and a batch answers no more queries than were asked and carries no more bytes than
+/// the service sends at once.
+fn check_avatars(reply: &Reply) -> Result<(), &'static str> {
+    let envelope = |avatar: &Avatar| {
+        avatar_image_data(&avatar.png)
+            .map(|_| ())
+            .map_err(|_| "invalid avatar image envelope")
+    };
+    match reply {
+        Reply::Avatar { avatar, .. } => avatar.as_ref().map_or(Ok(()), envelope),
+        Reply::Avatars { changes, answered } => {
+            let bytes: usize = changes
+                .iter()
+                .filter_map(|change| change.avatar.as_ref())
+                .map(|avatar| avatar.png.len())
+                .sum();
+            if !(1..=MAX_AVATAR_BATCH).contains(&usize::from(*answered))
+                || changes.len() > usize::from(*answered)
+                || bytes > MAX_AVATAR_REPLY_BYTES
+            {
+                return Err("invalid avatar batch bounds");
+            }
+            changes
+                .iter()
+                .filter_map(|change| change.avatar.as_ref())
+                .try_for_each(envelope)
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +193,7 @@ mod tests {
                         png: b"<svg/>".to_vec(),
                     }),
                 }],
+                answered: 1,
             },
         };
         let encoded = encode_frame_to_vec(&message).expect("malicious peer");

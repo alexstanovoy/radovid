@@ -591,3 +591,4 @@ variant Error 61 VersionRequired
 variant Error 62 VersionNotAllowed
 variant Error 63 BadVersion
 variant Error 64 VersionLimit
+field Reply::Avatars 1 answered: u8

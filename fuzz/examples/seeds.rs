@@ -33,7 +33,26 @@ fn ruleset(id: &str) -> RulesetId {
     RulesetId(id.to_owned())
 }
 
+/// A valid avatar of a few flat colours: the fuzzer finds the PNG header's checksums slowly.
+fn avatar_seed() -> Vec<u8> {
+    let side = radovid_proto::AVATAR_SIDE as usize;
+    let rgba: Vec<u8> = (0..side * side)
+        .flat_map(|index| {
+            let (row, column) = (index / side, index % side);
+            if (row / 64 + column / 64) % 2 == 0 {
+                [200, 40, 40, 255]
+            } else {
+                [40, 80, 200, 128]
+            }
+        })
+        .collect();
+    radovid_proto::encode_avatar_rgba(&rgba).expect("a flat avatar fits")
+}
+
 fn main() {
+    for target in ["avatar", "proto_decode"] {
+        write(target, "avatar", &avatar_seed());
+    }
     let lobby = ClientMsg::LobbyCreate {
         ruleset: ruleset("duel"),
         name: "room".to_owned(),

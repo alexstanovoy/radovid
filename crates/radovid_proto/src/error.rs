@@ -128,7 +128,7 @@ pub enum Error {
     BadLeaderboardSearch,
     /// The lookup exceeds a work bound; retrying the same request will not help.
     LookupTooExpensive,
-    /// Not a static 32x32 PNG of at most 512 bytes in the avatar format.
+    /// Not a static 256x256 PNG of at most `MAX_AVATAR_BYTES` bytes in the avatar format.
     BadAvatar,
     /// Batch must contain one to 100 distinct valid account IDs.
     BadAvatarBatch,

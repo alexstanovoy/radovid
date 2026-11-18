@@ -65,3 +65,10 @@ path = "fuzz_targets/service_check.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "avatar"
+path = "fuzz_targets/avatar.rs"
+test = false
+doc = false
+bench = false

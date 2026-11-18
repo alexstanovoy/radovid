@@ -3,32 +3,44 @@ use sha2::{Digest, Sha256};
 
 const WRITE_INTERVAL_MS: u64 = 60_000;
 
+/// What a batch lookup answers: the changes among the first `answered` queries.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AvatarBatch {
+    pub changes: Vec<AvatarChange>,
+    pub answered: usize,
+}
+
 impl Db {
+    /// Replaces or removes the account's avatar. The attempt is charged first, so that an upload
+    /// that turns out invalid spends the account's quota too; the pixels are decoded and encoded
+    /// again off the database's writer, which only ever sees the finished bytes.
     pub(crate) async fn change_avatar(
         &self,
         account: AccountId,
         png: Option<Vec<u8>>,
         now: UnixMs,
     ) -> DbResult<Result<Option<Avatar>, Error>> {
-        self.run(move |connection| {
-            let transaction = connection.transaction()?;
-            if !can_view(&transaction, account, account, now)? { return Ok(Err(Error::UnknownAccount)); }
-            let previous: Option<i64> = transaction.query_row("SELECT attempted_at FROM avatars WHERE account=?1", [account.0 as i64], |row|row.get(0)).optional()?;
-            if let Some(previous) = previous {
-                let elapsed = now.0.saturating_sub(previous as u64);
-                if elapsed < WRITE_INTERVAL_MS {
-                    return Ok(Err(Error::Throttled { retry_after_ms: (WRITE_INTERVAL_MS - elapsed) as u32 }));
+        if let Err(error) = self
+            .run(move |connection| charge_attempt(connection, account, now))
+            .await?
+        {
+            return Ok(Err(error));
+        }
+        let avatar = match png {
+            None => None,
+            Some(bytes) => {
+                let canonical =
+                    tokio::task::spawn_blocking(move || crate::avatar::canonicalize(&bytes))
+                        .await
+                        .map_err(|_| DbError::Join)?;
+                match canonical {
+                    Ok(png) => Some(image(png)),
+                    Err(error) => return Ok(Err(error)),
                 }
             }
-            transaction.execute("INSERT INTO avatars(account,attempted_at) VALUES(?1,?2) ON CONFLICT(account) DO UPDATE SET attempted_at=excluded.attempted_at",params![account.0 as i64,now.0 as i64])?;
-            let avatar=match png.map(|bytes|crate::avatar::canonicalize(&bytes)).transpose() {
-                Ok(png)=>png.map(image),
-                Err(error)=>{transaction.commit()?;return Ok(Err(error));}
-            };
-            transaction.execute("UPDATE avatars SET version=?2,png=?3 WHERE account=?1",params![account.0 as i64,avatar.as_ref().map(|image|image.version.0.as_slice()),avatar.as_ref().map(|image|image.png.as_slice())])?;
-            transaction.commit()?;
-            Ok(Ok(avatar))
-        }).await
+        };
+        self.run(move |connection| store(connection, account, avatar))
+            .await
     }
 
     pub(crate) async fn avatar(
@@ -36,79 +48,133 @@ impl Db {
         account: AccountId,
         requester: AccountId,
     ) -> DbResult<Result<Option<Avatar>, Error>> {
-        let (result, rewrites) = self
-            .read(move |connection| {
-                super::leaderboard::read_lookup(connection, |connection| {
-                    if !can_view(connection, account, requester, now_ms())? {
-                        return Ok((Err(Error::UnknownAccount), Vec::new()));
-                    }
-                    let (avatar, rewrite) = stored_image(connection, account)?;
-                    Ok((Ok(avatar), rewrite.into_iter().collect()))
-                })
+        self.read(move |connection| {
+            super::leaderboard::read_lookup(connection, |connection| {
+                if !can_view(connection, account, requester, now_ms())? {
+                    return Ok(Err(Error::UnknownAccount));
+                }
+                Ok(Ok(stored_image(connection, account)?))
             })
-            .await?;
-        self.rewrite_avatars(rewrites).await;
-        Ok(result)
+        })
+        .await
     }
 
+    /// The images among the first `accounts` that differ from the versions the caller holds. The
+    /// reply stops before the query whose image would take it past `MAX_AVATAR_REPLY_BYTES`
+    /// (the first image always goes in), and says how many queries it covers.
     pub(crate) async fn avatars(
         &self,
         accounts: Vec<AvatarQuery>,
         requester: AccountId,
-    ) -> DbResult<Vec<AvatarChange>> {
+    ) -> DbResult<AvatarBatch> {
         if !valid_avatar_batch(&accounts) {
             return Err(DbError::Sqlite(rusqlite::Error::InvalidQuery));
         }
-        let (changes, rewrites) = self
-            .read(move |connection| {
-                super::leaderboard::read_lookup(connection, |connection| {
-                    let mut changes = Vec::new();
-                    let mut rewrites = Vec::new();
-                    let now = now_ms();
-                    for query in accounts {
-                        let (avatar, rewrite) =
-                            if can_view(connection, query.account, requester, now)? {
-                                stored_image(connection, query.account)?
-                            } else {
-                                (None, None)
-                            };
-                        rewrites.extend(rewrite);
-                        if avatar.as_ref().map(|image| image.version) != query.version {
-                            changes.push(AvatarChange {
-                                account: query.account,
-                                avatar,
-                            });
-                        }
+        self.read(move |connection| {
+            super::leaderboard::read_lookup(connection, |connection| {
+                let now = now_ms();
+                let mut changes = Vec::new();
+                let mut bytes = 0;
+                for (answered, query) in accounts.iter().enumerate() {
+                    let avatar = if can_view(connection, query.account, requester, now)? {
+                        stored_image(connection, query.account)?
+                    } else {
+                        None
+                    };
+                    if avatar.as_ref().map(|image| image.version) == query.version {
+                        continue;
                     }
-                    Ok((changes, rewrites))
+                    let size = avatar.as_ref().map_or(0, |image| image.png.len());
+                    if bytes > 0 && bytes + size > MAX_AVATAR_REPLY_BYTES {
+                        return Ok(AvatarBatch { changes, answered });
+                    }
+                    bytes += size;
+                    changes.push(AvatarChange {
+                        account: query.account,
+                        avatar,
+                    });
+                }
+                Ok(AvatarBatch {
+                    changes,
+                    answered: accounts.len(),
                 })
             })
-            .await?;
-        self.rewrite_avatars(rewrites).await;
-        Ok(changes)
-    }
-
-    async fn rewrite_avatars(&self, rewrites: Vec<Rewrite>) {
-        if rewrites.is_empty() {
-            return;
-        }
-        // Older valid uploads are normalized lazily; a concurrent upload must win.
-        if let Err(error)=self.run(move|connection| {
-            let transaction=connection.transaction()?;
-            for rewrite in rewrites {
-                transaction.execute("UPDATE avatars SET version=?2,png=?3 WHERE account=?1 AND version=?4 AND png=?5",
-                    params![rewrite.account.0 as i64,rewrite.image.version.0.as_slice(),rewrite.image.png,rewrite.version.0.as_slice(),rewrite.bytes])?;
-            }
-            transaction.commit()
-        }).await {eprintln!("WARN: deferred canonical avatar storage: {error}");}
+        })
+        .await
     }
 }
 
-struct Rewrite {
+#[cfg(test)]
+impl Db {
+    /// Gives the account exactly these bytes as its avatar, as a fixture: no quota is spent and
+    /// nothing is decoded, so a test can hold a hundred heavy pictures.
+    pub(crate) async fn put_avatar_bytes(&self, account: AccountId, png: &[u8]) {
+        let (version, png) = (Sha256::digest(png).to_vec(), png.to_vec());
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "INSERT INTO avatars(account,version,png,attempted_at) VALUES(?1,?2,?3,0)",
+                    params![account.0 as i64, version, png],
+                )
+                .map(|_| ())
+        })
+        .await
+        .expect("stored fixture");
+    }
+}
+
+/// Spends the account's one change a minute, or says when the next may be made.
+fn charge_attempt(
+    connection: &mut Connection,
     account: AccountId,
-    version: AvatarVersion,
-    bytes: Vec<u8>,
-    image: Avatar,
+    now: UnixMs,
+) -> rusqlite::Result<Result<(), Error>> {
+    let transaction = connection.transaction()?;
+    if !can_view(&transaction, account, account, now)? {
+        return Ok(Err(Error::UnknownAccount));
+    }
+    let previous: Option<i64> = transaction
+        .query_row(
+            "SELECT attempted_at FROM avatars WHERE account=?1",
+            [account.0 as i64],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(previous) = previous {
+        let elapsed = now.0.saturating_sub(previous as u64);
+        if elapsed < WRITE_INTERVAL_MS {
+            return Ok(Err(Error::Throttled {
+                retry_after_ms: (WRITE_INTERVAL_MS - elapsed) as u32,
+            }));
+        }
+    }
+    transaction.execute(
+        "INSERT INTO avatars(account,attempted_at) VALUES(?1,?2) ON CONFLICT(account) DO UPDATE SET attempted_at=excluded.attempted_at",
+        params![account.0 as i64, now.0 as i64],
+    )?;
+    transaction.commit()?;
+    Ok(Ok(()))
+}
+
+fn store(
+    connection: &mut Connection,
+    account: AccountId,
+    avatar: Option<Avatar>,
+) -> rusqlite::Result<Result<Option<Avatar>, Error>> {
+    let changed = connection.execute(
+        "UPDATE avatars SET version=?2,png=?3 WHERE account=?1",
+        params![
+            account.0 as i64,
+            avatar.as_ref().map(|image| image.version.0.as_slice()),
+            avatar.as_ref().map(|image| image.png.as_slice())
+        ],
+    )?;
+    // The account can be deleted between the charge and the store, and then its row is gone.
+    Ok(if changed == 1 {
+        Ok(avatar)
+    } else {
+        Err(Error::UnknownAccount)
+    })
 }
 
 fn image(png: Vec<u8>) -> Avatar {
@@ -118,26 +184,23 @@ fn image(png: Vec<u8>) -> Avatar {
     }
 }
 
-fn stored_image(
-    connection: &Connection,
-    account: AccountId,
-) -> rusqlite::Result<(Option<Avatar>, Option<Rewrite>)> {
-    connection.query_row("SELECT CASE WHEN typeof(version)='blob' AND length(version)=32 THEN version END,CASE WHEN typeof(png)='blob' AND length(png) BETWEEN 1 AND 512 THEN png END FROM avatars WHERE account=?1 AND png IS NOT NULL",[account.0 as i64],|row| {
+/// The stored image, if it is still what the service wrote: the bytes must hash to their version
+/// and keep the avatar envelope. Pixels were validated when they were stored, and a read must not
+/// decode (a page of a hundred avatars would cost a hundred decodes).
+fn stored_image(connection: &Connection, account: AccountId) -> rusqlite::Result<Option<Avatar>> {
+    connection.query_row("SELECT CASE WHEN typeof(version)='blob' AND length(version)=32 THEN version END,CASE WHEN typeof(png)='blob' AND length(png) BETWEEN 1 AND ?2 THEN png END FROM avatars WHERE account=?1 AND png IS NOT NULL",params![account.0 as i64,MAX_AVATAR_BYTES as i64],|row| {
         let version=row.get_ref(0)?.as_blob();
         let png=row.get_ref(1)?.as_blob();
         if let (Ok(version),Ok(bytes))=(version,png)
             && let Ok(hash)=<[u8;32]>::try_from(version)
-            && bytes.len()<=MAX_AVATAR_BYTES
             && Sha256::digest(bytes).as_slice()==hash
-            && let Ok(canonical)=crate::avatar::canonicalize(bytes)
+            && radovid_proto::avatar_image_data(bytes).is_ok()
         {
-            let avatar=image(canonical);
-            let rewrite=(avatar.png!=bytes).then(||Rewrite{account,version:AvatarVersion(hash),bytes:bytes.to_vec(),image:avatar.clone()});
-            return Ok((Some(avatar),rewrite));
+            return Ok(Some(Avatar{version:AvatarVersion(hash),png:bytes.to_vec()}));
         }
         eprintln!("WARN: account {} has an invalid stored avatar; treating it as absent",account.0);
-        Ok((None,None))
-    }).optional().map(|row|row.unwrap_or((None,None)))
+        Ok(None)
+    }).optional().map(Option::flatten)
 }
 
 fn can_view(
@@ -204,7 +267,7 @@ mod tests {
     async fn profiles_and_both_leaderboard_paths_publish_the_avatar_cache_version() {
         let db = Db::init(Connection::open_in_memory().expect("connection")).expect("db");
         let alpha = account(&db, "alpha").await;
-        let png = crate::avatar::tests::image(32, 32);
+        let png = crate::avatar::tests::avatar();
         let avatar = db
             .change_avatar(alpha, Some(png), UnixMs(1))
             .await
@@ -244,7 +307,7 @@ mod tests {
         let alpha = account(&db, "alpha").await;
         let beta = account(&db, "beta").await;
         let now = UnixMs(100_000);
-        let png = crate::avatar::tests::image(32, 32);
+        let png = crate::avatar::tests::avatar();
         let stored = db
             .change_avatar(alpha, Some(png.clone()), now)
             .await
@@ -288,11 +351,7 @@ mod tests {
         let db = Db::init(Connection::open_in_memory().expect("connection")).expect("db");
         let account = account(&db, "alpha").await;
         let first = db
-            .change_avatar(
-                account,
-                Some(crate::avatar::tests::image(32, 32)),
-                UnixMs(1),
-            )
+            .change_avatar(account, Some(crate::avatar::tests::avatar()), UnixMs(1))
             .await
             .expect("storage")
             .expect("upload");
@@ -329,7 +388,7 @@ mod tests {
         let alpha = account(&db, "alpha").await;
         let beta = account(&db, "beta").await;
         let stored = db
-            .change_avatar(alpha, Some(crate::avatar::tests::image(32, 32)), UnixMs(1))
+            .change_avatar(alpha, Some(crate::avatar::tests::avatar()), UnixMs(1))
             .await
             .expect("storage")
             .expect("upload");
@@ -381,7 +440,7 @@ mod tests {
     async fn corrupt_stored_avatar_hash_is_absent_without_serving_unvalidated_bytes() {
         let db = Db::init(Connection::open_in_memory().expect("connection")).expect("db");
         let alpha = account(&db, "alpha").await;
-        db.change_avatar(alpha, Some(crate::avatar::tests::image(32, 32)), UnixMs(1))
+        db.change_avatar(alpha, Some(crate::avatar::tests::avatar()), UnixMs(1))
             .await
             .expect("storage")
             .expect("upload");
@@ -461,7 +520,7 @@ mod tests {
         let owner = account(&db, "owner").await;
         let viewer = account(&db, "viewer").await;
         let avatar = db
-            .change_avatar(owner, Some(crate::avatar::tests::image(32, 32)), UnixMs(1))
+            .change_avatar(owner, Some(crate::avatar::tests::avatar()), UnixMs(1))
             .await
             .expect("storage")
             .expect("upload")
@@ -480,7 +539,10 @@ mod tests {
             version: Some(avatar.version),
         };
         assert_eq!(
-            db.avatars(vec![query], viewer).await.expect("hidden"),
+            db.avatars(vec![query], viewer)
+                .await
+                .expect("hidden")
+                .changes,
             vec![AvatarChange {
                 account: owner,
                 avatar: None
@@ -496,6 +558,7 @@ mod tests {
             )
             .await
             .expect("no cached image")
+            .changes
             .is_empty()
         );
         db.set_ban(owner, None).await.expect("unban");
@@ -512,7 +575,8 @@ mod tests {
         assert_eq!(
             db.avatars(vec![query], viewer)
                 .await
-                .expect("corrupt means absent"),
+                .expect("corrupt means absent")
+                .changes,
             vec![AvatarChange {
                 account: owner,
                 avatar: None
@@ -520,69 +584,14 @@ mod tests {
         );
         db.delete_account(owner).await.expect("delete");
         assert_eq!(
-            db.avatars(vec![query], viewer).await.expect("deleted"),
+            db.avatars(vec![query], viewer)
+                .await
+                .expect("deleted")
+                .changes,
             vec![AvatarChange {
                 account: owner,
                 avatar: None
             }]
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_valid_images_are_canonicalized_on_fetch_without_spending_upload_quota() {
-        let db = Db::init(Connection::open_in_memory().expect("db")).expect("schema");
-        let owner = account(&db, "owner").await;
-        let raw = crate::avatar::tests::image_with_chunks(
-            png::ColorType::Rgb,
-            &[(png::chunk::PLTE, b"<script>payload</script>")],
-        );
-        let version = AvatarVersion(Sha256::digest(&raw).into());
-        db.run(move |connection| {
-            connection
-                .execute(
-                    "INSERT INTO avatars(account,version,png,attempted_at) VALUES(?1,?2,?3,100)",
-                    params![owner.0 as i64, version.0.as_slice(), raw],
-                )
-                .map(|_| ())
-        })
-        .await
-        .expect("legacy image");
-        let changes = db
-            .avatars(
-                vec![AvatarQuery {
-                    account: owner,
-                    version: Some(version),
-                }],
-                owner,
-            )
-            .await
-            .expect("canonical fetch");
-        let image = changes[0].avatar.as_ref().expect("new version");
-        assert_ne!(image.version, version);
-        assert!(!image.png.windows(4).any(|part| part == b"PLTE"));
-        assert_eq!(
-            db.avatar(owner, owner).await.expect("stored canonical"),
-            Ok(Some(image.clone()))
-        );
-        assert_eq!(
-            db.change_avatar(owner, None, UnixMs(101))
-                .await
-                .expect("quota intact"),
-            Err(Error::Throttled {
-                retry_after_ms: 59_999
-            })
-        );
-        assert!(
-            db.avatars(
-                vec![AvatarQuery {
-                    account: owner,
-                    version: Some(image.version)
-                }],
-                owner
-            )
-            .await
-            .expect("cached")
-            .is_empty()
         );
     }
 }

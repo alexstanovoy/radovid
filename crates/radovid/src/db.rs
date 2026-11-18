@@ -26,16 +26,34 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::rating::{Glicko, RatingShare};
 
 /// Schema 2 gains the denormalised category and indexes in one transaction.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
-const AVATAR_SCHEMA: &str = "
-CREATE TABLE avatars(
+fn avatar_schema() -> String {
+    format!(
+        "CREATE TABLE avatars(
     account INTEGER PRIMARY KEY REFERENCES accounts(id),
     version BLOB CHECK(version IS NULL OR length(version)=32),
-    png BLOB CHECK(png IS NULL OR length(png) BETWEEN 1 AND 512),
+    png BLOB CHECK(png IS NULL OR length(png) BETWEEN 1 AND {MAX_AVATAR_BYTES}),
     attempted_at INTEGER NOT NULL,
     CHECK((version IS NULL) = (png IS NULL))
-);";
+);"
+    )
+}
+
+/// Schema 6 to 7: avatars grew from 32 by 32 to 256 by 256 pixels. A stored image is of the old
+/// size and the table bounds the old byte count, so the table is made again without them: an
+/// account that had a picture is shown without one until it sets another. Returns the number of
+/// pictures dropped.
+fn replace_avatars(transaction: &Transaction<'_>) -> rusqlite::Result<usize> {
+    let dropped = transaction.query_row(
+        "SELECT count(*) FROM avatars WHERE png IS NOT NULL",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    transaction.execute_batch("DROP TABLE avatars;")?;
+    transaction.execute_batch(&avatar_schema())?;
+    Ok(dropped as usize)
+}
 
 const SCHEMA: &str = "
 CREATE TABLE accounts(
@@ -421,7 +439,7 @@ impl Db {
                 transaction.execute_batch(SCHEMA)?;
                 transaction.execute_batch(RANKING_SCHEMA)?;
                 transaction.execute_batch(visibility::SCHEMA)?;
-                transaction.execute_batch(AVATAR_SCHEMA)?;
+                transaction.execute_batch(&avatar_schema())?;
                 transaction.pragma_update(None, "user_version", 5)?;
                 transaction.commit()?;
             }
@@ -433,24 +451,24 @@ impl Db {
                 )?;
                 transaction.execute_batch(RANKING_SCHEMA)?;
                 transaction.execute_batch(visibility::SCHEMA)?;
-                transaction.execute_batch(AVATAR_SCHEMA)?;
+                transaction.execute_batch(&avatar_schema())?;
                 transaction.pragma_update(None, "user_version", 5)?;
                 transaction.commit()?;
             }
             3 => {
                 let transaction = conn.transaction()?;
                 transaction.execute_batch(visibility::SCHEMA)?;
-                transaction.execute_batch(AVATAR_SCHEMA)?;
+                transaction.execute_batch(&avatar_schema())?;
                 transaction.pragma_update(None, "user_version", 5)?;
                 transaction.commit()?;
             }
             4 => {
                 let transaction = conn.transaction()?;
-                transaction.execute_batch(AVATAR_SCHEMA)?;
+                transaction.execute_batch(&avatar_schema())?;
                 transaction.pragma_update(None, "user_version", 5)?;
                 transaction.commit()?;
             }
-            5 | SCHEMA_VERSION => {}
+            5..=SCHEMA_VERSION => {}
             other => {
                 return Err(DbError::Sqlite(rusqlite::Error::InvalidParameterName(
                     format!("database schema version {other}, this build writes {SCHEMA_VERSION}"),
@@ -463,11 +481,22 @@ impl Db {
             let removed = versions::migrate(&transaction)?;
             if version != 0 {
                 eprintln!(
-                    "radovid: INFO: schema {version} -> {SCHEMA_VERSION}: removed {removed} bot rating rows; versions start from zero"
+                    "radovid: INFO: schema {version} -> 6: removed {removed} bot rating rows; versions start from zero"
                 );
             }
+            transaction.pragma_update(None, "user_version", 6)?;
+            transaction.commit()?;
+        }
+        if (5..SCHEMA_VERSION).contains(&version) {
+            let transaction = conn.transaction()?;
+            let dropped = replace_avatars(&transaction)?;
+            eprintln!(
+                "radovid: INFO: schema {version} -> {SCHEMA_VERSION}: dropped {dropped} stored avatars of the old size"
+            );
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
+        } else if version < SCHEMA_VERSION {
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         Ok(Db {
             conn: Arc::new(Mutex::new(conn)),

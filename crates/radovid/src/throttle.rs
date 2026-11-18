@@ -381,6 +381,53 @@ impl TokenBucket {
     }
 }
 
+/// What was sent to someone, repaid at a fixed rate. Sending is admitted while the debt is under
+/// the burst; what a reply carried is charged after it is known, so one reply can take the debt
+/// past the burst, and the next waits for it to come down.
+pub struct ByteBudget {
+    owed: f64,
+    rate: f64,
+    burst: f64,
+    last: Instant,
+}
+
+impl ByteBudget {
+    pub fn new(rate: u32, burst: u32, now: Instant) -> Self {
+        ByteBudget {
+            owed: 0.0,
+            rate: f64::from(rate),
+            burst: f64::from(burst),
+            last: now,
+        }
+    }
+
+    fn repay(&mut self, now: Instant) {
+        let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
+        self.owed = (self.owed - elapsed * self.rate).max(0.0);
+        self.last = now;
+    }
+
+    /// Whether a lookup may start, or in milliseconds when the debt will be under the burst.
+    pub fn admit(&mut self, now: Instant) -> Result<(), u32> {
+        self.repay(now);
+        if self.owed < self.burst {
+            return Ok(());
+        }
+        Err((((self.owed - self.burst) / self.rate) * 1000.0)
+            .ceil()
+            .max(1.0) as u32)
+    }
+
+    pub fn charge(&mut self, bytes: usize, now: Instant) {
+        self.repay(now);
+        self.owed += bytes as f64;
+    }
+
+    pub fn is_settled(&self, now: Instant) -> bool {
+        self.owed - now.saturating_duration_since(self.last).as_secs_f64() * self.rate <= 0.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

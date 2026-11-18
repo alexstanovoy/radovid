@@ -866,6 +866,8 @@ dependencies = [
 name = "radovid_proto"
 version = "0.1.0"
 dependencies = [
+ "flate2",
+ "png",
  "postcard",
  "serde",
  "serde-reflection",

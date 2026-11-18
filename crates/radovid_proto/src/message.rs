@@ -335,9 +335,14 @@ pub enum Reply {
         account: AccountId,
         avatar: Option<crate::Avatar>,
     },
+    /// The answer to the first `answered` queries of a `GetAvatars`: the images among them that
+    /// differ from the versions the caller holds. The reply carries at most
+    /// `MAX_AVATAR_REPLY_BYTES` of images, so `answered` can be less than the batch; the caller
+    /// asks again about the rest.
     Avatars {
         #[serde(deserialize_with = "crate::model::avatar_changes")]
         changes: Vec<AvatarChange>,
+        answered: u8,
     },
 }
 

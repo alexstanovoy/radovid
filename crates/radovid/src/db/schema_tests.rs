@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 #[tokio::test]
 async fn schema_three_migration_backfills_visible_totals_and_preserves_ratings_and_credentials() {
@@ -175,7 +176,7 @@ async fn schema_four_migration_adds_avatars_without_changing_visible_ladder_tota
             .expect("new endpoint"),
         Ok(None)
     );
-    let image = crate::avatar::tests::image(32, 32);
+    let image = crate::avatar::tests::avatar();
     let stored = db
         .change_avatar(AccountId(1), Some(image), UnixMs(1))
         .await
@@ -266,4 +267,98 @@ fn schema_six_migration_reports_how_many_bot_rating_rows_it_removed() {
     schema_five_database(&connection);
     let transaction = connection.transaction().expect("transaction");
     assert_eq!(versions::migrate(&transaction).expect("migrate"), 2);
+}
+
+/// A frozen avatar of the old 32x32 size: only its length and hash matter to the migration.
+const OLD_AVATAR: &[u8] = b"\x89PNG\r\n\x1a\nthirty-two pixels square";
+
+fn insert_old_avatars(connection: &Connection) {
+    connection
+        .execute(
+            "INSERT INTO avatars(account,version,png,attempted_at) VALUES(1,?1,?2,100),(2,NULL,NULL,5)",
+            params![Sha256::digest(OLD_AVATAR).as_slice(), OLD_AVATAR],
+        )
+        .expect("old avatars");
+}
+
+async fn assert_old_avatars_are_gone_and_a_new_one_can_be_set(db: &Db) {
+    assert_eq!(
+        db.avatar(AccountId(1), AccountId(1)).await.expect("read"),
+        Ok(None),
+        "the 32x32 avatar is dropped"
+    );
+    let page = db
+        .leaderboard(
+            RulesetId("duel".into()),
+            AccountKind::Human,
+            String::new(),
+            100,
+            AccountId(1),
+        )
+        .await
+        .expect("board");
+    assert_eq!(page.rows[0].avatar, None, "and no longer advertised");
+    let stored = db
+        .change_avatar(
+            AccountId(1),
+            Some(crate::avatar::tests::avatar()),
+            UnixMs(1),
+        )
+        .await
+        .expect("storage")
+        .expect("the old attempt time is gone: no throttle")
+        .expect("avatar");
+    assert_eq!(stored.png, crate::avatar::tests::avatar());
+    let count: i64 = db
+        .conn
+        .lock()
+        .expect("connection")
+        .query_row(
+            "SELECT COUNT(*) FROM avatars WHERE png IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(count, 1);
+}
+
+#[tokio::test]
+async fn schema_five_database_loses_its_32px_avatars_and_takes_256px_ones() {
+    let connection = Connection::open_in_memory().expect("database");
+    schema_five_database(&connection);
+    insert_old_avatars(&connection);
+    let db = Db::init(connection).expect("migrate");
+    assert_old_avatars_are_gone_and_a_new_one_can_be_set(&db).await;
+}
+
+#[tokio::test]
+async fn schema_six_database_loses_its_32px_avatars_and_takes_256px_ones() {
+    let mut connection = Connection::open_in_memory().expect("database");
+    schema_five_database(&connection);
+    let transaction = connection.transaction().expect("transaction");
+    versions::migrate(&transaction).expect("schema six");
+    transaction
+        .pragma_update(None, "user_version", 6)
+        .expect("version six");
+    transaction.commit().expect("commit");
+    insert_old_avatars(&connection);
+    let db = Db::init(connection).expect("migrate");
+    assert_old_avatars_are_gone_and_a_new_one_can_be_set(&db).await;
+}
+
+#[test]
+fn the_avatar_table_bounds_images_by_the_current_limit() {
+    let db = Db::init(Connection::open_in_memory().expect("database")).expect("db");
+    let connection = db.conn.lock().expect("connection");
+    connection
+        .execute("INSERT INTO accounts(id,login,nickname,hash,kind,created) VALUES(1,'one','One','hash',0,1)", [])
+        .expect("account");
+    let insert = |bytes: usize| {
+        connection.execute(
+            "INSERT OR REPLACE INTO avatars(account,version,png,attempted_at) VALUES(1,zeroblob(32),zeroblob(?1),0)",
+            [bytes as i64],
+        )
+    };
+    assert!(insert(MAX_AVATAR_BYTES).is_ok());
+    assert!(insert(MAX_AVATAR_BYTES + 1).is_err());
 }

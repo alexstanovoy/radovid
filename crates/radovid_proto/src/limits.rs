@@ -1,14 +1,25 @@
 //! Limits both sides hold.
 
 /// The version of every wire type here. Bumped on every change of any of them.
-pub const PROTO_VERSION: u16 = 22;
+pub const PROTO_VERSION: u16 = 25;
 
 /// Service and clients are rebuilt together; earlier protocol versions are refused.
-pub const MIN_PROTO_VERSION: u16 = 22;
+pub const MIN_PROTO_VERSION: u16 = 25;
 
-pub const MAX_AVATAR_BYTES: usize = 512;
-pub const AVATAR_SIDE: u32 = 32;
+/// Bytes of an avatar PNG at most.
+pub const MAX_AVATAR_BYTES: usize = 48 * 1024;
+/// Width and height of every avatar, in pixels.
+pub const AVATAR_SIDE: u32 = 256;
+/// Accounts one `GetAvatars` asks about at most.
 pub const MAX_AVATAR_BATCH: usize = 100;
+/// Bytes of image data one `Reply::Avatars` carries at most (the first image always goes in).
+pub const MAX_AVATAR_REPLY_BYTES: usize = 256 * 1024;
+/// Bytes of avatar images the service sends one main account in a second, on average: reads are
+/// charged by what they carried (a lookup is refused while the account owes more than
+/// `AVATAR_BYTES_BURST`).
+pub const AVATAR_BYTES_PER_SEC: u32 = 512 * 1024;
+/// Bytes of avatar images an idle account can fetch at once before the rate above applies.
+pub const AVATAR_BYTES_BURST: u32 = 1024 * 1024;
 
 /// One linked search can enter humans and everyone, once each.
 pub const MAX_QUEUE_AUDIENCES: usize = 2;
