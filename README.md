@@ -9,8 +9,9 @@ own output. It never carries game traffic, and clients can't report outcomes, so
 
 **State:** young, built from source only; the protocol changes, and clients and the service update together.
 
-**What you need:** Rust 1.99 or newer, git and a C compiler (SQLite is built in). The example games below also need
-`python3`.
+**What you need:** a Unix system (developed and tested on Linux; the service uses Unix signals and file permissions,
+so it does not build on Windows), Rust 1.99 or newer, git and a C compiler (SQLite is built in). The example games
+below also need `python3`.
 
 ## Try it
 
