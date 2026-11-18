@@ -1,4 +1,5 @@
 //! Bounded request observations for end-to-end consumers; no payloads or identities retained.
+pub mod impostor;
 use crate::config::{Config, LimitsConfig, PortRange, RulesetConfig};
 use crate::password::PasswordCost;
 use crate::supervisor::Patience;

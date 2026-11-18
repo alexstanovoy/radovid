@@ -58,3 +58,10 @@ path = "fuzz_targets/hub_session.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "service_check"
+path = "fuzz_targets/service_check.rs"
+test = false
+doc = false
+bench = false
