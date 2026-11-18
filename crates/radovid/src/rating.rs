@@ -26,7 +26,7 @@ const MAX_ITERATIONS: u32 = 100;
 pub struct RatingShare(f64);
 
 impl RatingShare {
-    /// The whole change, as for an account with no share configured.
+    /// The whole change: the undamped algorithm.
     pub const FULL: RatingShare = RatingShare(1.0);
 
     pub fn get(self) -> f64 {
@@ -34,9 +34,11 @@ impl RatingShare {
     }
 }
 
+/// A quarter, for now: the first win of a new bot version is worth about 44 points and a settled
+/// one about 2.6, and a version takes about 23 games to reach its place.
 impl Default for RatingShare {
     fn default() -> Self {
-        Self::FULL
+        RatingShare(0.25)
     }
 }
 

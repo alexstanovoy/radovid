@@ -64,8 +64,9 @@ pub struct Config {
 #[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct RatingConfig {
-    /// The share of the computed rating change that a bot account receives; its opponents get the
-    /// whole of theirs. Below 1 a bot's rating moves slowly, however many bots a ladder holds.
+    /// The share of the computed rating update that a bot account receives (a quarter unless set;
+    /// 1 is the plain algorithm); its opponents get the whole of theirs. Below 1 a bot's rating
+    /// moves slowly, however many bots a ladder holds.
     pub bot_share: RatingShare,
 }
 
@@ -1529,8 +1530,10 @@ maximum = 3000
     }
 
     #[test]
-    fn a_rating_section_without_a_bot_share_gives_bots_the_whole_change() {
+    fn a_rating_section_without_a_bot_share_gives_bots_a_quarter_of_each_update() {
         let config: RatingConfig = toml::from_str("").expect("an empty section");
+        assert_eq!(config.bot_share.get(), 0.25);
+        let config: RatingConfig = toml::from_str("bot_share = 1").expect("the plain algorithm");
         assert_eq!(config.bot_share, RatingShare::FULL);
         let config: RatingConfig = toml::from_str("bot_share = 0.25").expect("a share");
         assert_eq!(config.bot_share.get(), 0.25);
@@ -1540,7 +1543,7 @@ maximum = 3000
     fn a_bot_share_outside_zero_exclusive_to_one_inclusive_fails_the_load_with_its_value() {
         for (written, shown) in [("0", "0"), ("-0.5", "-0.5"), ("1.5", "1.5"), ("nan", "NaN")] {
             let text =
-                paired_window_text().replace("bot_share = 0.1", &format!("bot_share = {written}"));
+                paired_window_text().replace("bot_share = 0.25", &format!("bot_share = {written}"));
             assert!(
                 text.contains(&format!("bot_share = {written}")),
                 "the example sets it"
@@ -1553,7 +1556,7 @@ maximum = 3000
                 "{error}"
             );
         }
-        let error = toml::from_str::<RatingConfig>("bot_share = 0.1\nhuman_share = 1")
+        let error = toml::from_str::<RatingConfig>("bot_share = 0.25\nhuman_share = 1")
             .expect_err("an unknown key");
         assert!(error.to_string().contains("human_share"), "{error}");
     }
@@ -1573,7 +1576,7 @@ maximum = 3000
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../radovid.example.toml");
         let config = Config::load(&path).expect("radovid.example.toml");
         assert_eq!(config.limits, LimitsConfig::default());
-        assert_eq!(config.rating.bot_share.get(), 0.1);
+        assert_eq!(config.rating.bot_share.get(), 0.25);
     }
 
     /// A ruleset that does not say how long its matches may last is given room for a long one

@@ -116,7 +116,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `limits.unranked_window` | `{ initial = 600, widen_per_minute = 300, maximum = 3000 }` | unrated skill window; at least as loose as ranked |
 | `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the cap, are deleted hourly |
 | `limits.artifact_max_mib` | `64` | the most one artifact may have; a docker game cannot write more, a longer file is not served |
-| `rating.bot_share` | `1` | the share of each computed rating update that a bot account receives, greater than 0 and at most 1; `0.1` moves a bot's rating, deviation and volatility a tenth as far as the algorithm would. Its opponents always receive the whole of theirs (see "Ratings") |
+| `rating.bot_share` | `0.25` | the share of each computed rating update that a bot account receives, greater than 0 and at most 1; the default moves a bot's rating, deviation and volatility a quarter as far as the algorithm would (a new version's first win is worth about 44 points, a settled one about 2.6, and it reaches its place in about 23 games); `1` is the plain algorithm. Its opponents always receive the whole of theirs (see "Ratings") |
 | `lobby_teams` | `[1, 1]` | the slots of every lobby, at most 10 seats; no ruleset caps how many sit on a side |
 | `lobby_ruleset` | the first `[[ruleset]]` (a warning at start when there are several) | the ruleset a new lobby is of until its owner chooses another (`RulesetInfo.lobby_default`); set it whenever there is more than one ruleset, e.g. `"duel"` |
 | `artifacts.save_replays` | `false` | whether replays are kept and served at all; off, no game is asked to write one |
@@ -226,7 +226,7 @@ match between two bots for each side. A bot that has moved a tenth as far is so 
 bot version needs correspondingly more games to settle. The opponents' updates are untouched and use the bot's stored
 rating and deviation. The share is part of the finished match's record, so a result replayed after a restart is rated
 with the share it was finished under, and a changed setting applies from the next match on. Without the setting the
-share is 1 and ratings are exactly the algorithm's.
+share is a quarter; with `rating.bot_share = 1` ratings are exactly the algorithm's.
 
 For two or more sides, each team is represented by its members' mean rating and deviation
 `sqrt(sum(member_deviation²)) / team_size`. Each member receives one Glicko-2 period against each opposing team

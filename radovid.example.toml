@@ -17,7 +17,7 @@ lobby_ruleset = "tic_tac_toe"
 # custom_match_capacity = 256
 
 [rating]
-bot_share = 0.1 # a bot's rating moves a tenth of what a human's does: about 1 point a game once settled
+bot_share = 0.25 # a quarter of the plain update: a bot's first win is worth about 44 points, a settled one about 2.6; 1 is the plain algorithm
 
 [[ruleset]]
 id = "tic_tac_toe"
