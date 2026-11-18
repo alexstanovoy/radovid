@@ -18,6 +18,49 @@ const EPSILON: f64 = 1e-6;
 /// The Illinois iteration is bounded; it converges in a handful of steps.
 const MAX_ITERATIONS: u32 = 100;
 
+/// The share of a computed rating change that an account receives: greater than 0 and at most 1.
+/// It is part of a match's stored result, so a record replayed after a restart is rated with the
+/// share it was finished under, whatever the configuration says by then.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "f64", into = "f64")]
+pub struct RatingShare(f64);
+
+impl RatingShare {
+    /// The whole change, as for an account with no share configured.
+    pub const FULL: RatingShare = RatingShare(1.0);
+
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
+
+impl Default for RatingShare {
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
+impl TryFrom<f64> for RatingShare {
+    type Error = String;
+
+    fn try_from(share: f64) -> Result<Self, String> {
+        // Written positively so that NaN is refused too.
+        if share > 0.0 && share <= 1.0 {
+            Ok(RatingShare(share))
+        } else {
+            Err(format!(
+                "a rating share must be greater than 0 and at most 1, not {share}"
+            ))
+        }
+    }
+}
+
+impl From<RatingShare> for f64 {
+    fn from(share: RatingShare) -> f64 {
+        share.0
+    }
+}
+
 /// A player's standing, with the volatility the wire never shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Glicko {
@@ -74,6 +117,17 @@ impl Glicko {
             return self.updated(opponents);
         }
         self.updated_weighted(opponents, 1.0 / opponents.len() as f64)
+    }
+
+    /// `after`, the standing the algorithm computed from `self`, with the rating moved only `share`
+    /// of the way there. The deviation and volatility stay the algorithm's.
+    pub fn damped(self, after: Glicko, share: RatingShare) -> Glicko {
+        let change = after.rating - self.rating;
+        // Written from `after` so that the full share returns it bit for bit; the clamp keeps
+        // rounding from carrying the result past either end.
+        let rating = (after.rating - (1.0 - share.get()) * change)
+            .clamp(self.rating.min(after.rating), self.rating.max(after.rating));
+        Glicko { rating, ..after }
     }
 
     fn updated_weighted(self, opponents: &[(Glicko, f64)], weight: f64) -> Glicko {
@@ -195,5 +249,129 @@ mod tests {
         assert!(week > 60.0 && week < 70.0, "{week}");
         assert_eq!(settled.after_idle(1e9).deviation, INITIAL_DEVIATION);
         assert!((settled.after_idle(0.0).deviation - 60.0).abs() < 1e-9);
+    }
+
+    fn state(rating: f64, deviation: f64) -> Glicko {
+        Glicko {
+            rating,
+            deviation,
+            ..Glicko::NEW
+        }
+    }
+
+    fn share(value: f64) -> RatingShare {
+        RatingShare::try_from(value).expect("a valid share")
+    }
+
+    #[test]
+    fn a_share_below_one_scales_the_rating_change_and_leaves_deviation_and_volatility() {
+        let before = state(1500.0, 350.0);
+        let after = before.updated(&[(state(1500.0, 60.0), 1.0)]);
+        let damped = before.damped(after, share(0.1));
+        assert!(after.rating - before.rating > 100.0, "{after:?}");
+        assert!(
+            ((damped.rating - before.rating) - 0.1 * (after.rating - before.rating)).abs() < 1e-9,
+            "{damped:?}"
+        );
+        assert_eq!(damped.deviation, after.deviation);
+        assert_eq!(damped.volatility, after.volatility);
+    }
+
+    #[test]
+    fn the_full_share_returns_the_computed_standing_bit_for_bit() {
+        let mut seed = 7_u64;
+        for _ in 0..2_000 {
+            let before = state(
+                500.0 + next_unit(&mut seed) * 2_000.0,
+                30.0 + next_unit(&mut seed) * 320.0,
+            );
+            let opponent = state(500.0 + next_unit(&mut seed) * 2_000.0, 60.0);
+            let after = before.updated(&[(opponent, (next_unit(&mut seed) * 2.0).floor() / 2.0)]);
+            let damped = before.damped(after, RatingShare::FULL);
+            assert_eq!(
+                damped.rating.to_bits(),
+                after.rating.to_bits(),
+                "{before:?}"
+            );
+            assert_eq!(damped.deviation.to_bits(), after.deviation.to_bits());
+            assert_eq!(damped.volatility.to_bits(), after.volatility.to_bits());
+        }
+    }
+
+    /// The scaled change keeps the sign of the computed one and never exceeds it, for any standing,
+    /// opponent, score and share. The generator is seeded with a fixed number so that a failure
+    /// reproduces.
+    #[test]
+    fn a_scaled_change_never_has_the_opposite_sign_of_the_computed_one_and_never_exceeds_it() {
+        let mut seed = 0x5eed_u64;
+        for _ in 0..20_000 {
+            let before = state(
+                200.0 + next_unit(&mut seed) * 2_600.0,
+                25.0 + next_unit(&mut seed) * 325.0,
+            );
+            let opponent = state(
+                200.0 + next_unit(&mut seed) * 2_600.0,
+                25.0 + next_unit(&mut seed) * 325.0,
+            );
+            let score = (next_unit(&mut seed) * 3.0).floor() / 2.0;
+            let value = share(1e-6 + next_unit(&mut seed) * (1.0 - 1e-6));
+            let after = before.updated(&[(opponent, score)]);
+            let damped = before.damped(after, value);
+            let computed = after.rating - before.rating;
+            let scaled = damped.rating - before.rating;
+            assert!(
+                scaled * computed >= 0.0,
+                "{before:?} vs {opponent:?} score {score} share {value:?}: {scaled} against {computed}"
+            );
+            assert!(
+                scaled.abs() <= computed.abs(),
+                "{before:?} vs {opponent:?} score {score} share {value:?}: {scaled} against {computed}"
+            );
+        }
+    }
+
+    /// The example configuration's tenth: what a bot gains from a first win and, once its deviation
+    /// has settled, from every win, against an established opponent of equal rating.
+    #[test]
+    fn a_tenth_gives_a_bot_about_seventeen_points_for_a_first_win_and_one_for_a_settled_one() {
+        let established = state(1500.0, 60.0);
+        for (deviation, expected) in [(350.0, 17.5), (60.0, 1.02)] {
+            let before = state(1500.0, deviation);
+            let after = before.updated(&[(established, 1.0)]);
+            let damped = before.damped(after, share(0.1));
+            assert!(
+                (damped.rating - before.rating - expected).abs() < 0.01,
+                "deviation {deviation}: {}",
+                damped.rating - before.rating
+            );
+        }
+    }
+
+    #[test]
+    fn a_share_outside_zero_exclusive_to_one_inclusive_is_refused_with_its_value() {
+        for (value, shown) in [
+            (0.0, "0"),
+            (-0.1, "-0.1"),
+            (1.0000001, "1.0000001"),
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "inf"),
+        ] {
+            assert_eq!(
+                RatingShare::try_from(value),
+                Err(format!(
+                    "a rating share must be greater than 0 and at most 1, not {shown}"
+                ))
+            );
+        }
+        assert_eq!(RatingShare::try_from(1.0), Ok(RatingShare::FULL));
+        assert!(RatingShare::try_from(f64::MIN_POSITIVE).is_ok());
+    }
+
+    /// A uniform number in [0, 1) from a xorshift state.
+    fn next_unit(seed: &mut u64) -> f64 {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        (*seed >> 11) as f64 / (1_u64 << 53) as f64
     }
 }

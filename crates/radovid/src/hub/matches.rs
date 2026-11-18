@@ -355,6 +355,7 @@ impl Hub {
                 })
                 .collect(),
             finished_at,
+            bot_share: self.config.rating.bot_share,
         };
         if self.pending_finishes.is_empty() {
             match self.db.finish_match(finish.clone()).await {

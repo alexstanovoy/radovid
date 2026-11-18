@@ -60,6 +60,11 @@ impl Env {
         self.cert_pem = identity.cert_pem;
         self.service = Some(service);
     }
+    /// Restarts the service on a configuration `adjust` changes first.
+    pub fn restart_with(&mut self, adjust: impl FnOnce(&mut Config)) {
+        adjust(&mut self.config);
+        self.restart();
+    }
     pub fn service(&self) -> &Service {
         self.service.as_ref().expect("service")
     }

@@ -10,6 +10,7 @@ use radovid_proto::*;
 use serde::Deserialize;
 
 use crate::password::PasswordCost;
+use crate::rating::RatingShare;
 use crate::template;
 
 #[derive(Deserialize, Clone, Debug)]
@@ -39,6 +40,8 @@ pub struct Config {
     #[serde(default)]
     pub limits: LimitsConfig,
     #[serde(default)]
+    pub rating: RatingConfig,
+    #[serde(default)]
     pub artifacts: ArtifactsConfig,
     /// The slots of every lobby, whatever its ruleset: team sizes, numbered team by team. A ruleset
     /// chosen for a lobby changes the rules and never this layout.
@@ -55,6 +58,15 @@ pub struct Config {
     /// it to wait no limit out ([`Patience`]).
     #[serde(skip)]
     pub patience: Patience,
+}
+
+/// How a finished rated match changes ratings.
+#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub struct RatingConfig {
+    /// The share of the computed rating change that a bot account receives; its opponents get the
+    /// whole of theirs. Below 1 a bot's rating moves slowly, however many bots a ladder holds.
+    pub bot_share: RatingShare,
 }
 
 /// What the service keeps of the matches it hosts besides their results.
@@ -1517,6 +1529,36 @@ maximum = 3000
     }
 
     #[test]
+    fn a_rating_section_without_a_bot_share_gives_bots_the_whole_change() {
+        let config: RatingConfig = toml::from_str("").expect("an empty section");
+        assert_eq!(config.bot_share, RatingShare::FULL);
+        let config: RatingConfig = toml::from_str("bot_share = 0.25").expect("a share");
+        assert_eq!(config.bot_share.get(), 0.25);
+    }
+
+    #[test]
+    fn a_bot_share_outside_zero_exclusive_to_one_inclusive_fails_the_load_with_its_value() {
+        for (written, shown) in [("0", "0"), ("-0.5", "-0.5"), ("1.5", "1.5"), ("nan", "NaN")] {
+            let text =
+                paired_window_text().replace("bot_share = 0.1", &format!("bot_share = {written}"));
+            assert!(
+                text.contains(&format!("bot_share = {written}")),
+                "the example sets it"
+            );
+            let error = toml::from_str::<Config>(&text).expect_err("an invalid share");
+            assert!(
+                error.to_string().contains(&format!(
+                    "a rating share must be greater than 0 and at most 1, not {shown}"
+                )),
+                "{error}"
+            );
+        }
+        let error = toml::from_str::<RatingConfig>("bot_share = 0.1\nhuman_share = 1")
+            .expect_err("an unknown key");
+        assert!(error.to_string().contains("human_share"), "{error}");
+    }
+
+    #[test]
     fn queue_capacity_cannot_exceed_one_bounded_matching_pass() {
         let mut config: Config = toml::from_str(&paired_window_text()).expect("paired config");
         config.limits.queue_capacity = 65_537;
@@ -1531,6 +1573,7 @@ maximum = 3000
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../radovid.example.toml");
         let config = Config::load(&path).expect("radovid.example.toml");
         assert_eq!(config.limits, LimitsConfig::default());
+        assert_eq!(config.rating.bot_share.get(), 0.1);
     }
 
     /// A ruleset that does not say how long its matches may last is given room for a long one

@@ -34,7 +34,7 @@ fuzz_target!(|data: &[u8]| {
         let mut digest = Sha256::new();
         digest.update(0u64.to_le_bytes());
         digest.update(data);
-        let mut record = b"RDVRES1\0".to_vec();
+        let mut record = b"RDVRES2\0".to_vec();
         record.extend_from_slice(&0u64.to_le_bytes());
         record.extend_from_slice(&digest.finalize());
         record.extend_from_slice(data);

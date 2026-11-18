@@ -8,7 +8,9 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 pub(super) const MAX_PENDING: usize = 262_144;
 const MAX_PAYLOAD: usize = MAX_GAME_REPORT_LEN + 4096;
 const HEADER: usize = 48;
-const MAGIC: &[u8; 8] = b"RDVRES1\0";
+const MAGIC: &[u8; 8] = b"RDVRES2\0";
+/// Records of the format before a result carried its rating share.
+const MAGIC_WITHOUT_SHARE: &[u8; 8] = b"RDVRES1\0";
 
 #[derive(Default)]
 struct Index {
@@ -270,6 +272,11 @@ fn read_record(path: &Path) -> DbResult<(u64, Finish)> {
 }
 
 pub(super) fn decode_record(bytes: &[u8]) -> DbResult<(u64, Finish)> {
+    if bytes.get(..8) == Some(MAGIC_WITHOUT_SHARE.as_slice()) {
+        return Err(invalid(
+            "pending-result record was written by an older version; start that version to commit it first",
+        ));
+    }
     if bytes.len() <= HEADER
         || bytes.len() > HEADER + MAX_PAYLOAD
         || bytes.get(..8) != Some(MAGIC.as_slice())

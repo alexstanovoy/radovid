@@ -34,6 +34,10 @@ transaction uses SQLite synchronous FULL; only after that durable commit is its
 pending record removed. Ordinary database writes retain synchronous NORMAL. A failed pending-record cleanup
 logs WARN and preserves the record for idempotent startup recovery.
 
+A record carries the share of a rating change that bot accounts received when the match ended
+(`rating.bot_share`), so replay rates it as it would have been rated then. A record of the older
+format, written before it carried one, stops startup with a message to commit it with that version first.
+
 A failed transaction retains its match slot and queues a retry. Ratings apply in
 completion order, and clients receive a result only after commit. Restart replays
 pending records before marking unfinished matches lost. Replaying an already

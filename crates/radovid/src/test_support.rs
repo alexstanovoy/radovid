@@ -26,6 +26,7 @@ pub fn config(database: PathBuf, rulesets: Vec<RulesetConfig>) -> Config {
             ..PasswordCost::default()
         },
         limits: LimitsConfig::default(),
+        rating: Default::default(),
         artifacts: Default::default(),
         lobby_teams: vec![5, 5],
         lobby_ruleset: None,

@@ -1,5 +1,6 @@
 use super::matching_tests::Fixture;
 use super::*;
+use crate::rating::RatingShare;
 
 #[tokio::test]
 async fn avatar_upload_get_and_remove_use_authenticated_account_and_shared_read_quota() {
@@ -237,6 +238,7 @@ async fn another_players_public_match_list_omits_the_participants_opaque_report(
             report: vec![7, 8, 9],
             seats,
             finished_at: UnixMs(1000),
+            bot_share: RatingShare::FULL,
         })
         .await
         .expect("finish");
@@ -319,6 +321,7 @@ async fn public_match_history_follows_ban_hidden_and_deleted_profile_visibility(
             report: vec![7, 8, 9],
             seats,
             finished_at: UnixMs(1000),
+            bot_share: RatingShare::FULL,
         })
         .await
         .expect("finish");
@@ -525,6 +528,7 @@ async fn own_match_history_masks_a_banned_opponent_but_keeps_own_seat_and_report
             report: vec![7, 8, 9],
             seats,
             finished_at: UnixMs(1000),
+            bot_share: RatingShare::FULL,
         })
         .await
         .expect("finish");
@@ -604,6 +608,7 @@ async fn public_history_is_capped_at_fifty_matches_for_a_limit_of_255() {
                 report: vec![1],
                 seats,
                 finished_at: UnixMs(1000),
+                bot_share: RatingShare::FULL,
             })
             .await
             .expect("finish");

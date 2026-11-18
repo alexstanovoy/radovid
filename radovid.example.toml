@@ -16,6 +16,9 @@ lobby_ruleset = "tic_tac_toe"
 # games_per_ipv6_48 = 64
 # custom_match_capacity = 256
 
+[rating]
+bot_share = 0.1 # a bot's rating moves a tenth of what a human's does: about 1 point a game once settled
+
 [[ruleset]]
 id = "tic_tac_toe"
 name = "Tic-tac-toe fixture"

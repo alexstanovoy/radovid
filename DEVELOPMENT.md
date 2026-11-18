@@ -116,6 +116,7 @@ Required: `listen`, `database`, `tls_cert`, `tls_key`, `game_ports`, and at leas
 | `limits.unranked_window` | `{ initial = 600, widen_per_minute = 300, maximum = 3000 }` | unrated skill window; at least as loose as ranked |
 | `limits.artifact_retention_days`, `limits.artifact_cap_mib` | `14`, `2048` | artifacts older than this, then the oldest beyond the cap, are deleted hourly |
 | `limits.artifact_max_mib` | `64` | the most one artifact may have; a docker game cannot write more, a longer file is not served |
+| `rating.bot_share` | `1` | the share of a computed rating change that a bot account receives, greater than 0 and at most 1; `0.1` moves a bot's rating a tenth as far as a human's would move. Its opponents always receive the whole of theirs (see "Ratings") |
 | `lobby_teams` | `[1, 1]` | the slots of every lobby, at most 10 seats; no ruleset caps how many sit on a side |
 | `lobby_ruleset` | the first `[[ruleset]]` (a warning at start when there are several) | the ruleset a new lobby is of until its owner chooses another (`RulesetInfo.lobby_default`); set it whenever there is more than one ruleset, e.g. `"duel"` |
 | `artifacts.save_replays` | `false` | whether replays are kept and served at all; off, no game is asked to write one |
@@ -218,6 +219,13 @@ remains available only through lobbies or solo starts. The effective window wide
 waiting time up to its configured maximum; all members must accept the group's full
 rating spread. Policy, selection and resource bounds are described in
 [protocol 17](docs/protocol_17.md); `examples/tic_tac_toe.toml` shows a ranked/unranked pair.
+
+A bot account's Glicko-2 update is computed as for anyone, then its rating moves only `rating.bot_share` of the way
+from the old value to the computed one, in wins, losses and draws alike, and in a match between two bots for each
+side; its deviation and volatility are the computed ones, and the opponents' updates, taken from the bot's stored
+rating and deviation, are untouched. The share is part of the finished match's record, so a result replayed after a
+restart is rated with the share it was finished under, and a changed setting applies from the next match on. Without
+the setting the share is 1 and ratings are exactly the algorithm's.
 
 For two or more sides, each team is represented by its members' mean rating and deviation
 `sqrt(sum(member_deviation²)) / team_size`. Each member receives one Glicko-2 period against each opposing team

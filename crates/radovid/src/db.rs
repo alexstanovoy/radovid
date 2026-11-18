@@ -1,6 +1,8 @@
 //! One WAL database, one account/match writer and a bounded read-only pool.
 
 mod avatar;
+#[cfg(test)]
+mod bot_share_tests;
 mod leaderboard;
 mod public_matches;
 mod reader;
@@ -21,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use radovid_proto::*;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::rating::Glicko;
+use crate::rating::{Glicko, RatingShare};
 
 /// Schema 2 gains the denormalised category and indexes in one transaction.
 const SCHEMA_VERSION: i64 = 6;
@@ -252,6 +254,8 @@ pub struct Finish {
     #[serde(deserialize_with = "results::seats")]
     pub seats: Vec<NewSeat>,
     pub finished_at: UnixMs,
+    /// The share of its rating change a bot seat receives, as configured when the match ended.
+    pub bot_share: RatingShare,
 }
 
 #[derive(Clone)]
@@ -989,7 +993,14 @@ fn rate(tx: &Transaction<'_>, finish: &Finish) -> rusqlite::Result<Vec<RatingCha
     }
     validate_rated_match(finish, finish.seats.len())?;
     let mut standing = Vec::new();
+    let mut kinds = Vec::new();
     for seat in &finish.seats {
+        let kind: i64 = tx.query_row(
+            "SELECT kind FROM accounts WHERE id = ?1",
+            [seat.account.0 as i64],
+            |row| row.get(0),
+        )?;
+        kinds.push(kind_of(kind));
         let row: Option<RatingRow> = tx
             .query_row(
                 &format!(
@@ -1004,7 +1015,13 @@ fn rate(tx: &Transaction<'_>, finish: &Finish) -> rusqlite::Result<Vec<RatingCha
             row.glicko.after_idle(idle_ms as f64 / 86_400_000.0)
         }));
     }
-    rate_teams(finish, &standing)
+    let mut changes = rate_teams(finish, &standing)?;
+    for (change, kind) in changes.iter_mut().zip(kinds) {
+        if kind == AccountKind::Bot {
+            change.after = change.before.damped(change.after, finish.bot_share);
+        }
+    }
+    Ok(changes)
 }
 
 fn rate_teams(finish: &Finish, standing: &[Glicko]) -> rusqlite::Result<Vec<RatingChange>> {
@@ -1364,6 +1381,7 @@ mod tests {
                 })
                 .collect(),
             finished_at: UnixMs(0),
+            bot_share: RatingShare::FULL,
         }
     }
 

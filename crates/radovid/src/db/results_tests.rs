@@ -1,6 +1,6 @@
 use super::*;
 
-struct Scratch(std::path::PathBuf);
+pub(super) struct Scratch(pub(super) std::path::PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -8,6 +8,10 @@ impl Drop for Scratch {
 }
 
 async fn fixture() -> (Scratch, Db, MatchId, Vec<NewSeat>) {
+    fixture_of([AccountKind::Human; 2]).await
+}
+
+pub(super) async fn fixture_of(kinds: [AccountKind; 2]) -> (Scratch, Db, MatchId, Vec<NewSeat>) {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
         "radovid_result_recovery_{}_{}",
@@ -18,9 +22,9 @@ async fn fixture() -> (Scratch, Db, MatchId, Vec<NewSeat>) {
     let directory = Scratch(path);
     let db = Db::open(&directory.0.join("main.db")).expect("database");
     let mut seats = Vec::new();
-    for (index, name) in ["alpha", "beta"].into_iter().enumerate() {
+    for (index, (name, kind)) in ["alpha", "beta"].into_iter().zip(kinds).enumerate() {
         let account = db
-            .create_account(name.into(), "hash".into(), AccountKind::Human)
+            .create_account(name.into(), "hash".into(), kind)
             .await
             .expect("account");
         seats.push(NewSeat {
@@ -36,7 +40,7 @@ async fn fixture() -> (Scratch, Db, MatchId, Vec<NewSeat>) {
     (directory, db, game, seats)
 }
 
-fn finish(game: MatchId, seats: Vec<NewSeat>) -> Finish {
+pub(super) fn finish(game: MatchId, seats: Vec<NewSeat>) -> Finish {
     Finish {
         match_id: game,
         ruleset: RulesetId("duel".into()),
@@ -47,6 +51,7 @@ fn finish(game: MatchId, seats: Vec<NewSeat>) -> Finish {
         report: vec![1, 2, 3],
         seats,
         finished_at: UnixMs(1000),
+        bot_share: RatingShare::FULL,
     }
 }
 
