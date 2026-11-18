@@ -119,15 +119,17 @@ impl Glicko {
         self.updated_weighted(opponents, 1.0 / opponents.len() as f64)
     }
 
-    /// `after`, the standing the algorithm computed from `self`, with the rating moved only `share`
-    /// of the way there. The deviation and volatility stay the algorithm's.
+    /// The standing `share` of the way from `self` to `after`, which the algorithm computed from
+    /// `self`: rating, deviation and volatility all move the same part of their step, so the
+    /// result is the algorithm's state a fraction of one game along. A bot whose rating moved a
+    /// tenth as far is thereby also only a tenth more certain, and its volatility runs on the same
+    /// clock as its deviation.
     pub fn damped(self, after: Glicko, share: RatingShare) -> Glicko {
-        let change = after.rating - self.rating;
-        // Written from `after` so that the full share returns it bit for bit; the clamp keeps
-        // rounding from carrying the result past either end.
-        let rating = (after.rating - (1.0 - share.get()) * change)
-            .clamp(self.rating.min(after.rating), self.rating.max(after.rating));
-        Glicko { rating, ..after }
+        Glicko {
+            rating: toward(self.rating, after.rating, share),
+            deviation: toward(self.deviation, after.deviation, share),
+            volatility: toward(self.volatility, after.volatility, share),
+        }
     }
 
     fn updated_weighted(self, opponents: &[(Glicko, f64)], weight: f64) -> Glicko {
@@ -163,6 +165,12 @@ impl Glicko {
             volatility: sigma,
         }
     }
+}
+
+/// `from` moved `share` of the way to `to`. Written from `to` so that the full share returns it
+/// bit for bit; the clamp keeps rounding from carrying the result past either end.
+fn toward(from: f64, to: f64, share: RatingShare) -> f64 {
+    (to - (1.0 - share.get()) * (to - from)).clamp(from.min(to), from.max(to))
 }
 
 fn g(phi: f64) -> f64 {
@@ -264,17 +272,36 @@ mod tests {
     }
 
     #[test]
-    fn a_share_below_one_scales_the_rating_change_and_leaves_deviation_and_volatility() {
-        let before = state(1500.0, 350.0);
+    fn a_share_below_one_moves_rating_deviation_and_volatility_that_part_of_their_step() {
+        let before = Glicko {
+            volatility: 0.07,
+            ..state(1500.0, 350.0)
+        };
         let after = before.updated(&[(state(1500.0, 60.0), 1.0)]);
         let damped = before.damped(after, share(0.1));
         assert!(after.rating - before.rating > 100.0, "{after:?}");
-        assert!(
-            ((damped.rating - before.rating) - 0.1 * (after.rating - before.rating)).abs() < 1e-9,
-            "{damped:?}"
-        );
-        assert_eq!(damped.deviation, after.deviation);
-        assert_eq!(damped.volatility, after.volatility);
+        assert!(after.deviation < before.deviation - 50.0, "{after:?}");
+        assert!(after.volatility != before.volatility, "{after:?}");
+        for (name, from, to, got) in [
+            ("rating", before.rating, after.rating, damped.rating),
+            (
+                "deviation",
+                before.deviation,
+                after.deviation,
+                damped.deviation,
+            ),
+            (
+                "volatility",
+                before.volatility,
+                after.volatility,
+                damped.volatility,
+            ),
+        ] {
+            assert!(
+                (got - from - 0.1 * (to - from)).abs() < 1e-12,
+                "{name}: {got} from {from} towards {to}"
+            );
+        }
     }
 
     #[test]
@@ -298,17 +325,21 @@ mod tests {
         }
     }
 
-    /// The scaled change keeps the sign of the computed one and never exceeds it, for any standing,
-    /// opponent, score and share. The generator is seeded with a fixed number so that a failure
-    /// reproduces.
+    /// Every quantity of the damped standing lies between the old one and the computed one: the
+    /// change keeps its sign and never exceeds the computed change, so a deviation never grows
+    /// from a game unless the algorithm grew it. The generator is seeded with a fixed number so
+    /// that a failure reproduces.
     #[test]
-    fn a_scaled_change_never_has_the_opposite_sign_of_the_computed_one_and_never_exceeds_it() {
+    fn a_damped_standing_lies_between_the_old_and_the_computed_one_in_every_quantity() {
         let mut seed = 0x5eed_u64;
         for _ in 0..20_000 {
-            let before = state(
-                200.0 + next_unit(&mut seed) * 2_600.0,
-                25.0 + next_unit(&mut seed) * 325.0,
-            );
+            let before = Glicko {
+                volatility: 0.03 + next_unit(&mut seed) * 0.07,
+                ..state(
+                    200.0 + next_unit(&mut seed) * 2_600.0,
+                    25.0 + next_unit(&mut seed) * 325.0,
+                )
+            };
             let opponent = state(
                 200.0 + next_unit(&mut seed) * 2_600.0,
                 25.0 + next_unit(&mut seed) * 325.0,
@@ -317,21 +348,102 @@ mod tests {
             let value = share(1e-6 + next_unit(&mut seed) * (1.0 - 1e-6));
             let after = before.updated(&[(opponent, score)]);
             let damped = before.damped(after, value);
-            let computed = after.rating - before.rating;
-            let scaled = damped.rating - before.rating;
+            for (name, from, to, got) in [
+                ("rating", before.rating, after.rating, damped.rating),
+                (
+                    "deviation",
+                    before.deviation,
+                    after.deviation,
+                    damped.deviation,
+                ),
+                (
+                    "volatility",
+                    before.volatility,
+                    after.volatility,
+                    damped.volatility,
+                ),
+            ] {
+                let context =
+                    format!("{name} {before:?} vs {opponent:?} score {score} share {value:?}");
+                assert!(
+                    (got - from) * (to - from) >= 0.0,
+                    "{context}: {got} from {from} to {to}"
+                );
+                assert!(
+                    (got - from).abs() <= (to - from).abs(),
+                    "{context}: {got} from {from} to {to}"
+                );
+            }
+        }
+    }
+
+    /// `games` rated games of a bot at `share`, alternately won and lost against an established
+    /// opponent of equal rating; its deviation after each.
+    fn deviations(share: RatingShare, games: usize) -> Vec<f64> {
+        let opponent = state(1500.0, 60.0);
+        let mut standing = Glicko::NEW;
+        (0..games)
+            .map(|game| {
+                let score = if game % 2 == 0 { 1.0 } else { 0.0 };
+                let after = standing.updated(&[(opponent, score)]);
+                standing = standing.damped(after, share);
+                standing.deviation
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_bot_never_grows_certain_faster_than_the_unscaled_algorithm_and_settles_where_it_does() {
+        let plain = deviations(RatingShare::FULL, 3_000);
+        let settled = plain[2_999];
+        for value in [0.05, 0.1, 0.25, 0.5] {
+            let bot = deviations(share(value), 3_000);
+            // Until the unscaled deviation has settled; after that both wander within a hundredth
+            // of a point of the same value as their volatilities drift.
+            for (game, (damped, whole)) in bot.iter().zip(&plain).enumerate() {
+                assert!(
+                    *whole < settled + 1.0 || damped >= whole,
+                    "share {value}, game {}: {damped} < {whole}",
+                    game + 1
+                );
+            }
             assert!(
-                scaled * computed >= 0.0,
-                "{before:?} vs {opponent:?} score {score} share {value:?}: {scaled} against {computed}"
+                bot.windows(2).all(|pair| pair[1] <= pair[0]),
+                "share {value}: a deviation grew"
             );
             assert!(
-                scaled.abs() <= computed.abs(),
-                "{before:?} vs {opponent:?} score {score} share {value:?}: {scaled} against {computed}"
+                (bot[2_999] - settled).abs() < 1.0,
+                "share {value}: {} against {settled}",
+                bot[2_999]
             );
         }
     }
 
-    /// The example configuration's tenth: what a bot gains from a first win and, once its deviation
-    /// has settled, from every win, against an established opponent of equal rating.
+    /// The exact statement is that each game moves the standing `share` of the way along the
+    /// algorithm's step (the tests above); over many games that is, to first order in the share,
+    /// the unscaled algorithm run for `share` times as many games. The match is only that
+    /// approximate, since the unscaled algorithm takes whole steps: here within 10%.
+    #[test]
+    fn after_n_games_a_bots_deviation_is_about_that_of_the_unscaled_algorithm_after_n_times_the_share()
+     {
+        let plain = deviations(RatingShare::FULL, 100);
+        for (value, games) in [
+            (0.1, 20),
+            (0.1, 100),
+            (0.1, 400),
+            (0.25, 8),
+            (0.25, 40),
+            (0.5, 20),
+        ] {
+            let bot = deviations(share(value), games)[games - 1];
+            let equivalent = plain[(games as f64 * value).round() as usize - 1];
+            assert!(
+                bot >= equivalent && bot <= 1.1 * equivalent,
+                "share {value} after {games} games: {bot} against {equivalent}"
+            );
+        }
+    }
+
     #[test]
     fn a_tenth_gives_a_bot_about_seventeen_points_for_a_first_win_and_one_for_a_settled_one() {
         let established = state(1500.0, 60.0);

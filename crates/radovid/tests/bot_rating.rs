@@ -110,10 +110,10 @@ fn a_human_moves_by_the_whole_change_and_a_bot_by_its_share_in_the_result_and_th
             "{behaviour}: {} against {expected}",
             change(scaled_bot)
         );
-        assert_eq!(
-            scaled_bot.after.expect("rated").deviation,
-            whole_bot.after.expect("rated").deviation,
-            "{behaviour}: the deviation follows the algorithm"
+        let deviation = |seat: &SeatResult| seat.after.expect("rated").deviation;
+        assert!(
+            (deviation(scaled_bot) - 350.0 - 0.1 * (deviation(whole_bot) - 350.0)).abs() < 1e-9,
+            "{behaviour}: the deviation falls by the same share"
         );
     }
 }

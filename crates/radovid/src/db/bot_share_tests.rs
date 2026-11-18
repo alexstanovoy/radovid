@@ -82,8 +82,16 @@ async fn a_bot_seat_receives_its_share_of_the_change_while_a_human_opponent_rece
         0.1 * (bot_plain.rating - 1500.0),
         "the bot's rating change",
     );
-    assert_eq!(bot_damped.deviation, bot_plain.deviation);
-    assert_eq!(bot_damped.volatility, bot_plain.volatility);
+    assert_close(
+        bot_damped.deviation - 350.0,
+        0.1 * (bot_plain.deviation - 350.0),
+        "the bot's deviation change",
+    );
+    assert_close(
+        bot_damped.volatility - 0.06,
+        0.1 * (bot_plain.volatility - 0.06),
+        "the bot's volatility change",
+    );
     let human_seat = &history(&damped, &seats[0]).await[0].seats[0];
     let bot_seat = &history(&damped, &seats[1]).await[0].seats[1];
     let start = Some(Rating {
@@ -105,6 +113,10 @@ async fn a_human_who_beats_a_bot_is_rated_against_the_bots_stored_rating_and_dev
     let kinds = [AccountKind::Human, AccountKind::Bot];
     let (_directory, db, seats) = play(kinds, share(0.1), &[Outcome::Winner { team: 0 }]).await;
     let (human, bot) = (stored(&db, &seats[0]).await, stored(&db, &seats[1]).await);
+    assert!(
+        bot.deviation > 330.0,
+        "a bot that moved a tenth is no more certain: {bot:?}"
+    );
     let game = db
         .create_match(ruleset(), true, seats.clone())
         .await
@@ -115,6 +127,17 @@ async fn a_human_who_beats_a_bot_is_rated_against_the_bots_stored_rating_and_dev
     let plain_human = human.updated_match(&[(bot, 1.0)]);
     let plain_bot = bot.updated_match(&[(human, 0.0)]);
     assert_eq!(stored(&db, &seats[0]).await, plain_human);
+    let against_a_settled_bot = human.updated_match(&[(
+        Glicko {
+            deviation: 60.0,
+            ..bot
+        },
+        1.0,
+    )]);
+    assert_ne!(
+        plain_human.rating, against_a_settled_bot.rating,
+        "the bot's high stored deviation is what the human is rated against"
+    );
     let after = stored(&db, &seats[1]).await;
     assert_close(
         after.rating - bot.rating,
@@ -252,5 +275,31 @@ fn a_pending_record_of_the_format_without_a_share_is_refused_by_name() {
     assert_eq!(
         error.to_string(),
         "database file: pending-result record was written by an older version; start that version to commit it first"
+    );
+}
+
+#[tokio::test]
+async fn idle_time_grows_a_bots_deviation_before_a_match_as_it_does_a_humans() {
+    let kinds = [AccountKind::Human, AccountKind::Bot];
+    let (_directory, db, seats) = play(kinds, share(0.1), &[Outcome::Winner { team: 0 }]).await;
+    let bot = stored(&db, &seats[1]).await;
+    let game = db
+        .create_match(ruleset(), true, seats.clone())
+        .await
+        .expect("a later match");
+    let mut later = finish(game, seats.clone());
+    later.bot_share = share(0.1);
+    later.finished_at = UnixMs(later.finished_at.0 + 30 * 86_400_000);
+    db.finish_match(later).await.expect("a later finish");
+    let grown = bot.after_idle(30.0);
+    assert!(
+        grown.deviation > bot.deviation + 1.0,
+        "{bot:?} grows: {grown:?}"
+    );
+    let seat = &history(&db, &seats[1]).await[0].seats[1];
+    assert_eq!(
+        seat.before,
+        Some(grown.public()),
+        "the shown start is the grown standing"
     );
 }
