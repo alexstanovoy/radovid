@@ -258,6 +258,40 @@ pub struct Finish {
     pub bot_share: RatingShare,
 }
 
+impl Finish {
+    /// A rated match decided by `outcome`, as the service records one: the fields a caller does
+    /// not choose take the service's own values (a thousand milliseconds, no game report, the
+    /// default bot share). For tests and tools that seed results through the real rating
+    /// transaction, so that a field added to the record never breaks them.
+    pub fn rated(
+        match_id: MatchId,
+        ruleset: RulesetId,
+        outcome: Outcome,
+        seats: Vec<NewSeat>,
+        finished_at: UnixMs,
+    ) -> Finish {
+        Finish {
+            match_id,
+            ruleset,
+            rate: true,
+            outcome,
+            reason: EndReason::Decided,
+            duration_ms: 1000,
+            report: Vec::new(),
+            seats,
+            finished_at,
+            bot_share: RatingShare::default(),
+        }
+    }
+
+    /// The same result rated with `bot_share`, for a test that is about something else than a
+    /// bot's rating and wants the plain algorithm's numbers.
+    #[must_use]
+    pub fn with_bot_share(self, bot_share: RatingShare) -> Finish {
+        Finish { bot_share, ..self }
+    }
+}
+
 #[derive(Clone)]
 pub struct Db {
     conn: Arc<Mutex<Connection>>,
