@@ -15,11 +15,15 @@ use crate::launcher::{self, Aborted, GameProcess, GameResult, LaunchSpec, Line};
 /// ([`Patience::DEFAULT`]), small ones for tests.
 #[derive(Clone, Copy, Debug)]
 pub struct Patience {
-    /// How long a game server has to exit after its result, or after its stdout closed, before it
-    /// is killed. The result is told, and the artifact served, after the exit. A match that is
+    /// How long a game server has to exit after its result (and its [`Patience::linger`]), or
+    /// after its stdout closed, before it is killed. The result is told, and the artifact served, after the exit. A match that is
     /// asked to finish has this long, counted once from the request, to print its `RESULT` and
     /// exit.
     pub exit: Duration,
+    /// How long a game server may keep its players after a `RESULT` that played the match out,
+    /// before [`Patience::exit`] starts: a game may show them the end of the match before it lets
+    /// them go and exits. A match that is stopped, or ended at its limit, is never given it.
+    pub linger: Duration,
     /// How long a killed game server has to be gone. Past it the supervisor lets go of the match
     /// (the child is killed once more when dropped) and says so: a process that survives
     /// `SIGKILL` is stuck in the kernel, and nothing waits on it forever.
@@ -39,6 +43,7 @@ impl Default for Patience {
 impl Patience {
     pub const DEFAULT: Self = Self {
         exit: Duration::from_secs(10),
+        linger: Duration::from_secs(20),
         kill: Duration::from_secs(2),
         second: Duration::from_secs(1),
     };
@@ -199,10 +204,10 @@ impl Supervisor {
                 // exit until the first, the kill and the wait for it until the second. A game
                 // that ended some other way is waited for if it played out, else killed now.
                 let now = Instant::now();
-                let exit_by = exit_by.unwrap_or(if played_out {
-                    now + self.patience.exit
-                } else {
-                    now
+                let exit_by = exit_by.unwrap_or(match end {
+                    End::Result(_) => now + self.patience.linger + self.patience.exit,
+                    _ if played_out => now + self.patience.exit,
+                    _ => now,
                 });
                 if !gone_by(&mut game, exit_by, exit_by + self.patience.kill).await {
                     eprintln!(
@@ -515,6 +520,7 @@ mod tests {
 
     const QUICK: Patience = Patience {
         exit: Duration::from_millis(100),
+        linger: Duration::from_millis(100),
         kill: Duration::from_millis(100),
         second: Duration::from_millis(20),
     };
@@ -549,6 +555,62 @@ mod tests {
             "answer wait, then kill: {took:?}"
         );
         task.await.expect("the supervisor task");
+    }
+
+    /// A game that played its match out may keep its players after its `RESULT` for the linger:
+    /// it is not killed while it shows them the end, and lives on to exit by itself. (No exit
+    /// grace at all: only the linger keeps the game alive once it has said its result.)
+    #[tokio::test]
+    async fn a_game_that_shows_its_players_the_end_after_its_result_is_not_killed_within_the_linger()
+     {
+        let dir = std::env::temp_dir().join(format!("radovid-linger-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        let (told, go, lived) = (dir.join("told"), dir.join("go"), dir.join("lived"));
+        let mut ruleset = deaf_ruleset(3600);
+        // The game's own wait for the test is bounded (ten seconds), so a broken test cannot
+        // leave it behind.
+        ruleset.launcher.args = vec![
+            "-c".to_owned(),
+            format!(
+                "echo READY; echo 'RESULT winner=0 duration_ms=1 report=00'; : > '{told}'; \
+                 i=0; while [ ! -e '{go}' ] && [ $i -lt 1000 ]; do sleep 0.01; i=$((i+1)); done; \
+                 : > '{lived}'",
+                told = told.display(),
+                go = go.display(),
+                lived = lived.display(),
+            ),
+        ];
+        let patience = Patience {
+            exit: Duration::ZERO,
+            linger: Duration::from_secs(3600),
+            ..QUICK
+        };
+        let (supervisor, mut heard) = deaf_supervisor(ruleset, patience);
+        let (_stop, stopped) = oneshot::channel();
+        let task = tokio::spawn(supervisor.run(stopped));
+        assert!(matches!(heard.recv().await, Some(Cmd::MatchReady { .. })));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !told.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the game said its result");
+        std::fs::write(&go, b"").expect("the game is let go");
+        let ended = match tokio::time::timeout(Duration::from_secs(10), heard.recv())
+            .await
+            .expect("the game exits by itself")
+        {
+            Some(Cmd::MatchEnded { end, .. }) => end,
+            _ => panic!("unexpected command to the hub"),
+        };
+        assert!(matches!(ended, End::Result(_)), "{ended:?}");
+        assert!(
+            lived.exists(),
+            "the game lived through its linger to its own exit"
+        );
+        task.await.expect("the supervisor task");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The limit asked by the service ends the match as the limit's even though the game that

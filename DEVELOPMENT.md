@@ -17,8 +17,9 @@ Any game can be launched that honours this, a shell script included:
 2. The game prints `READY` once players may connect. Until then radovid tells them nothing; no `READY` within
    `start_timeout_secs` is a crash.
 3. When the match is over the game prints one line
-   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex> [<key>=<value>]...` and exits 0 within 10 seconds
-   (it is killed after that; the match counts as the line says). `report` is up to 64 KiB of the game's own bytes,
+   `RESULT winner=<team index>|draw duration_ms=<n> report=<hex> [<key>=<value>]...` the moment the match is
+   decided, and exits 0 within 30 seconds of it: up to 20 seconds to show its players the end and let them go, and
+   10 more (it is killed after that; the match counts as the line says). `report` is up to 64 KiB of the game's own bytes,
    stored and forwarded to clients untouched. The first three fields are fixed and in order; up to 16 `key=value`
    fields follow in any order, each key once:
    - `left=<slot>`: a player left for good (the game's own rule). `winner` must be another team; the match is rated,

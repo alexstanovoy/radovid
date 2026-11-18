@@ -11,7 +11,7 @@ What a version of radovid at commit `2f21ea7` assumed about the games it runs, a
 | Boundary | Lobby layout is service-wide, not per ruleset | `config.rs:40,696` | Queues use each ruleset's shape; custom lobbies use the shared layout. Config loading rejects ruleset sides that do not fit it; shipped examples set their layout explicitly. |
 | Boundary | Outcome is one winning side, draw, or null; no placements or arbitrary numeric scores | `radovid_proto/src/model.rs:38`, `launcher/lines.rs:119` | Retained explicitly. A report can carry arbitrary game scores; rating uses winner-versus-other sides, with losing sides tied. |
 | Boundary | Legacy artifact keys and API use “replay” | `config.rs:271`, `radovid_proto/src/message.rs:166` | Kept for compatibility; arbitrary named artifacts already work. Tests fetch a game record with no replay semantics. |
-| Boundary | Startup/match deadlines are configurable; exit grace is 10 seconds, lobby countdown 5 seconds | `supervisor.rs:16,80,94`, `radovid_proto/src/limits.rs` | Operational bounds retained. Game clocks are opaque parameters owned and enforced by each game server. |
+| Boundary | Startup/match deadlines are configurable; exit grace is 10 seconds (after up to 20 seconds of a played-out game showing its players the end), lobby countdown 5 seconds | `supervisor.rs:16,80,94`, `radovid_proto/src/limits.rs` | Operational bounds retained. Game clocks are opaque parameters owned and enforced by each game server. |
 
 Paths in the evidence column are relative to `crates/radovid/src/` unless another crate is named. Line numbers
 refer to the audit baseline; edited files have moved. No tower, map, tick-rate, hero, or game-protocol verdict
