@@ -9,6 +9,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# The compiler the project is built and tested with.
+rust-version = "1.99"
 license = "MIT"
 
 [workspace.dependencies]
