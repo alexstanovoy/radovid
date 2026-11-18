@@ -93,8 +93,10 @@ impl Hub {
             }
             ClientMsg::LobbyList => Ok(self.lobby_list("")),
             ClientMsg::LobbySearch { query } => {
-                // What a lobby name may hold, as `valid_lobby_name` counts it.
-                if query.chars().count() > MAX_LOBBY_NAME_LEN || query.chars().any(char::is_control)
+                // What a lobby name may hold, as `valid_lobby_name` counts it; a query may be
+                // padded or end in a space, because it names a part of a name.
+                if query.chars().count() > MAX_LOBBY_NAME_LEN
+                    || !query.chars().all(valid_display_character)
                 {
                     return Err(Error::BadLobbyName);
                 }

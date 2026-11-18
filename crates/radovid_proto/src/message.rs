@@ -206,9 +206,9 @@ pub enum ClientMsg {
         password: Option<Secret>,
     },
     /// The open lobbies whose name or owner's nickname holds `query` (case folded in any script;
-    /// what a lobby name may hold: at most `MAX_LOBBY_NAME_LEN` characters, none a control
-    /// character, else `BadLobbyName`; empty lists them all), newest first, as `LobbyList` lists
-    /// them. The answer is `Lobbies`.
+    /// what a lobby name may hold: at most `MAX_LOBBY_NAME_LEN` characters, none that
+    /// `valid_display_character` refuses, else `BadLobbyName`; empty lists them all), newest
+    /// first, as `LobbyList` lists them. The answer is `Lobbies`.
     LobbySearch {
         query: String,
     },

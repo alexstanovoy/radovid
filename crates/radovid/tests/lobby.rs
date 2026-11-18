@@ -1094,3 +1094,66 @@ fn a_queued_match_that_placeholders_would_give_cheats_is_not_started() {
         "refused at launch: no game ran"
     );
 }
+
+fn create_request(name: &str) -> ClientMsg {
+    ClientMsg::LobbyCreate {
+        ruleset: fun(),
+        name: name.to_owned(),
+        audience: Audience::Everyone,
+        password: None,
+    }
+}
+
+#[test]
+fn a_lobby_name_that_hides_or_disguises_text_is_refused_as_a_bad_lobby_name() {
+    let env = start_small();
+    let mut owner = env.account("olga", AccountKind::Human);
+    for (class, name) in [
+        ("bidirectional override", "gnp.\u{202e}exe"),
+        ("zero width only", "\u{200b}\u{200d}"),
+        ("leading and trailing spaces", "  Friday  "),
+        ("no-break space", "Friday\u{a0}Night"),
+    ] {
+        assert_eq!(
+            owner.ask(create_request(name)),
+            Err(Error::BadLobbyName),
+            "{class}: {name:?}"
+        );
+    }
+    let Ok(Reply::Lobbies { list }) = owner.ask(ClientMsg::LobbyList) else {
+        panic!("list")
+    };
+    assert!(list.is_empty(), "a refused name leaves no lobby behind");
+}
+
+#[test]
+fn cyrillic_and_cjk_lobby_names_are_listed_unchanged() {
+    let env = start_small();
+    let mut olga = env.account("olga", AccountKind::Human);
+    let mut fritz = env.account("fritz", AccountKind::Human);
+    for name in ["Пятничная ночь", "金曜日の夜"] {
+        let owner = if name.starts_with('П') {
+            &mut olga
+        } else {
+            &mut fritz
+        };
+        assert_eq!(create(owner, name, None).name, name);
+    }
+    let Ok(Reply::Lobbies { list }) = olga.ask(ClientMsg::LobbyList) else {
+        panic!("list")
+    };
+    let names: Vec<_> = list.into_iter().map(|lobby| lobby.name).collect();
+    assert_eq!(names, ["金曜日の夜", "Пятничная ночь"], "newest first");
+}
+
+#[test]
+fn a_lobby_search_for_hidden_text_is_refused_as_a_bad_lobby_name() {
+    let env = start_small();
+    let mut seeker = env.account("sam", AccountKind::Human);
+    assert_eq!(
+        seeker.ask(ClientMsg::LobbySearch {
+            query: "fri\u{202e}day".to_owned()
+        }),
+        Err(Error::BadLobbyName)
+    );
+}

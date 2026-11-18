@@ -665,6 +665,31 @@ fn a_second_session_finds_the_running_match_and_an_admin_stops_it() {
 }
 
 #[test]
+fn a_ban_reason_that_hides_or_disguises_text_is_refused_before_the_banned_can_read_it() {
+    let env = start(rules("team0"));
+    env.account("root_user", AccountKind::Human);
+    env.grant_admin("root_user");
+    let mut root = env.login("root_user");
+    let troll = env.bot("troll");
+    for reason in ["spam\u{202e}", "\u{200b}", " spam", "line\nbreak"] {
+        assert_eq!(
+            root.ask(ClientMsg::AdminBan {
+                account: troll.me.id,
+                reason: reason.to_owned(),
+                until: None,
+            }),
+            Err(Error::Malformed),
+            "{reason:?}"
+        );
+    }
+    root.expect_done(ClientMsg::AdminBan {
+        account: troll.me.id,
+        reason: "спам 垃圾邮件".to_owned(),
+        until: None,
+    });
+}
+
+#[test]
 fn bans_remove_the_banned_from_the_queue_and_keep_them_out_until_lifted() {
     let env = start(rules("team0"));
     env.account("root_user", AccountKind::Human);
