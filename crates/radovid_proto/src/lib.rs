@@ -30,6 +30,9 @@ pub use message::*;
 pub use model::*;
 pub use validate::*;
 
+mod service_address;
+pub use service_address::{AddressFault, MAX_SERVICE_ADDRESS_BYTES, service_address};
+
 mod identity;
 pub use identity::{
     control_url, matchmaker_identity, same_matchmaker, shareable_matchmaker_identity,
