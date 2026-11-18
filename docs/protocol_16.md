@@ -1,6 +1,9 @@
 # Protocol 16: queue audiences
 
-Rebuild the service and control clients together: `MIN_PROTO_VERSION = PROTO_VERSION = 16`.
+> History: what protocol version 16 changed. The version a build speaks is `PROTO_VERSION` in
+> `crates/radovid_proto/src/limits.rs`; later versions keep every wire position described here.
+
+The service and control clients were rebuilt together: `MIN_PROTO_VERSION = PROTO_VERSION = 16`.
 Older binaries receive `ProtoMismatch` before catalogs. All existing wire positions and
 payload types remain reserved; the new request, reply, reason and record fields are appended.
 

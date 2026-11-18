@@ -1,6 +1,9 @@
 # Protocol 19: indexed lookups outside matchmaking
 
-The current and minimum control versions are19. Rebuild service and clients together.
+> History: what protocol version 19 changed. The version a build speaks is `PROTO_VERSION` in
+> `crates/radovid_proto/src/limits.rs`; later versions keep every wire position described here.
+
+The current and minimum control versions were 19; service and clients were rebuilt together.
 All leaderboard page fields and SDK calls from protocol18 retain their meanings.
 Error variant58, LookupTooExpensive, is appended: an unchanged request that exceeds the
 work budget fails permanently rather than inviting an endless throttling retry.

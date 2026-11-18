@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The merge gate of this repository: every check a change must pass, in order, stopping at the first failure.
+# The gate script of this repository: every check a change must pass, in order, stopping at the first failure.
 #
 #   tools/gate.sh
 #

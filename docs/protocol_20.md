@@ -1,6 +1,9 @@
 # Protocol 20: small account avatars
 
-Avatar fields require minimum version20; current version21 adds conditional batches
+> History: what protocol version 20 changed. The version a build speaks is `PROTO_VERSION` in
+> `crates/radovid_proto/src/limits.rs`; later versions keep every wire position described here.
+
+Avatar fields required minimum version 20; version 21 added conditional batches
 and canonical storage (see protocol_21.md). Nested
 profile and ladder records gain a trailing avatar-version field, so version 19
 cannot decode the new records. Every earlier wire position remains reserved.

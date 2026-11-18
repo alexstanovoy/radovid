@@ -3,7 +3,7 @@
 # Rust (no sanitizer: that needs nightly) and runs one.
 #
 #   fuzz/fuzz.sh build                    build every target
-#   fuzz/fuzz.sh check                    only type-check every target (seconds; no instrumented build): what the merge gate runs
+#   fuzz/fuzz.sh check                    only type-check every target (seconds; no instrumented build): what tools/gate.sh runs
 #   fuzz/fuzz.sh run <target> [args...]   fuzz one target; extra arguments go to libFuzzer
 #                                         (e.g. -max_total_time=3600)
 #   fuzz/fuzz.sh campaign <seconds> [jobs] every target at once for that long, each in fork mode

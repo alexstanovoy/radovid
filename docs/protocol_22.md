@@ -1,6 +1,9 @@
 # Protocol 22: bot versions
 
-The current and minimum control protocol versions are 22. Rebuild service and clients together.
+> History: what protocol version 22 changed. The version a build speaks is `PROTO_VERSION` in
+> `crates/radovid_proto/src/limits.rs`; later versions keep every wire position described here.
+
+The current and minimum control protocol versions were 22; service and clients were rebuilt together.
 Every existing variant index and field position is preserved; mutable bot metadata positions
 are reserved. The new `version` fields are appended to their records.
 

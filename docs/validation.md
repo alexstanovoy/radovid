@@ -1,11 +1,13 @@
 # General-matchmaker validation
 
-The ordinary `tools/gate.sh` covers these tests; none is an unnoticed manual-only check. Tests run with
+The gate script, `tools/gate.sh`, runs every test below; none is a manual-only check. Tests run with
 `test-release` (optimized with assertions and overflow checks), product servers with `release`.
 
-## Fail-first evidence
+## Regression tests
 
-| Finding | Reproduction before enforcement | Protected result |
+Each test below failed on the code before its fix, as the middle column says, and passes now.
+
+| Problem | What the test showed before the fix | What holds now |
 |---|---|---|
 | Lobby shape changed silently | `loading_a_ruleset_that_does_not_fit_lobbies_names_the_configuration_error` accepted 5v5 with `[1,1]` lobbies | A specific configuration error names the ruleset, required shape, and actual layout; every shipped example loads. |
 | Missing global custom capacity | `custom_matches_have_a_global_cap_before_launch_and_lobby_countdown` accepted a second solo at capacity 1 | Waiting and running solo matches share a cap with lobby starts; stopping a match releases capacity. |
@@ -16,7 +18,7 @@ The ordinary `tools/gate.sh` covers these tests; none is an unnoticed manual-onl
 | Interpreter pinned to a filesystem location | Fixture launcher used an absolute interpreter path | Fixtures resolve `python3` through `PATH`; missing Python fails the game E2Es and gate. |
 
 Additional guard-only tests are labelled in source. The 1v1 golden guard captures fixed rating, deviation and
-volatility values from `origin/main` commit `2f21ea7`, not from the implementation under test. Capture used that
+volatility values from commit `2f21ea7` of this repository, not from the implementation under test. Capture used that
 revision's `crates/radovid/src/rating.rs` in a standalone `rustc --edition 2024 -O` harness with players
 `1743.258/83.649/0.06` and `1302.115/312.872/0.06`, each win/loss/draw score. The fixed values and tolerances are
 in `db::tests::one_on_one_rating_matches_origin_main_goldens`. The maximum-side finite-value and seated-winner
@@ -29,23 +31,22 @@ cargo test --profile test-release -p radovid --test generality --test capacity -
 cargo test --profile test-release -p radovid --lib
 cargo test --profile test-release -p radovid_proto
 cargo clippy --all-targets --all-features -- -D warnings
-cargo machete --fix
-# Format after the implementation checks, then commit and run the final-head gate.
-cargo fmt
+cargo fmt --check
 tools/gate.sh
 ```
 
 The gate runs the ignored-test audit, fuzz-target compilation, clippy, browser-client compilation, all regular
 unit/integration tests, the ignored launcher test against a real Docker engine/image, dependency policy, and
-formatting last. A skipped stage fails. Independent model review found no remaining production blockers.
+formatting last. A skipped stage fails.
 
-## Consumer coordination
+## Clients
 
-Clients must rebuild against protocol version/minimum 14. Callers that perform numeric comparisons must match
+Clients are rebuilt with the protocol crate of the service they talk to: a client of another version
+(`PROTO_VERSION` in `crates/radovid_proto/src/limits.rs`) receives `ProtoMismatch`. Callers that perform numeric
+comparisons must match
 `AccountGameLimit::Limited(n)` and `Unlimited`, rather than infer unlimited from a number. Each application
 should retain its own bounded worker pool when the service imposes no per-account cap. Retired fields always
 stay empty; no existing numeric value is assigned a new wire meaning.
 
 Game-specific consumer tests and configuration examples live in each game's own repository. The service's
-proof uses only the neutral process fixtures and clients under `tests/`. See [protocol_14.md](protocol_14.md)
-for the coordinated upgrade contract.
+tests use only the neutral process fixtures and clients under `tests/`.

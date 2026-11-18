@@ -1,6 +1,9 @@
 # Protocol 21: conditional avatar batches and canonical images
 
-Current version is 21; minimum remains 20. Existing request/reply positions and
+> History: what protocol version 21 changed. The version a build speaks is `PROTO_VERSION` in
+> `crates/radovid_proto/src/limits.rs`; later versions keep every wire position described here.
+
+The current version was 21; the minimum remained 20. Existing request/reply positions and
 single-avatar calls remain supported. The new SDK advertises 21 so it never sends
 a batch to an older service.
 

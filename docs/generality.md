@@ -1,6 +1,6 @@
-# General matchmaker audit
+# What radovid assumes about a game
 
-Audit baseline: `2f21ea7`. Findings were posted before implementation.
+What a version of radovid at commit `2f21ea7` assumed about the games it runs, and what it assumes now.
 
 | Priority | Finding at baseline | Evidence | Resolution |
 |---|---|---|---|
@@ -77,9 +77,9 @@ for distinct IPv6 /64s in a shared /48: the host network and forwarding headers 
 ## Compatibility
 
 Protocol version 13 retired the original numeric account-limit fields, retaining their reserved positions
-and payload types, and appended `AccountGameLimit::Limited(n)` / `Unlimited`. Version 14 appends custom and
-IPv6-site capacity fields and refusal variants. These nested record additions require version 14 clients;
-older binaries receive `ProtoMismatch` before receiving catalogs. No numeric value has acquired a new wire
+and payload types, and appended `AccountGameLimit::Limited(n)` / `Unlimited`. Version 14 appended custom and
+IPv6-site capacity fields and refusal variants. A client of another protocol version than the service's
+receives `ProtoMismatch` before receiving catalogs. No numeric value has acquired a new wire
 meaning. Zero is only the configuration spelling for unlimited, or an empty retired placeholder.
 
 Clients must rebuild and read the explicit limit enum. Existing positive config values and launcher/result

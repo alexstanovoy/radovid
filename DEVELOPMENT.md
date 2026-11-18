@@ -189,14 +189,12 @@ most 64 KiB from a client, 4 MiB from the service.
 - A position is never reused, like a protobuf field number. A message, variant or field that goes is retired: its line
   stays with `retired <the line>` appended, and a placeholder of the same payload holds the position (a variant
   `Retired<Name>`, which is no message, or an always-empty field `retired_<name>`), so every byte after it stays put.
-  Version 11 retired the lobby join requests and the per-ruleset team cap and serves no older client.
-  Version 12 added lobby cheats (`LobbyCheats`, `NoCheats`, `LobbyState.cheats`) and serves no older client: a
-  client of 11 could not be told that a lobby it sits in plays with cheats.
-  Version 13 retires the numeric per-account fields without reusing their positions and appends typed
-  `AccountGameLimit::Limited(n)` / `Unlimited` fields. It serves no older client because catalog entries are
-  nested on the wire. Old binaries receive `ProtoMismatch`; consumers must rebuild and read the explicit limit.
-  Zero remains only a configuration spelling, never an active numeric wire limit.
-  Version 14 appends custom-match and IPv6-site capacity fields and refusal variants; it serves version 14 clients.
+  For example, version 11 retired the lobby join requests and the per-ruleset team cap; version 12 added lobby cheats
+  (`LobbyCheats`, `NoCheats`, `LobbyState.cheats`), which a client of 11 could not have been told of; version 13
+  retired the numeric per-account fields without reusing their positions and appended typed
+  `AccountGameLimit::Limited(n)` / `Unlimited` fields (zero remains only a configuration spelling, never an active
+  numeric wire limit). Each served no older client. `docs/protocol_NN.md` record what later versions changed; the
+  version a build speaks is `PROTO_VERSION` in `crates/radovid_proto/src/limits.rs`.
 
 ## Leaderboards and profiles
 
@@ -275,7 +273,7 @@ fractional scores. In FFA, the winner-versus-others decomposition therefore trea
 `tests/games.rs` also launches independent Python 3 game processes and plays them through real socket clients:
 rated tic-tac-toe, clock expiry, fixed-tick team and free-for-all games, and a custom lobby. The fixtures bind
 loopback only, cap input/connection/work budgets, and validate opaque seat tickets in constant time. `python3` on `PATH` is a required test dependency; a missing interpreter fails the tests and gate. A game's own client
-library carries the tests against its real server. `tools/gate.sh` is the merge gate: clippy, the wasm check, the
+library carries the tests against its real server. `tools/gate.sh` is the gate script: clippy, the wasm check, the
 tests, the docker launcher test against a real docker, the fuzz targets' type check, `cargo deny check` and fmt.
 
 ## Population benchmark and WAL regression

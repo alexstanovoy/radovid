@@ -1,9 +1,12 @@
 # Protocol 18: category leaderboards and per-mode profile ranks
 
+> History: what protocol version 18 changed. The version a build speaks is `PROTO_VERSION` in
+> `crates/radovid_proto/src/limits.rs`; later versions keep every wire position described here.
+
 The API layout below was introduced in18. [Protocol19](protocol_19.md) supersedes
 the lookup execution, moderation and rate/work-limit implementation described here.
 
-Rebuild the service and every client together. The minimum and current version are 18:
+The service and every client were rebuilt together. The minimum and current version were 18:
 `RatingSummary` and `Limits` have appended fields nested inside existing replies.
 Older clients receive `ProtoMismatch`. Existing field positions and variant numbers keep
 their meanings. The legacy `Ladder` request still returns its mixed-category, offset page.

@@ -1,6 +1,9 @@
 # Protocol 17: unrated queues and rating windows
 
-Rebuild the service and every client together. The minimum and current version are 17:
+> History: what protocol version 17 changed. The version a build speaks is `PROTO_VERSION` in
+> `crates/radovid_proto/src/limits.rs`; later versions keep every wire position described here.
+
+The service and every client were rebuilt together. The minimum and current version were 17:
 the catalog and limits contain appended fields nested in existing replies. Older clients
 receive `ProtoMismatch`. Existing variant numbers and field positions retain their meanings.
 

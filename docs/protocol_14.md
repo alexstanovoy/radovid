@@ -1,16 +1,19 @@
 # Protocol 14 coordination
 
+> History: what protocol version 14 changed. The version a build speaks is `PROTO_VERSION` in
+> `crates/radovid_proto/src/limits.rs`; later versions keep every wire position described here.
+
 This records the version-14 upgrade. The current queue-audience boundary is
 [protocol 16](protocol_16.md).
 
-The service and every control client must use protocol 14 (`MIN_PROTO_VERSION = PROTO_VERSION = 14`). Older
+The service and every control client had to use protocol 14 (`MIN_PROTO_VERSION = PROTO_VERSION = 14`). Older
 binaries receive `ProtoMismatch` during `Hello`, before any catalog or account record. There is no rolling
 compatibility window: nested records gained appended fields that older decoders cannot safely interpret.
 
-Build and test the coordinated source series before changing a running service. Merge the service/protocol
-change first, then each game's client adapter and configuration, then applications using those adapters. Keep
-the running service and rebuilt clients on the same protocol boundary when resuming control traffic. The
-source merge order does not require running a new service against old clients in the meantime.
+Build and test the service and its clients together before changing a running service. Upgrade the
+service and protocol first, then each game's client adapter and configuration, then applications using those
+adapters. Keep the running service and rebuilt clients on the same protocol boundary when resuming control
+traffic; this order does not require running a new service against old clients in the meantime.
 
 ## Consumer changes
 
