@@ -18,9 +18,13 @@ const EPSILON: f64 = 1e-6;
 /// The Illinois iteration is bounded; it converges in a handful of steps.
 const MAX_ITERATIONS: u32 = 100;
 
+/// What a share must be, for the messages that refuse one.
+pub const SHARE_RULE: &str = "greater than 0 and at most 1";
+
 /// The share of a computed rating change that an account receives: greater than 0 and at most 1.
-/// It is part of a match's stored result, so a record replayed after a restart is rated with the
-/// share it was finished under, whatever the configuration says by then.
+/// A finished match keeps it in its pending result record until the database commit (the committed
+/// rows hold only the before and after standings), so a record replayed after a restart is rated
+/// with the share it was finished under, whatever the configuration says by then.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "f64", into = "f64")]
 pub struct RatingShare(f64);
@@ -50,9 +54,7 @@ impl TryFrom<f64> for RatingShare {
         if share > 0.0 && share <= 1.0 {
             Ok(RatingShare(share))
         } else {
-            Err(format!(
-                "a rating share must be greater than 0 and at most 1, not {share}"
-            ))
+            Err(format!("a rating share must be {SHARE_RULE}, not {share}"))
         }
     }
 }
@@ -169,10 +171,23 @@ impl Glicko {
     }
 }
 
-/// `from` moved `share` of the way to `to`. Written from `to` so that the full share returns it
-/// bit for bit; the clamp keeps rounding from carrying the result past either end.
+/// `from` moved `share` of the way to `to`. For finite inputs the result is finite and between
+/// them, and the full share returns `to` bit for bit: it is returned before any arithmetic, which
+/// would turn `-0.0` into `0.0` and overflow on extreme pairs. The step is taken from `to`; when
+/// the difference itself overflows, the convex combination is used, whose terms cannot. The clamp
+/// keeps rounding from carrying the result past either end.
 fn toward(from: f64, to: f64, share: RatingShare) -> f64 {
-    (to - (1.0 - share.get()) * (to - from)).clamp(from.min(to), from.max(to))
+    let share = share.get();
+    if share == 1.0 {
+        return to;
+    }
+    let step = to - from;
+    let moved = if step.is_finite() {
+        to - (1.0 - share) * step
+    } else {
+        (1.0 - share) * from + share * to
+    };
+    moved.clamp(from.min(to), from.max(to))
 }
 
 fn g(phi: f64) -> f64 {
@@ -303,6 +318,46 @@ mod tests {
                 (got - from - 0.1 * (to - from)).abs() < 1e-12,
                 "{name}: {got} from {from} towards {to}"
             );
+        }
+    }
+
+    #[test]
+    fn moving_towards_any_finite_value_gives_a_finite_result_between_the_two_and_the_full_share_gives_the_target()
+     {
+        let values = [
+            f64::MAX,
+            -f64::MAX,
+            1e308,
+            -1e308,
+            1e-308,
+            -1e-308,
+            f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            0.0,
+            -0.0,
+            1500.0,
+            -42.5,
+        ];
+        let shares = [
+            RatingShare::FULL,
+            share(0.5),
+            share(0.25),
+            share(f64::MIN_POSITIVE),
+            share(1.0 - f64::EPSILON),
+        ];
+        for from in values {
+            for to in values {
+                for value in shares {
+                    let moved = toward(from, to, value);
+                    let context = format!("{from:e} towards {to:e} at {value:?}: {moved:e}");
+                    assert!(moved.is_finite(), "{context}");
+                    assert!(moved >= from.min(to) && moved <= from.max(to), "{context}");
+                    if value == RatingShare::FULL {
+                        assert_eq!(moved.to_bits(), to.to_bits(), "{context}");
+                    }
+                }
+            }
         }
     }
 

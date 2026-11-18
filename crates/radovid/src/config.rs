@@ -67,7 +67,21 @@ pub struct RatingConfig {
     /// The share of the computed rating update that a bot account receives (a quarter unless set;
     /// 1 is the plain algorithm); its opponents get the whole of theirs. Below 1 a bot's rating
     /// moves slowly, however many bots a ladder holds.
+    #[serde(deserialize_with = "bot_share")]
     pub bot_share: RatingShare,
+}
+
+/// Reads `rating.bot_share`, refusing a wrong type or a value out of range by the key's name.
+fn bot_share<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<RatingShare, D::Error> {
+    use serde::de::Error;
+    let value = f64::deserialize(deserializer)
+        .map_err(|error| D::Error::custom(format!("rating.bot_share must be a number: {error}")))?;
+    RatingShare::try_from(value).map_err(|_| {
+        D::Error::custom(format!(
+            "rating.bot_share must be {}, not {value}",
+            crate::rating::SHARE_RULE
+        ))
+    })
 }
 
 /// What the service keeps of the matches it hosts besides their results.
@@ -1551,7 +1565,7 @@ maximum = 3000
             let error = toml::from_str::<Config>(&text).expect_err("an invalid share");
             assert!(
                 error.to_string().contains(&format!(
-                    "a rating share must be greater than 0 and at most 1, not {shown}"
+                    "rating.bot_share must be greater than 0 and at most 1, not {shown}"
                 )),
                 "{error}"
             );
@@ -1559,6 +1573,21 @@ maximum = 3000
         let error = toml::from_str::<RatingConfig>("bot_share = 0.25\nhuman_share = 1")
             .expect_err("an unknown key");
         assert!(error.to_string().contains("human_share"), "{error}");
+    }
+
+    #[test]
+    fn a_bot_share_of_the_wrong_type_fails_the_load_naming_the_key() {
+        for written in ["\"0.25\"", "true", "[0.25]"] {
+            let text =
+                paired_window_text().replace("bot_share = 0.25", &format!("bot_share = {written}"));
+            let error = toml::from_str::<Config>(&text).expect_err("a share of the wrong type");
+            assert!(
+                error
+                    .to_string()
+                    .contains("rating.bot_share must be a number: "),
+                "{written}: {error}"
+            );
+        }
     }
 
     #[test]

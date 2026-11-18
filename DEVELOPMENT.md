@@ -224,8 +224,9 @@ A bot account's Glicko-2 update is computed as for anyone, then its standing mov
 from the old one to the computed one: rating, deviation and volatility alike, in wins, losses and draws, and in a
 match between two bots for each side. A bot that has moved a tenth as far is so only a tenth more certain, and a new
 bot version needs correspondingly more games to settle. The opponents' updates are untouched and use the bot's stored
-rating and deviation. The share is part of the finished match's record, so a result replayed after a restart is rated
-with the share it was finished under, and a changed setting applies from the next match on. Without the setting the
+rating and deviation. A finished match keeps its share in its pending result record until the database commit (the committed rows hold
+only the before and after standings), so a result replayed after a restart is rated with the share it was finished
+under, and a changed setting applies from the next match on. Without the setting the
 share is a quarter; with `rating.bot_share = 1` ratings are exactly the algorithm's.
 
 For two or more sides, each team is represented by its members' mean rating and deviation
