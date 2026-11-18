@@ -313,20 +313,9 @@ fn profile_rank(
             return Ok(None);
         }
         let (result, used) = bounded_with_limit(connection, limit, |connection| {
-            let mut statement = connection.prepare(&rank_range_query(visible, range))?;
-            let result = statement.query_row(
-                params![
-                    ruleset.0,
-                    kind_code(row.kind),
-                    row.rating.rating,
-                    row.rating.deviation,
-                    row.account.0 as i64
-                ],
-                |row| row.get::<_, u32>(0),
-            );
-            let used = u32::try_from(statement.get_status(rusqlite::StatementStatus::VmStep))
-                .unwrap_or(u32::MAX);
-            Ok((result, used))
+            Ok(count_better_ranked(
+                connection, ruleset, row, visible, range,
+            ))
         })?;
         remaining = remaining.saturating_sub(used);
         *total = total.saturating_sub(used);
@@ -345,6 +334,34 @@ fn profile_rank(
         }
     }
     Ok(Some(rank))
+}
+
+/// The query's outcome and the VM steps it used. A budget that fires while the statement is still being prepared is the
+/// query's own interrupt, like one that fires while it runs, so both land in the `Result` for the caller to read as "no answer".
+fn count_better_ranked(
+    connection: &Connection,
+    ruleset: &RulesetId,
+    row: &LadderRow,
+    visible: &str,
+    range: &str,
+) -> (rusqlite::Result<u32>, u32) {
+    let mut statement = match connection.prepare(&rank_range_query(visible, range)) {
+        Ok(statement) => statement,
+        Err(error) => return (Err(error), 0),
+    };
+    let result = statement.query_row(
+        params![
+            ruleset.0,
+            kind_code(row.kind),
+            row.rating.rating,
+            row.rating.deviation,
+            row.account.0 as i64
+        ],
+        |row| row.get::<_, u32>(0),
+    );
+    let used =
+        u32::try_from(statement.get_status(rusqlite::StatementStatus::VmStep)).unwrap_or(u32::MAX);
+    (result, used)
 }
 
 fn category_top(
@@ -1000,6 +1017,49 @@ mod tests {
             connection.is_autocommit(),
             "the unwound snapshot left its transaction open"
         );
+    }
+
+    #[test]
+    fn a_successful_snapshot_returns_the_connection_to_autocommit() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        let value: i64 = read_snapshot(&mut connection, |snapshot| {
+            assert!(
+                !snapshot.is_autocommit(),
+                "the work runs inside the transaction"
+            );
+            snapshot.query_row("SELECT 7", [], |row| row.get(0))
+        })
+        .expect("snapshot");
+        assert_eq!(value, 7);
+        assert!(connection.is_autocommit());
+    }
+
+    #[test]
+    fn a_lookup_interrupted_by_its_budget_inside_a_snapshot_leaves_the_connection_usable() {
+        const ENDLESS: &str = "WITH RECURSIVE work(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM work) SELECT sum(i) FROM work";
+        let mut connection = Connection::open_in_memory().expect("database");
+        let error = read_snapshot(&mut connection, |snapshot| {
+            bounded_with_limit(snapshot, 1000, |connection| {
+                connection.query_row(ENDLESS, [], |row| row.get::<_, i64>(0))
+            })
+        })
+        .expect_err("the budget interrupts the lookup");
+        assert_eq!(
+            error.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::OperationInterrupted),
+            "{error}"
+        );
+        assert!(
+            connection.is_autocommit(),
+            "the interrupted snapshot left its transaction open"
+        );
+        let next = read_snapshot(&mut connection, |snapshot| {
+            bounded(snapshot, |connection| {
+                connection.query_row("SELECT 11", [], |row| row.get::<_, i64>(0))
+            })
+        })
+        .expect("the next snapshot works");
+        assert_eq!(next, 11);
     }
 
     #[test]
