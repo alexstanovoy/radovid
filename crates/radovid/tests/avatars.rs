@@ -10,7 +10,7 @@ const SIDE: usize = AVATAR_SIDE as usize;
 fn flat_picture() -> Vec<u8> {
     (0..SIDE * SIDE)
         .flat_map(|index| {
-            if (index / SIDE / 64 + index % SIDE / 64) % 2 == 0 {
+            if (index / SIDE / 64 + index % SIDE / 64).is_multiple_of(2) {
                 [220, 40, 40, 255]
             } else {
                 [30, 60, 200, 255]
