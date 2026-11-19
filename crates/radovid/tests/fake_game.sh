@@ -63,6 +63,22 @@ if [ "$behaviour" = slowfile ]; then
     printf ' and its end' >> "$GAME_ARTIFACT"
     exit 0
 fi
+# A game that closes its replay before its result and says so, then shows its players the end
+# until the test lets it go (`<replay>.go`; bounded, longer than a test waits for a result, so a
+# broken test leaves nothing behind), and exits; with `closedcrash`, it crashes instead. Its
+# process id is in `<replay>.pid`.
+if [ "$behaviour" = closedfile ] || [ "$behaviour" = closedcrash ]; then
+    printf 'replay of %s' "$match_id" > "$GAME_ARTIFACT"
+    echo "$$" > "$GAME_ARTIFACT.pid"
+    echo "RESULT winner=0 duration_ms=1234 report=$report artifacts=closed"
+    i=0
+    while [ ! -e "$GAME_ARTIFACT.go" ] && [ "$i" -lt 9000 ]; do
+        sleep 0.01
+        i=$((i + 1))
+    done
+    [ "$behaviour" = closedcrash ] && exit 1
+    exit 0
+fi
 if [ -n "${GAME_META:-}" ]; then
     # Bytes the service has no way to understand.
     printf '\377\000meta of %s' "$match_id" > "$GAME_META"

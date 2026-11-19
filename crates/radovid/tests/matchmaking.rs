@@ -904,6 +904,68 @@ fn an_artifact_is_served_only_after_the_game_has_exited() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A game that says at its `RESULT` that it closed its files has the match reported at once while
+/// it goes on showing its players the end: the result reaches them, the replay is served whole and
+/// they may search again, all before the process exits; its exit (a clean one or a crash) only
+/// frees its port, and the result stands.
+#[test]
+fn a_result_whose_files_are_closed_is_told_and_served_before_the_game_exits() {
+    for behaviour in ["closedfile", "closedcrash"] {
+        let dir = artifact_dir(&format!("artifact-{behaviour}"));
+        let mut rules = rules(behaviour);
+        let launcher = &mut rules[0].launcher;
+        launcher.artifact = Some(format!("{}/replay-{{match_id}}.brp", dir.display()));
+        launcher
+            .artifact_env
+            .insert("GAME_ARTIFACT".to_owned(), "{artifact}".to_owned());
+        let env = keeping(rules);
+        let (mut a, mut b, match_id, file) = finished_match(&env, &dir, |env, name| env.bot(name));
+        let pid = std::fs::read_to_string(file.with_extension("brp.pid")).expect("its pid");
+        assert!(
+            running(pid.trim()),
+            "{behaviour}: the result came while the game shows the end"
+        );
+        let Ok(Reply::Artifact { data, .. }) = fetch_artifact(&mut a, match_id) else {
+            panic!("{behaviour}: the replay is served while the game shows the end");
+        };
+        assert_eq!(
+            data,
+            format!("replay of {}", match_id.0).as_bytes(),
+            "{behaviour}"
+        );
+        let again = a.queue(&solo());
+        assert_eq!(again.position, 1, "{behaviour}: free to search again");
+        b.queue(&solo());
+        std::fs::write(file.with_extension("brp.go"), b"").expect("the game is let go");
+        // The next match is launched once the game has exited and freed its port; the first
+        // result stands whatever the exit was.
+        a.accept();
+        b.accept();
+        let next = a.wait_match_found().match_id;
+        let Ok(Reply::Artifact { data, .. }) = fetch_artifact(&mut a, match_id) else {
+            panic!("{behaviour}: the replay is still served");
+        };
+        assert_eq!(
+            data,
+            format!("replay of {}", match_id.0).as_bytes(),
+            "{behaviour}"
+        );
+        // The next game is let go as soon as it is done, not kept to its bound.
+        std::fs::write(dir.join(format!("replay-{}.brp.go", next.0)), b"")
+            .expect("the next game is let go");
+        drop(env);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Whether the process of id `pid` is still there.
+fn running(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Plays a match of `rules[0]` between two accounts made by `make`, and gives the folder its
 /// replay goes to and the match's id.
 fn finished_match(

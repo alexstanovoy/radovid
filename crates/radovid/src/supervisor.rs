@@ -16,7 +16,9 @@ use crate::launcher::{self, Aborted, GameProcess, GameResult, LaunchSpec, Line};
 #[derive(Clone, Copy, Debug)]
 pub struct Patience {
     /// How long a game server has to exit after its result (and its [`Patience::linger`]), or
-    /// after its stdout closed, before it is killed. The result is told, and the artifact served, after the exit. A match that is
+    /// after its stdout closed, before it is killed. The result is told, and the artifact served,
+    /// after the exit, or at the `RESULT` line when the game says it closed its files there
+    /// (`artifacts=closed`); the port is free after the exit either way. A match that is
     /// asked to finish has this long, counted once from the request, to print its `RESULT` and
     /// exit.
     pub exit: Duration,
@@ -101,6 +103,17 @@ pub enum End {
     /// limit it was told or because the service asked it to finish, and the service had reason
     /// to hear it. It counts for nothing, and ends as the service's own reason says.
     Aborted(GameResult, Ending),
+}
+
+impl End {
+    /// Whether the game said, with its `RESULT`, that every file it leaves is closed: the end
+    /// may be told, and the files served, before the process is gone.
+    fn artifacts_closed(&self) -> bool {
+        match self {
+            End::Result(result) | End::Aborted(result, _) => result.artifacts_closed,
+            End::Abandoned | End::Crashed(_) | End::Stopped | End::TimedOut => false,
+        }
+    }
 }
 
 /// What the service has asked of one game and when it may hear what, so that an `aborted=` it
@@ -198,17 +211,25 @@ impl Supervisor {
                     .attend(&mut game, &mut stop, &mut ledger, &mut exit_by)
                     .await;
                 let played_out = matches!(end, End::Result(_) | End::Aborted(..));
-                // The hub hears of the end, and the seats may fetch the artifact, only once the
-                // process is gone and so its files are closed. A stop has one deadline for all of
-                // it, `Patience::exit` + `Patience::kill` from the request: the answer and the
-                // exit until the first, the kill and the wait for it until the second. A game
-                // that ended some other way is waited for if it played out, else killed now.
+                // The hub hears of the end, and the seats may fetch the artifact, once the files
+                // are closed: at the `RESULT` line when the game says it closed them there
+                // (`artifacts=closed`), else once the process is gone. The exit after a told end
+                // only frees the port: whatever the process does then, the result stands. A stop
+                // has one deadline for all of it, `Patience::exit` + `Patience::kill` from the
+                // request: the answer and the exit until the first, the kill and the wait for it
+                // until the second. A game that ended some other way is waited for if it played
+                // out, else killed now.
                 let now = Instant::now();
                 let exit_by = exit_by.unwrap_or(match end {
                     End::Result(_) => now + self.patience.linger + self.patience.exit,
                     _ if played_out => now + self.patience.exit,
                     _ => now,
                 });
+                let mut end = Some(end);
+                if end.as_ref().is_some_and(End::artifacts_closed) {
+                    let end = end.take().expect("checked");
+                    let _ = self.hub.send(Cmd::MatchEnded { match_id, end }).await;
+                }
                 if !gone_by(&mut game, exit_by, exit_by + self.patience.kill).await {
                     eprintln!(
                         "radovid: ERROR: match {}: the game server is still there after the kill; \
@@ -216,7 +237,9 @@ impl Supervisor {
                         match_id.0
                     );
                 }
-                let _ = self.hub.send(Cmd::MatchEnded { match_id, end }).await;
+                if let Some(end) = end {
+                    let _ = self.hub.send(Cmd::MatchEnded { match_id, end }).await;
+                }
             }
         }
         // The port is free only once the game server is gone.
@@ -463,6 +486,7 @@ mod tests {
             left: None,
             artifact_truncated: false,
             aborted: None,
+            artifacts_closed: false,
         };
         assert!(matches!(
             supervisor.end_of(

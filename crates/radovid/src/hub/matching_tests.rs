@@ -152,6 +152,7 @@ impl Fixture {
                     report: Vec::new(),
                     artifact_truncated: false,
                     aborted: None,
+                    artifacts_closed: false,
                 }),
             )
             .await;
@@ -631,6 +632,7 @@ async fn an_unseated_rated_winner_is_a_null_crash_instead_of_an_unreplayable_res
                 report: Vec::new(),
                 artifact_truncated: false,
                 aborted: None,
+                artifacts_closed: false,
             }),
         )
         .await;

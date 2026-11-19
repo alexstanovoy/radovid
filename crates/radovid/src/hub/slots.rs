@@ -24,7 +24,10 @@ impl Hub {
             let (all, lobby) = launched.fold((0, 0), |(all, lobby), m| {
                 (all + 1, lobby + usize::from(m.lobby))
             });
-            if all >= capacity || self.free_ports.is_empty() {
+            // A game whose result was told at its line may still be on its way out, holding
+            // its port: it counts until it is gone.
+            let running = self.config.game_ports.count() - self.free_ports.len();
+            if all.max(running) >= capacity || self.free_ports.is_empty() {
                 break;
             }
             let next = self.waiting.iter().position(|m| {

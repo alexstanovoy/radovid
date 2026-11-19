@@ -33,11 +33,18 @@ Any game can be launched that honours this, a shell script included:
      for it: `stopped` after radovid asked the game to finish, `time_limit` once the limit has run out. Any other
      `aborted=` is a bad result and the match is crashed. (A game controls its own stdout, so its winner and exit
      code too; this keeps a game from ending matches with a word nothing called for, not from lying.)
+   - `artifacts=closed`: the game closed every file it leaves (the replay, the further artifacts) before it printed
+     the line. radovid then reports the result (rates the match, frees its players, tells them) and serves the
+     files at once, while the game goes on showing its players the end; the exit only frees the port, and the
+     result stands whatever the process does after the line. Without it, radovid waits for the exit (below). An
+     older radovid skips the field and waits as well.
    - `v=<n>`: the line's version, absent for 1. A game that only adds fields leaves it alone (radovid skips unknown
      keys); one that changes a field's meaning raises it, and an older radovid treats the line as malformed.
    radovid sets `RADOVID_RESULT_VERSION` (now 3), the newest version it reads; a game prints a version's fields only
    when the variable allows (absent: 1), so either side can be updated first. radovid reports the result and serves
-   the match's artifact only after the game process has exited, so a game may finish writing after `RESULT`.
+   the match's artifact only after the game process has exited, so a game may finish writing after `RESULT`, unless
+   the line says `artifacts=closed`. A game still lingering after its result holds its port and
+   counts against `game_capacity` until it has exited.
 4. Exit code 3 without `RESULT` means abandoned (nobody came, everybody left, or a seat left for good during the picks, which cancels the match); any other exit without `RESULT`, or a
    malformed line, means crashed. Both are null: nothing is rated.
 5. A match is ended from outside by `max_duration_secs` (counted from `READY`), an admin or the service's shutdown.

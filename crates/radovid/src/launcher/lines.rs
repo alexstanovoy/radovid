@@ -4,7 +4,7 @@
 //!
 //! The first three fields are fixed and in this order. The rest are `key=value` fields in any
 //! order, each key once: `left=<slot>`, `replay=truncated` (version 2), `aborted=<why>` (version 3),
-//! `v=<n>`. A key radovid does not know
+//! `artifacts=closed`, `v=<n>`. A key radovid does not know
 //! is skipped, so a game may add facts without breaking the radovid that reads it; a game that
 //! changes what a field means says so with `v=<n>` (absent: 1), and a radovid that knows only
 //! older versions refuses the line (DEVELOPMENT.md "Launcher contract").
@@ -77,6 +77,9 @@ pub struct GameResult {
     /// The game ended the match without playing it out: it counts for nothing, whoever `winner`
     /// names.
     pub aborted: Option<Aborted>,
+    /// The game closed every file it leaves before it printed the line (`artifacts=closed`): the
+    /// result may be told, and the files served, while the process lives on.
+    pub artifacts_closed: bool,
 }
 
 /// Reads lines of bounded length.
@@ -164,6 +167,7 @@ fn parse_result(rest: &str) -> Option<GameResult> {
         left: None,
         artifact_truncated: false,
         aborted: None,
+        artifacts_closed: false,
     };
     let mut seen = Vec::new();
     let mut version = 1;
@@ -177,6 +181,8 @@ fn parse_result(rest: &str) -> Option<GameResult> {
             "left" => result.left = Some(value.parse().ok()?),
             "replay" => result.artifact_truncated = value == "truncated",
             "aborted" => result.aborted = Some(Aborted::of(value)?),
+            // Only an addition: an older radovid skips it and waits for the exit, as before.
+            "artifacts" => result.artifacts_closed = value == "closed",
             "v" => {
                 version = value.parse::<u16>().ok()?;
                 if version > RESULT_VERSION {
