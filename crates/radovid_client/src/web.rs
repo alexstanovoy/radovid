@@ -12,7 +12,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use web_sys::{BinaryType, CloseEvent, Event, MessageEvent, WebSocket};
 
-use crate::check::judge;
+use crate::check::{MAX_ANSWER_BYTES, judge};
 use crate::{ClientError, Control, Incoming, ServiceFault, ServiceFound, control_url};
 
 /// Messages held for a caller that has not polled them; past it the
@@ -53,6 +53,15 @@ impl WebClient {
     /// `/control`) and queues the Hello; its Welcome arrives as the reply to
     /// sequence number 1.
     pub fn open(url: &str, game_fingerprint: u64) -> Result<WebClient, ClientError> {
+        Self::open_with_limits(url, game_fingerprint, MAX_UNPOLLED, usize::MAX)
+    }
+
+    fn open_with_limits(
+        url: &str,
+        game_fingerprint: u64,
+        max_unpolled: usize,
+        max_bytes: usize,
+    ) -> Result<WebClient, ClientError> {
         let url = control_url(url);
         if !url.starts_with("wss://") {
             return Err(ClientError::BadUrl(url));
@@ -79,13 +88,21 @@ impl WebClient {
             let (shared, ws) = (Rc::clone(&shared), ws.clone());
             Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
                 let mut shared = shared.borrow_mut();
+                if shared.ended.is_some() {
+                    return;
+                }
                 let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() else {
                     shared.ended = Some(ClientError::Protocol("a text message".to_owned()));
                     let _ = ws.close();
                     notify(shared);
                     return;
                 };
-                if shared.inbox.len() >= MAX_UNPOLLED {
+                if buffer.byte_length() as usize > max_bytes {
+                    shared.ended = Some(ClientError::Protocol("service answer too large".to_owned()));
+                    let _ = ws.close();
+                    return;
+                }
+                if shared.inbox.len() >= max_unpolled {
                     shared.ended = Some(ClientError::Protocol("messages not polled".to_owned()));
                     let _ = ws.close();
                     notify(shared);
@@ -200,7 +217,7 @@ impl ServiceCheck {
     /// `game_fingerprint`, giving up after `patience`.
     pub fn start(url: &str, game_fingerprint: u64, patience: std::time::Duration) -> ServiceCheck {
         let deadline = js_sys::Date::now() + patience.as_secs_f64() * 1000.0;
-        match WebClient::open(url, game_fingerprint) {
+        match WebClient::open_with_limits(url, game_fingerprint, 1, MAX_ANSWER_BYTES) {
             Ok(client) => ServiceCheck {
                 client: Some(client),
                 hello: 1,
