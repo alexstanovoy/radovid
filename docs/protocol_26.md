@@ -1,6 +1,6 @@
-# Protocol 25: avatars of 256 by 256 pixels
+# Protocol 26: avatars of 256 by 256 pixels
 
-The current and minimum control protocol versions are 25. Rebuild service and clients together.
+The current and minimum control protocol versions are 26. Rebuild service and clients together.
 Every existing variant index and field position is preserved. `Reply::Avatars` gains one field,
 `answered`, at the end.
 

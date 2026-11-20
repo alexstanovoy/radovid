@@ -1,10 +1,10 @@
 //! Limits both sides hold.
 
 /// The version of every wire type here. Bumped on every change of any of them.
-pub const PROTO_VERSION: u16 = 25;
+pub const PROTO_VERSION: u16 = 26;
 
 /// Service and clients are rebuilt together; earlier protocol versions are refused.
-pub const MIN_PROTO_VERSION: u16 = 25;
+pub const MIN_PROTO_VERSION: u16 = 26;
 
 /// Bytes of an avatar PNG at most.
 pub const MAX_AVATAR_BYTES: usize = 48 * 1024;

@@ -1,11 +1,11 @@
 use crate::*;
 
 #[test]
-fn the_batch_reply_with_its_answered_count_requires_protocol_25() {
+fn the_batch_reply_with_its_answered_count_requires_protocol_26() {
     // A reply that says how many queries it answers cannot be read by an older client, so the
     // floor was raised to the protocol that appended the count.
-    assert_eq!(MIN_PROTO_VERSION, 25);
-    assert_eq!(PROTO_VERSION, 25);
+    assert_eq!(MIN_PROTO_VERSION, 26);
+    assert_eq!(PROTO_VERSION, 26);
 }
 
 #[test]
