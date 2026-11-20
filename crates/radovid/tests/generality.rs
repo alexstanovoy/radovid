@@ -6,6 +6,62 @@ use radovid::config::{Config, LimitsConfig, PerKindOrBoth};
 use radovid_client::proto::*;
 
 #[test]
+fn a_control_reply_wakes_a_caller_waiting_without_polling() {
+    use std::sync::{Arc, mpsc};
+    use std::task::{Wake, Waker};
+    use std::time::Duration;
+
+    struct Notify(mpsc::Sender<()>);
+    impl Wake for Notify {
+        fn wake(self: Arc<Self>) {
+            let _ = self.0.send(());
+        }
+    }
+
+    let service = start(vec![ruleset("solo", true, "team0", "0")]);
+    let mut client = radovid_client::Background::open(&service.url, &service.tls, FINGERPRINT)
+        .expect("open control connection");
+    let (notify, wakes) = mpsc::channel();
+    client.set_waker(Waker::from(Arc::new(Notify(notify))));
+    let next = |client: &mut radovid_client::Background| {
+        for _ in 0..16 {
+            wakes
+                .recv_timeout(Duration::from_secs(15))
+                .expect("control reply must wake its caller");
+            if let Some(message) = client.poll().expect("control connection remains open") {
+                return message;
+            }
+        }
+        panic!("control reply missing after 16 notifications");
+    };
+    assert!(matches!(
+        next(&mut client),
+        radovid_client::Incoming::Reply {
+            seq: 1,
+            result: Ok(Reply::Welcome { .. })
+        }
+    ));
+    let sequence = client
+        .request(ClientMsg::Rulesets)
+        .expect("request rulesets");
+    assert!(
+        matches!(next(&mut client), radovid_client::Incoming::Reply { seq, result: Ok(Reply::Rulesets { .. }) } if seq == sequence)
+    );
+    service.stop();
+    for _ in 0..16 {
+        wakes
+            .recv_timeout(Duration::from_secs(15))
+            .expect("connection shutdown must wake its caller");
+        match client.poll() {
+            Err(radovid_client::ClientError::Closed) => return,
+            Ok(None) => (),
+            other => panic!("unexpected outcome on shutdown: {other:?}"),
+        }
+    }
+    panic!("connection remained open after shutdown");
+}
+
+#[test]
 fn default_lobbies_have_one_seat_per_side() {
     let config: Config = toml::from_str(include_str!("../../../examples/tic_tac_toe.toml"))
         .expect("example configuration with no explicit lobby layout");

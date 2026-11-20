@@ -2,9 +2,10 @@
 //! block (a GUI's frame loop): requests go out through a channel, and what
 //! arrives is polled.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::Waker;
 use std::time::Duration;
 
 use radovid_proto::ClientMsg;
@@ -39,6 +40,7 @@ pub struct Background {
     reports: Receiver<Report>,
     /// Bytes of the messages reported and not yet polled.
     unpolled: Arc<AtomicUsize>,
+    waker: Arc<Mutex<Option<Waker>>>,
     ended: Option<ClientError>,
 }
 
@@ -61,6 +63,11 @@ impl Background {
         let url = control_url(url);
         let tls = tls.clone();
         let unpolled = Arc::new(AtomicUsize::new(0));
+        let waker = Arc::new(Mutex::new(None));
+        let report = Reporter {
+            sender: report,
+            waker: Arc::clone(&waker),
+        };
         let held = Arc::clone(&unpolled);
         std::thread::Builder::new()
             .name("radovid-control".to_owned())
@@ -76,8 +83,16 @@ impl Background {
             requests,
             reports,
             unpolled,
+            waker,
             ended: None,
         })
+    }
+
+    /// Replace the notification target. Wakes once at registration and whenever a report
+    /// becomes available. After a wake, call [`Self::poll`] until it has no more messages.
+    pub fn set_waker(&mut self, waker: Waker) {
+        *self.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(waker.clone());
+        waker.wake();
     }
 
     /// Queues a request; its answer carries the sequence number returned.
@@ -121,11 +136,31 @@ impl Background {
     }
 }
 
+struct Reporter {
+    sender: SyncSender<Report>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl Reporter {
+    fn send(&self, report: Report) -> Result<(), mpsc::SendError<Report>> {
+        self.sender.send(report)?;
+        let waker = self
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        Ok(())
+    }
+}
+
 /// Carries messages both ways until either side ends; returns why it ended.
 fn pump(
     mut ws: Ws,
     outgoing: &Receiver<Vec<u8>>,
-    report: &SyncSender<Report>,
+    report: &Reporter,
     unpolled: &AtomicUsize,
 ) -> ClientError {
     if let Err(error) = set_read_timeout(&ws, POLL) {

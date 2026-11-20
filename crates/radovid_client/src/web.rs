@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::task::Waker;
 
 use radovid_proto::ClientMsg;
 use wasm_bindgen::JsCast;
@@ -25,6 +26,15 @@ struct Shared {
     outbox: Vec<Vec<u8>>,
     inbox: VecDeque<Vec<u8>>,
     ended: Option<ClientError>,
+    waker: Option<Waker>,
+}
+
+fn notify(shared: std::cell::RefMut<'_, Shared>) {
+    let waker = shared.waker.clone();
+    drop(shared);
+    if let Some(waker) = waker {
+        waker.wake();
+    }
 }
 
 /// A control connection in the browser.
@@ -59,6 +69,9 @@ impl WebClient {
                         shared.ended = Some(ClientError::Closed);
                     }
                 }
+                if shared.ended.is_some() {
+                    notify(shared);
+                }
             })
         };
         let on_message = {
@@ -68,16 +81,19 @@ impl WebClient {
                 let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() else {
                     shared.ended = Some(ClientError::Protocol("a text message".to_owned()));
                     let _ = ws.close();
+                    notify(shared);
                     return;
                 };
                 if shared.inbox.len() >= MAX_UNPOLLED {
                     shared.ended = Some(ClientError::Protocol("messages not polled".to_owned()));
                     let _ = ws.close();
+                    notify(shared);
                     return;
                 }
                 shared
                     .inbox
                     .push_back(js_sys::Uint8Array::new(&buffer).to_vec());
+                notify(shared);
             })
         };
         let on_close = {
@@ -86,6 +102,7 @@ impl WebClient {
                 let mut shared = shared.borrow_mut();
                 shared.open = false;
                 shared.ended.get_or_insert(ClientError::Closed);
+                notify(shared);
             })
         };
         ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
@@ -102,6 +119,13 @@ impl WebClient {
         let hello = client.control.hello(game_fingerprint)?;
         client.send(hello.bytes)?;
         Ok(client)
+    }
+
+    /// Replace the notification target. Wakes once at registration and whenever a message
+    /// or a connection error becomes available. After a wake, drain [`Self::poll`].
+    pub fn set_waker(&mut self, waker: Waker) {
+        self.shared.borrow_mut().waker = Some(waker.clone());
+        waker.wake();
     }
 
     /// Sends a request, or holds it until the socket opens; its answer
