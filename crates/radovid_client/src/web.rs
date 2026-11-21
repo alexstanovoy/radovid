@@ -98,7 +98,8 @@ impl WebClient {
                     return;
                 };
                 if buffer.byte_length() as usize > max_bytes {
-                    shared.ended = Some(ClientError::Protocol("service answer too large".to_owned()));
+                    shared.ended =
+                        Some(ClientError::Protocol("service answer too large".to_owned()));
                     let _ = ws.close();
                     return;
                 }
